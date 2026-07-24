@@ -2,7 +2,6 @@ import hid
 import time
 import math
 import threading
-from pynput import keyboard
 from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, Controller as KeyboardController
 
@@ -13,8 +12,8 @@ class DriverConfig:
     def __init__(self):
         # Motion Sensitivity
         self.cursor_sensitivity = 1.0
-        self.scroll_sensitivity_x = -0.05   # Positive = Traditional, Negative = Natural
-        self.scroll_sensitivity_y = 0.05  # Natural Vertical Scrolling
+        self.scroll_sensitivity_x = -0.02   # Positive = Traditional, Negative = Natural
+        self.scroll_sensitivity_y = 0.03  # Natural Vertical Scrolling
         
         # Gesture Thresholds
         self.max_tap_duration = 0.300       # Seconds
@@ -88,7 +87,7 @@ class TabletState:
         self.f2_start_pos = None
         self.f2_right_click_fired = False
         self.scroll_active = False
-        self.last_centroid = None
+        self.last_2finger_centroid = None
         self.scroll_acc_x = 0.0
         self.scroll_acc_y = 0.0
         self.was_dualtouch = False
@@ -187,7 +186,7 @@ def process_touch_batch(reports):
         parsed_blocks = []
         
         for i in range(num_reports):    
-            b1 = parse_sub_block(report[2+(i*8):10+(i*8)]) # report has 64 Bytes, each sub-block is 8 bytes long
+            b1 = parse_sub_block(report[2+(i*8):10+(i*8)]) # report has 66 Bytes, each sub-block is 8 bytes long and 7 max sub-blocks seen until now (might need to be increased for 10 fingers - but who uses that many fingers on a drawing tablet anyway)
             if b1: parsed_blocks.append(b1)
             
         for slot_id, status, pos in parsed_blocks:
@@ -241,11 +240,9 @@ def process_touch_batch(reports):
     # ==========================================================================
     
     # --------------------------------------------------------------------------
-    # 1-FINGER NAVIGATION & DOUBLE-TAP DRAG
+    # 1-FINGER NAVIGATION & PRESS-AND-HOLD DRAG
     # --------------------------------------------------------------------------
     if num_active == 1:
-        
-        #print (f"Debug: state.active_contacts={state.active_contacts}, state.was_multitouch={state.was_multitouch}, state.was_dualtouch={state.was_dualtouch}")
         fid, pos = next(iter(state.active_contacts.items()))
 
         if state.was_multitouch or state.was_dualtouch:
@@ -254,13 +251,11 @@ def process_touch_batch(reports):
             state.was_dualtouch = False
             state.is_dragging_cursor = True
 
-        state.last_centroid = None
+        state.last_2finger_centroid = None
         state.f2_start_time = None
 
         if not state.was_multitouch:
-            
             if state.f1_start_pos is not None and pos is not None:
-                
                 dx_start = pos[0] - state.f1_start_pos[0]
                 dy_start = pos[1] - state.f1_start_pos[1]
                 drift = math.hypot(dx_start, dy_start)
@@ -268,22 +263,36 @@ def process_touch_batch(reports):
                 if drift > state.max_drift:
                     state.max_drift = drift
 
+                # === INJECTED: 1-Finger Press-and-Hold Drag Logic ===
+                hold_duration = current_time - state.f1_start_time
+                if (config.enable_1f_press_drag 
+                        and not state.is_left_held 
+                        and not state.press_hold_fired
+                        and hold_duration >= config.press_hold_duration 
+                        and state.max_drift <= config.tap_max_movement
+                        and not state.scroll_active):
+                    
+                    state.mouse.press(Button.left)
+                    state.is_left_held = True
+                    state.press_hold_fired = True
+                    state.is_dragging_cursor = True
+                    print("[Gesture] 1F Press & Hold Drag Initiated")
+                # ====================================================
+
+                # Move cursor if enabled
                 if state.is_dragging_cursor and state.last_f1_pos is not None:
                     dx = pos[0] - state.last_f1_pos[0]
                     dy = pos[1] - state.last_f1_pos[1]
                     if dx != 0 or dy != 0:
                         state.mouse.move(int(dx * config.cursor_sensitivity), int(dy * config.cursor_sensitivity))
-                        #print ("Debug: move 1 finger")
-                            
-                #if not state.was_moved:                        
+
                 if state.max_drift > config.tap_max_movement:
                     state.is_dragging_cursor = True
                     
                     if config.enable_1f_double_tap_drag and state.drag_candidate and not state.is_left_held:
                         state.mouse.press(Button.left)
                         state.is_left_held = True
-                        print ("Debug: drag double tap initiated")
-
+                        print("Debug: drag double tap initiated")
 
                 state.last_f1_pos = pos
 
@@ -292,9 +301,9 @@ def process_touch_batch(reports):
     # --------------------------------------------------------------------------
     elif num_active == 2:
 
+        state.was_dualtouch = True
         if not state.was_multitouch:
             
-            state.was_dualtouch = True
             state.is_dragging_cursor = True
             
             pts = list(state.active_contacts.values())
@@ -303,9 +312,9 @@ def process_touch_batch(reports):
             if p1 is not None and p2 is not None and config.enable_2f_scroll:
                 centroid = ((p1[0] + p2[0]) / 2.0, (p1[1] + p2[1]) / 2.0)
 
-                if isinstance(state.last_centroid, tuple) and len(state.last_centroid) == 2:
-                    dx = centroid[0] - state.last_centroid[0]
-                    dy = centroid[1] - state.last_centroid[1]
+                if isinstance(state.last_2finger_centroid, tuple) and len(state.last_2finger_centroid) == 2:
+                    dx = centroid[0] - state.last_2finger_centroid[0]
+                    dy = centroid[1] - state.last_2finger_centroid[1]
                     dist = math.hypot(dx, dy)
 
                     if dist > 15.0 or state.scroll_active:
@@ -323,18 +332,23 @@ def process_touch_batch(reports):
                             state.scroll_acc_y -= step_y
                             #print ("Debug: scroll 2 finger")
 
-                state.last_centroid = centroid
+                state.last_2finger_centroid = centroid
 
     # --------------------------------------------------------------------------
-    # ALL FINGERS LIFTED -> TAP DISPATCH & CLEANUP
+    # 3-FINGER OR MORE - BASIC SETTINGS
     # --------------------------------------------------------------------------
+
     elif num_active > 2:
         state.was_multitouch = True
         state.was_dualtouch = False
         state.centroid = None
-        state.last_centroid = None
+        state.last_2finger_centroid = None
         state.scroll_active = False
         state.is_dragging_cursor = False
+
+    # --------------------------------------------------------------------------
+    # ALL FINGERS LIFTED -> TAP DISPATCH & CLEANUP
+    # --------------------------------------------------------------------------
         
     elif num_active == 0:
         if state.is_left_held:
@@ -353,7 +367,7 @@ def process_touch_batch(reports):
                     if not state.was_moved or not state.is_dragging_cursor:
                         dispatch_gesture_event("1f_tap")
                         state.last_f1_release_time = current_time
-                        print("Debug: 1F Tap Detected")
+                        #print("Debug: 1F Tap Detected")
                         
 
                 elif state.peak_contact_count == 2:
@@ -377,7 +391,7 @@ def process_touch_batch(reports):
         state.drag_candidate = False
         state.f2_right_click_fired = False
         state.scroll_active = False
-        state.last_centroid = None
+        state.last_2finger_centroid = None
         state.was_dualtouch = False
         state.was_multitouch = False
         state.was_moved = False
@@ -393,11 +407,11 @@ def run_pen_interface(device_info):
         dev.set_nonblocking(True)
         print(f"[Thread Started] Pen Interface ({device_info.get('interface_number', 0)})")
         while True:
-            report = dev.read(64)
+            report = dev.read(2)
             if report:
                 parse_pen_packet(report)
             else:
-                time.sleep(0.005)
+                time.sleep(0.1)
     except Exception as e:
         print(f"[Pen Error] {e}")
     finally:
@@ -412,14 +426,14 @@ def run_touch_interface(device_info):
     dev = hid.device()
     try:
         dev.open_path(device_info['path'])
-        dev.set_nonblocking(True)
+        dev.set_nonblocking(False)
         
         batch = []
         batch_start_time = None
         window_duration = 0.010  # Base 10ms
 
         while True:
-            report = dev.read(64)
+            report = dev.read(66) # max 7 blocks of 8 bytes + 2 header bytes = 66
             current_time = time.time()
 
             if report:
@@ -429,8 +443,7 @@ def run_touch_interface(device_info):
 
                 # Adaptive extension: extend window if a new finger lands mid-batch
                 if contains_touch_down(report):
-                    #print(f"Touch down detected in report: {report}")
-                    current_time = time.time() # extend time by another window_duration
+                    batch_start_time = time.time() 
                     window_duration = 0.020
 
                 batch.append(report)
@@ -438,9 +451,6 @@ def run_touch_interface(device_info):
             if batch and (current_time - batch_start_time >= window_duration):
                 process_touch_batch(batch)
                 batch.clear()
-
-            if not report and not batch:
-                time.sleep(0.002)
 
     except Exception as e:
         print(f"[Touch Error] {e}")
