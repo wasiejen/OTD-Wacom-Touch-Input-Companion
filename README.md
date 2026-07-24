@@ -72,25 +72,26 @@ Everything in the driver is exposed and editable via the GUI:
    ```bash
    git clone [https://github.com/YOUR_USERNAME/YOUR_REPOSITORY_NAME.git](https://github.com/YOUR_USERNAME/YOUR_REPOSITORY_NAME.git)
    cd YOUR_REPOSITORY_NAME
-
-```
+   ```
 
 2. **Install dependencies:**
-```bash
-pip install -r requirements.txt
 
-```
-
+   ```bash
+   pip install -r requirements.txt
+   ```
 
 3. **Run the driver:**
-```bash
-python touch_controller.py
+   ```bash
+   python touch_controller.py
+   ```
 
-```
+### Using the portable Executable
 
+On the Release Page there is now an "OTD_Wacom_Touch_Driver_%VERSION%_win64.exe" to be downloaded, which can be used directly. When saving your configuration the user.cfg will be created in the same folder the executable is residing in.
 
+[Releases](https://github.com/wasiejen/Wacom-Touch-Enabler/releases/)
 
-*(The driver will start listening for tablet touch events and spawn the `WTD` tray icon in your taskbar).*
+*(The driver will start listening for tablet touch events and spawn the `WT` tray icon in your taskbar).*
 
 ---
 
