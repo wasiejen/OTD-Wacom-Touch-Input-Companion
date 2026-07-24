@@ -1,13 +1,6 @@
-Here is a clean, well-structured `README.md` file tailored for your GitHub repository.
-
----
-
-# `README.md`
-
-```markdown
 # OpenTabletDriver - Wacom Touch Companion
 
-A lightweight Python driver companion for **OpenTabletDriver (OTD)** that unlocks multi-touch gesture support on Wacom Intuos Pro tablets. 
+A lightweight Python driver companion for **OpenTabletDriver (OTD)** that unlocks touch input and multi-touch gesture support on Wacom Intuos Pro tablets. 
 
 While OpenTabletDriver excels at handling pen input, touch support on certain older Wacom devices requires specialized parsing. This background driver runs alongside OTD to capture HID touch reports and map them to custom mouse cursor movements, multi-finger gestures, continuous scrolling, and Windows productivity shortcuts.
 
@@ -17,11 +10,15 @@ While OpenTabletDriver excels at handling pen input, touch support on certain ol
 
 | Settings: Motion & Speed | Settings: Features & Actions |
 | :---: | :---: |
-| ![Motion & Speed Settings](placeholders/settings_motion.png) | ![Features & Actions Settings](placeholders/settings_features.png) |
+| <img width="301" height="564" alt="grafik" src="https://github.com/user-attachments/assets/ac5b79c7-7b56-40b2-bd51-4f8210ae32d6" /> | <img width="301" height="564" alt="grafik" src="https://github.com/user-attachments/assets/8211b4a4-200f-49b3-b2ac-61bba4a66d05" />
+ |
+
+
 
 | Settings: Thresholds & Advanced | Tray Icon & Menu |
 | :---: | :---: |
-| ![Thresholds & Advanced Settings](placeholders/settings_advanced.png) | <img src="placeholders/tray_menu.png" width="220" alt="Tray Icon Menu"> |
+| <img width="301" height="564" alt="grafik" src="https://github.com/user-attachments/assets/dab487b9-977b-423d-a319-351a61fd9abe" />
+ | <img src="<img width="433" height="179" alt="grafik" src="https://github.com/user-attachments/assets/e7da3518-93af-4bc6-8d8c-99df95d47244" /> |
 
 ---
 
