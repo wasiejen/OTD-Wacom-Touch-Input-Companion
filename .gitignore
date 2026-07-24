@@ -1,0 +1,16 @@
+/icons
+/.venv
+/dist
+/build
+/testing
+/pictures
+/__pycache__
+/build
+/dist
+/onefile-build
+touch_controller.spec
+user.cfg
+*.exe
+*.dll
+*.cmd
+*.vbs
