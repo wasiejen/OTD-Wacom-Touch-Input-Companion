@@ -1,3 +1,11 @@
+260724-2346
+
+- fixed f5_alt_tap ending that was not triggered
+- fixed f5_alt_tap jumping to the next when ended and thus selecting wrong window to focus on
+    - fixed it a second time because there were 2 causes for this potential behavior xD --> :-)
+- added "windows + direction keys" as option to move windows with 3 finger gestures (deactivate windows window snap suggestions to not be interrupted every time)
+
+
 260724-1820 (KI generated):
 
 Here is a clean, structured summary you can drop directly into your `CHANGELOG.md` or release history to document the development of the GUI!

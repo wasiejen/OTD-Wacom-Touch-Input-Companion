@@ -10,22 +10,54 @@ import os
 
 CONFIG_FILE_PATH = "user.cfg"
 
-DEBUG = False  # Set to True to raise exceptions for debugging purposes
+DEBUG = False 
+# DEBUG = True  
 
 # ==============================================================================
 # CONFIGURATION CLASS
 # ==============================================================================
 class DriverConfig:
     def __init__(self):
-        # Motion Sensitivity
+        
+        # Motion Parameters
+        self.cursor_deadzone = 1.0           # Distance (in px/packet) to discard as noise/jitter
+        
+        # Piecewise Linear Acceleration Settings
+        self.cursor_min_sens = 0.9           # Flat base multiplier for precision work
+        self.cursor_max_sens = 2.5           # Hard cap multiplier (e.g., 2.5x to 3.0x base speed)
+        self.speed_low = 10.0                 # Upper bound of flat precision zone (px/packet)
+        self.speed_high = 50.0               # Speed at which max acceleration ceiling is reached
+        
+        # Scroll Sensitivity (Positive = Traditional, Negative = Natural)
         self.scroll_sensitivity_x = -0.015   # Positive = Traditional, Negative = Natural
         self.scroll_sensitivity_y = 0.03     # Natural Vertical Scrolling
+        
+        # Minimal movement required to declare a 2F intention
+        self.scroll_activation_threshold = 40.0  # Centroid distance in px before scrolling locks in
+        self.pinch_activation_threshold = 50.0   # Spread change in px before pinching locks in
         
         # Gesture Thresholds
         self.max_tap_duration = 0.300       # Seconds
         self.double_tap_timeout = 0.200     # Seconds for 1F drag
         self.tap_max_movement = 30          # Coordinate drift limit
         
+        # 1-Finger Press-and-Hol Drag Config
+        self.press_hold_duration = 0.250    # Seconds required to convert static touch into left-click hold
+        
+        # Motion & Directional Bounds for Gesture recognition (in Wacom coordinate units)
+        self.swipe_threshold_x = 60      # Horizontal distance needed to trigger swipe
+        self.swipe_threshold_y = 60      # Vertical distance needed to trigger swipe
+        self.axis_dominance_ratio = 1.3  # Primary axis must be 1.3x larger than cross axis
+        
+        # Pinch Thresholds
+        self.pinch_continuous_sensitivity = 10.0 # Pixels per continuous zoom step
+        self.pinch_discrete_threshold = 50.0    # Distance change needed for 3F/4F pinch trigger
+        
+        # 5-Finger Alt-Tab Configuration
+        self.alt_tab_activation_threshold = 30.0  # px distance to initiate Alt-Tab overlay
+        self.alt_tab_step_threshold = 45.0        # px distance per window switch step       
+        
+        # Available Feature Toggles (True = Enabled, False = Disabled)        
         self.feature_toggles = {
             "1f_tap" : True,
             "1f_press_drag" : True,
@@ -50,26 +82,6 @@ class DriverConfig:
             "5f_alt_tab" : True,
         }
         
-        # 1-Finger Press-and-Hold Drag Config
-        self.press_hold_duration = 0.250    # Seconds required to convert static touch into left-click hold
-        
-        # Motion & Directional Bounds (in Wacom coordinate units)
-        self.swipe_threshold_x = 60      # Horizontal distance needed to trigger swipe
-        self.swipe_threshold_y = 60      # Vertical distance needed to trigger swipe
-        self.axis_dominance_ratio = 1.3  # Primary axis must be 1.3x larger than cross axis
-        
-        # Pinch Thresholds
-        self.pinch_continuous_sensitivity = 10.0 # Pixels per continuous zoom step
-        self.pinch_discrete_threshold = 50.0    # Distance change needed for 3F/4F pinch trigger
-        
-        # Minimal movement required to declare a 2F intention
-        self.scroll_activation_threshold = 40.0  # Centroid distance in px before scrolling locks in
-        self.pinch_activation_threshold = 50.0   # Spread change in px before pinching locks in
-        
-        # 5-Finger Alt-Tab Configuration
-        self.alt_tab_activation_threshold = 30.0  # px distance to initiate Alt-Tab overlay
-        self.alt_tab_step_threshold = 45.0        # px distance per window switch step
-        
         # Available Preset Actions
         self.AVAILABLE_ACTIONS = [
             "left_click",
@@ -77,6 +89,10 @@ class DriverConfig:
             "middle_click",
             "task_view",
             "show_desktop",
+            "window_up",
+            "window_down",
+            "window_left",
+            "window_right",
             "window_minimize",
             "window_maximize",
             "desktop_left",
@@ -98,32 +114,22 @@ class DriverConfig:
             "4f_tap": "task_view",
 
             # 3-Finger Swipes & Pinches
-            "3f_swipe_up": "ctrl_alt_tab_initiate",          # Win + Tab
-            "3f_swipe_down": "show_desktop",     # Win + D
-            "3f_swipe_left": "prev_window",     # Alt + Shift + Tab
-            "3f_swipe_right": "next_window",    # Alt + Tab
-            "3f_pinch_in": "window_minimize",   # Win + Down
-            "3f_pinch_out": "window_maximize",  # Win + Up
+            "3f_swipe_up": "window_up",         # Win + Up
+            "3f_swipe_down": "window_down",     # Win + Down
+            "3f_swipe_left": "window_left",     # Win + Left
+            "3f_swipe_right": "window_right",   # Win + Right
+            "3f_pinch_in": "show_desktop",      
+            "3f_pinch_out": "ctrl_alt_tab_initiate",  # Ctrl + Alt + Tab
 
             # 4-Finger Swipes & Pinches
-            "4f_swipe_up": "task_view",
-            "4f_swipe_down": "show_desktop",
+            "4f_swipe_up": "task_view",         # Win + Tab
+            "4f_swipe_down": "show_desktop",    # Win + D
             "4f_swipe_left": "desktop_right",     # Win + Ctrl + Left
             "4f_swipe_right": "desktop_left",     # Win + Ctrl + Right
             "4f_pinch_in": "window_minimize",
             "4f_pinch_out": "window_maximize",
         }
         
-        # Motion Parameters
-        self.cursor_deadzone = 1.0           # Distance (in px/packet) to discard as noise/jitter
-        
-        # Piecewise Linear Acceleration Settings
-        self.cursor_min_sens = 0.9           # Flat base multiplier for precision work
-        self.cursor_max_sens = 2.5           # Hard cap multiplier (e.g., 2.5x to 3.0x base speed)
-        
-        self.speed_low = 10.0                 # Upper bound of flat precision zone (px/packet)
-        self.speed_high = 50.0               # Speed at which max acceleration ceiling is reached
-
         # Attempt auto-load on startup
         self.load_from_file()
         
@@ -279,6 +285,30 @@ def execute_mapped_action(action_name):
         with state.keyboard.pressed(Key.cmd):
             state.keyboard.press('d')
             state.keyboard.release('d')
+    elif action_name == "window_up":
+        with state.keyboard.pressed(Key.cmd):
+            state.keyboard.press(Key.up)
+            state.keyboard.release(Key.up)
+    elif action_name == "window_down":
+        with state.keyboard.pressed(Key.cmd):
+            state.keyboard.press(Key.down)
+            state.keyboard.release(Key.down)
+    elif action_name == "window_left":
+        with state.keyboard.pressed(Key.cmd):
+            state.keyboard.press(Key.right)
+            state.keyboard.release(Key.right)
+    elif action_name == "window_left":
+        with state.keyboard.pressed(Key.cmd):
+            state.keyboard.press(Key.left)
+            state.keyboard.release(Key.left)
+    elif action_name == "window_right":
+        with state.keyboard.pressed(Key.cmd):
+            state.keyboard.press(Key.right)
+            state.keyboard.release(Key.right)
+    elif action_name == "window_maximize":
+        with state.keyboard.pressed(Key.cmd):
+            state.keyboard.press(Key.up)
+            state.keyboard.release(Key.up)
     elif action_name == "window_minimize":
         with state.keyboard.pressed(Key.cmd):
             state.keyboard.press(Key.down)
@@ -605,7 +635,7 @@ def process_touch_batch(reports):
                     dispatch_gesture_event(gesture_name)
                     state.active_gesture = gesture_name
 
-        elif state.active_gesture == "5F_ALT_TAB":
+        elif state.active_gesture == "5F_ALT_TAB" and num_active >= 5:
             dx_step = cx - state.last_alt_tab_x
             if abs(dx_step) >= config.alt_tab_step_threshold:
                 if dx_step > 0:
@@ -616,11 +646,16 @@ def process_touch_batch(reports):
 
     # --- RESET / RELEASE ---
     elif num_active == 0:
-        if state.is_left_held:
+        if state.alt_tab_active:
+            execute_mapped_action("ctrl_alt_tab_commit")
+            state.alt_tab_active = False
+            state.last_alt_tab_x = 0
+            
+        elif state.is_left_held:
             state.mouse.release(Button.left)
             state.is_left_held = False
 
-        if state.session_start_time is not None and state.active_gesture is None:
+        elif state.session_start_time is not None and state.active_gesture is None:
             session_duration = current_time - state.session_start_time
             
             if session_duration <= config.max_tap_duration and not state.scroll_active:
@@ -638,11 +673,6 @@ def process_touch_batch(reports):
                 elif state.peak_contact_count >= 4:
                     dispatch_gesture_event("4f_tap")
 
-        if state.alt_tab_active:
-            execute_mapped_action("alt_tab_commit")
-            state.alt_tab_active = False
-            state.last_alt_tab_x = 0
-            
         state.session_start_time = None
         state.peak_contact_count = 0
         state.f1_start_time = None
@@ -764,7 +794,7 @@ def main():
 
     pen_thread.start()
     touch_thread.start()
-
+    time.sleep(0.2) # Allow threads to initialize
     print("\n=== Wacom Touch Driver Running ===")
 
     try:
