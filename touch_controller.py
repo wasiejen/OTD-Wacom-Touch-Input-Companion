@@ -91,17 +91,7 @@ class DriverConfig:
             "4f_pinch_out": "window_maximize",
         }
         
-        # Cursor Motion & Acceleration Settings
-        # $$\text{Gain} = \text{base\_sensitivity} \times \left(1 + \text{accel\_factor} \times \left(\frac{d - \text{deadzone}}{\text{ref\_speed}}\right)^{\text{exponent}}\right)$$
-        self.cursor_deadzone = 1.0           # Ignore displacements below this threshold (in px)
-        self.cursor_base_sensitivity = 1   # Base multiplier for slow, precise movements
-        self.cursor_accel_factor = 1.1       # How strongly speed boosts cursor movement
-        self.cursor_accel_exponent = 1.1     # Non-linear curve power (>1 creates exponential speed-up)
-        self.cursor_ref_speed = 10.0        # Reference pixel delta to scale acceleration
-        
-        
-        
-        # Motion Parameters
+         # Motion Parameters
         self.cursor_deadzone = 1.0           # Distance (in px/packet) to discard as noise/jitter
         
         # Piecewise Linear Acceleration Settings
@@ -268,31 +258,6 @@ def compute_centroid_and_spread(contacts):
     
     spread = sum(math.hypot(p[0] - cx, p[1] - cy) for p in pts) / n
     return (cx, cy), spread
-
-def calculate_accelerated_delta(dx, dy, config):
-    """
-    Applies deadzone filtering and non-linear velocity acceleration to relative movement.
-    Returns (scaled_dx, scaled_dy).
-    """
-    distance = math.hypot(dx, dy)
-
-    # 1. Deadzone Filtering
-    if distance < config.cursor_deadzone:
-        return 0, 0
-
-    # 2. Distance past deadzone
-    effective_dist = distance - config.cursor_deadzone
-
-    # 3. Calculate Dynamic Gain (Acceleration Curve)
-    # Gain increases non-linearly with higher displacement speed
-    speed_ratio = effective_dist / config.cursor_ref_speed
-    gain = config.cursor_base_sensitivity * (1.0 + config.cursor_accel_factor * (speed_ratio ** config.cursor_accel_exponent))
-
-    # 4. Apply Gain while preserving original direction angle
-    scaled_dx = dx * gain
-    scaled_dy = dy * gain
-
-    return scaled_dx, scaled_dy
 
 def calculate_piecewise_accelerated_delta(dx, dy, config):
     """
