@@ -5,17 +5,21 @@ import threading
 from pynput.mouse import Button, Controller as MouseController
 from pynput.keyboard import Key, Controller as KeyboardController
 
-debug = True  # Set to True to raise exceptions for debugging purposes
+import json
+import os
+
+CONFIG_FILE_PATH = "user.cfg"
+
+DEBUG = False  # Set to True to raise exceptions for debugging purposes
 
 # ==============================================================================
-# CONFIGURATION CLASS (Easy to expose to a future GUI)
+# CONFIGURATION CLASS
 # ==============================================================================
 class DriverConfig:
     def __init__(self):
         # Motion Sensitivity
-        self.cursor_sensitivity = 1.0
         self.scroll_sensitivity_x = -0.015   # Positive = Traditional, Negative = Natural
-        self.scroll_sensitivity_y = 0.03  # Natural Vertical Scrolling
+        self.scroll_sensitivity_y = 0.03     # Natural Vertical Scrolling
         
         # Gesture Thresholds
         self.max_tap_duration = 0.300       # Seconds
@@ -56,7 +60,7 @@ class DriverConfig:
         
         # Pinch Thresholds
         self.pinch_continuous_sensitivity = 10.0 # Pixels per continuous zoom step
-        self.pinch_discrete_threshold = 80.0    # Distance change needed for 3F/4F pinch trigger
+        self.pinch_discrete_threshold = 50.0    # Distance change needed for 3F/4F pinch trigger
         
         # Minimal movement required to declare a 2F intention
         self.scroll_activation_threshold = 40.0  # Centroid distance in px before scrolling locks in
@@ -66,6 +70,25 @@ class DriverConfig:
         self.alt_tab_activation_threshold = 30.0  # px distance to initiate Alt-Tab overlay
         self.alt_tab_step_threshold = 45.0        # px distance per window switch step
         
+        # Available Preset Actions
+        self.AVAILABLE_ACTIONS = [
+            "left_click",
+            "right_click",
+            "middle_click",
+            "task_view",
+            "show_desktop",
+            "window_minimize",
+            "window_maximize",
+            "desktop_left",
+            "desktop_right",
+            "next_window",
+            "prev_window",
+            "ctrl_alt_tab_initiate",
+            # "ctrl_alt_tab_next",
+            # "ctrl_alt_tab_prev",
+            # "ctrl_alt_tab_commit"
+        ]
+
         # Mappable Actions
         self.action_mapping = {
             # Taps
@@ -75,10 +98,10 @@ class DriverConfig:
             "4f_tap": "task_view",
 
             # 3-Finger Swipes & Pinches
-            "3f_swipe_up": "task_view",          # Win + Tab
+            "3f_swipe_up": "ctrl_alt_tab_initiate",          # Win + Tab
             "3f_swipe_down": "show_desktop",     # Win + D
-            "3f_swipe_left": "alt_tab_prev",     # Alt + Shift + Tab
-            "3f_swipe_right": "alt_tab_next",    # Alt + Tab
+            "3f_swipe_left": "prev_window",     # Alt + Shift + Tab
+            "3f_swipe_right": "next_window",    # Alt + Tab
             "3f_pinch_in": "window_minimize",   # Win + Down
             "3f_pinch_out": "window_maximize",  # Win + Up
 
@@ -91,7 +114,7 @@ class DriverConfig:
             "4f_pinch_out": "window_maximize",
         }
         
-         # Motion Parameters
+        # Motion Parameters
         self.cursor_deadzone = 1.0           # Distance (in px/packet) to discard as noise/jitter
         
         # Piecewise Linear Acceleration Settings
@@ -101,6 +124,67 @@ class DriverConfig:
         self.speed_low = 10.0                 # Upper bound of flat precision zone (px/packet)
         self.speed_high = 50.0               # Speed at which max acceleration ceiling is reached
 
+        # Attempt auto-load on startup
+        self.load_from_file()
+        
+    def save_to_file(self, filepath=CONFIG_FILE_PATH):
+        data = {
+            "motion_and_thresholds": {
+                "scroll_sensitivity_x": self.scroll_sensitivity_x,
+                "scroll_sensitivity_y": self.scroll_sensitivity_y,
+                "max_tap_duration": self.max_tap_duration,
+                "double_tap_timeout": self.double_tap_timeout,
+                "tap_max_movement": self.tap_max_movement,
+                "press_hold_duration": self.press_hold_duration,
+                "swipe_threshold_x": self.swipe_threshold_x,
+                "swipe_threshold_y": self.swipe_threshold_y,
+                "axis_dominance_ratio": self.axis_dominance_ratio,
+                "pinch_continuous_sensitivity": self.pinch_continuous_sensitivity,
+                "pinch_discrete_threshold": self.pinch_discrete_threshold,
+                "scroll_activation_threshold": self.scroll_activation_threshold,
+                "pinch_activation_threshold": self.pinch_activation_threshold,
+                "alt_tab_activation_threshold": self.alt_tab_activation_threshold,
+                "alt_tab_step_threshold": self.alt_tab_step_threshold,
+                "cursor_deadzone": self.cursor_deadzone,
+                "cursor_min_sens": self.cursor_min_sens,
+                "cursor_max_sens": self.cursor_max_sens,
+                "speed_low": self.speed_low,
+                "speed_high": self.speed_high,
+            },
+            "feature_toggles": self.feature_toggles,
+            "action_mapping": self.action_mapping
+        }
+        with open(filepath, "w") as f:
+            json.dump(data, f, indent=4)
+        print(f"[Config] Saved settings to '{filepath}'")
+
+    def load_from_file(self, filepath=CONFIG_FILE_PATH):
+        if not os.path.exists(filepath):
+            print(f"[Config] No '{filepath}' found. Using default driver settings.")
+            return
+
+        try:
+            with open(filepath, "r") as f:
+                data = json.load(f)
+
+            motion = data.get("motion_and_thresholds", {})
+            for key, val in motion.items():
+                if hasattr(self, key):
+                    setattr(self, key, float(val))
+
+            toggles = data.get("feature_toggles", {})
+            for key, val in toggles.items():
+                if key in self.feature_toggles:
+                    self.feature_toggles[key] = bool(val)
+
+            mappings = data.get("action_mapping", {})
+            for key, val in mappings.items():
+                if key in self.action_mapping:
+                    self.action_mapping[key] = str(val)
+
+            print(f"[Config] Successfully loaded settings from '{filepath}'")
+        except Exception as e:
+            print(f"[Config Error] Failed loading '{filepath}': {e}")
 config = DriverConfig()
 
 # ==============================================================================
@@ -118,6 +202,8 @@ STATUS_ACTIVE_CONTACTS = {0x80, 0x90, 0x88, 0x98}
 # ==============================================================================
 class TabletState:
     def __init__(self):
+        self.touch_paused = False
+        self.running = True
         self.mouse = MouseController()
         self.keyboard = KeyboardController()
         self.pen_in_proximity = False
@@ -155,12 +241,12 @@ class TabletState:
         self.press_hold_fired = False
 
         # Single Latch State
-        self.active_gesture = None        # e.g., '3F_SWIPE_UP', '3F_PINCH_IN', '2F_PINCHING'
+        self.active_gesture = None
         
         # Multi-Finger Initial Baseline Data
         self.mf_start_time = None
         self.mf_start_centroid = None
-        self.mf_start_spread = 0.0        # Initial average distance of fingers to centroid
+        self.mf_start_spread = 0.0
         self.last_pinch_distance = 0.0
         
         # 5 Finger Alt-Tab State
@@ -169,14 +255,14 @@ class TabletState:
         
         self.cursor_acc_x = 0.0
         self.cursor_acc_y = 0.0
-           
+
 state = TabletState()
 
 # ==============================================================================
 # ACTION DISPATCHER
 # ==============================================================================
 def execute_mapped_action(action_name):
-    if debug: print(f"[Gesture] Action triggered: {action_name}")
+    if DEBUG: print(f"[Gesture] Action triggered: {action_name}")
     if action_name is None:
         print("[Action] No action mapped for this gesture.")
     elif action_name == "left_click":
@@ -217,24 +303,22 @@ def execute_mapped_action(action_name):
         with state.keyboard.pressed(Key.alt), state.keyboard.pressed(Key.shift):
             state.keyboard.press(Key.tab)
             state.keyboard.release(Key.tab)
-    elif action_name == "alt_tab_initiate":
+    elif action_name == "ctrl_alt_tab_initiate":
         with state.keyboard.pressed(Key.ctrl), state.keyboard.pressed(Key.alt):
             state.keyboard.press(Key.tab)
             state.keyboard.release(Key.tab)
-    elif action_name == "alt_tab_next":
+    elif action_name == "ctrl_alt_tab_next":
         state.keyboard.tap(Key.right)
-    elif action_name == "alt_tab_prev":
+    elif action_name == "ctrl_alt_tab_prev":
         state.keyboard.tap(Key.left)
-    elif action_name == "alt_tab_commit":
+    elif action_name == "ctrl_alt_tab_commit":
         state.keyboard.press(Key.enter)
         state.keyboard.release(Key.enter)
-
 
 def dispatch_gesture_event(event_type):
     if config.feature_toggles.get(event_type, False):
         mapping = config.action_mapping.get(event_type, None)
         if callable(mapping):
-            # Resolve the dynamic action using current state
             action_name = mapping(state)
         else:
             action_name = mapping
@@ -245,9 +329,6 @@ def dispatch_gesture_event(event_type):
 # HELPER FUNCTIONS
 # ==============================================================================
 def compute_centroid_and_spread(contacts):
-    """
-    Returns (centroid_x, centroid_y, average_spread_radius) for N active contacts.
-    """
     pts = list(contacts.values())
     n = len(pts)
     if n == 0:
@@ -260,30 +341,21 @@ def compute_centroid_and_spread(contacts):
     return (cx, cy), spread
 
 def calculate_piecewise_accelerated_delta(dx, dy, config):
-    """
-    Applies deadzone filtering followed by a piecewise linear acceleration curve 
-    (Flat precision zone -> Linear ramp -> Hard cap).
-    """
     speed = math.hypot(dx, dy)
 
-    # 1. Deadzone Filtering
     if speed < config.cursor_deadzone:
         return 0.0, 0.0
 
-    # 2. Piecewise Gain Calculation
     if speed <= config.speed_low:
-        # Flat precision zone
         gain = config.cursor_min_sens
     elif speed >= config.speed_high:
-        # Maximum speed cap
         gain = config.cursor_max_sens
     else:
-        # Linear interpolation between speed_low and speed_high
         slope = (config.cursor_max_sens - config.cursor_min_sens) / (config.speed_high - config.speed_low)
         gain = config.cursor_min_sens + slope * (speed - config.speed_low)
 
-    # 3. Apply calculated gain to relative deltas
     return dx * gain, dy * gain
+
 # ==============================================================================
 # PARSING & TOUCH PROCESSING
 # ==============================================================================
@@ -300,7 +372,6 @@ def parse_pen_packet(report):
             state.pen_in_proximity = False
             print("[Palm Rejection] Pen left hover area -> Touch Enabled")
 
-
 def parse_sub_block(block):
     if len(block) < 5:
         return None
@@ -315,13 +386,10 @@ def parse_sub_block(block):
     y = (block[3] << 4) | (block[4] & 0x0F)
     return (byte2, byte3, (x, y))
 
-
 def process_touch_batch(reports):
-    
-    if state.pen_in_proximity:
+    if state.pen_in_proximity or state.touch_paused:
         return
 
-    
     current_time = time.time()
     
     for report in reports:
@@ -331,7 +399,7 @@ def process_touch_batch(reports):
         parsed_blocks = []
         
         for i in range(num_reports):    
-            b1 = parse_sub_block(report[2+(i*8):10+(i*8)]) # report has 66 Bytes, each sub-block is 8 bytes long and 7 max sub-blocks seen until now (might need to be increased for 10 fingers - but who uses that many fingers on a drawing tablet anyway)
+            b1 = parse_sub_block(report[2+(i*8):10+(i*8)])
             if b1: parsed_blocks.append(b1)
             
         for slot_id, status, pos in parsed_blocks:
@@ -342,8 +410,6 @@ def process_touch_batch(reports):
 
             if status == STATUS_TOUCH_DOWN:
                 state.active_contacts[slot_id] = pos
-                
-                # Start of a touch session
                 if len(state.active_contacts) == 1:
                     state.session_start_time = current_time
                     state.peak_contact_count = 1
@@ -353,14 +419,10 @@ def process_touch_batch(reports):
                     state.max_drift = 0.0
                     state.is_dragging_cursor = False
                     
-                    # Check for 1-Finger Double-Tap Drag Candidate
                     time_since_last_tap = current_time - state.last_f1_release_time
                     state.drag_candidate = (time_since_last_tap <= config.double_tap_timeout)
-
                 else:
-                    # Track peak contact count for multi-finger tap detection
                     state.peak_contact_count = max(state.peak_contact_count, len(state.active_contacts))
-
                     if len(state.active_contacts) == 2:
                         state.f2_start_time = current_time
                         state.f2_start_pos = pos
@@ -378,15 +440,9 @@ def process_touch_batch(reports):
 
     num_active = len(state.active_contacts)
 
-    if debug: print(f"Debug: {num_active} fingers detected")
-    
-    # ==========================================================================
-    # GESTURE EVALUATION
-    # ==========================================================================
-    
-    # --------------------------------------------------------------------------
-    # 1-FINGER NAVIGATION & PRESS-AND-HOLD DRAG
-    # --------------------------------------------------------------------------
+    if DEBUG: print(f"Debug: {num_active} fingers detected")
+
+    # --- 1-FINGER NAVIGATION ---
     if num_active == 1:
         fid, pos = next(iter(state.active_contacts.items()))
 
@@ -409,7 +465,6 @@ def process_touch_batch(reports):
                 if drift > state.max_drift:
                     state.max_drift = drift
 
-                # === INJECTED: 1-Finger Press-and-Hold Drag Logic ===
                 hold_duration = current_time - state.f1_start_time
                 if (config.feature_toggles.get("1f_press_drag", False) 
                         and not state.is_left_held 
@@ -423,20 +478,14 @@ def process_touch_batch(reports):
                     state.is_left_held = True
                     state.press_hold_fired = True
                     state.is_dragging_cursor = True
-                    if debug: print("[Gesture] 1F Press & Hold Drag Initiated")
-                # ====================================================
+                    if DEBUG: print("[Gesture] 1F Press & Hold Drag Initiated")
 
-                # Move cursor if enabled
                 if state.is_dragging_cursor and state.last_f1_pos is not None:
                     raw_dx = pos[0] - state.last_f1_pos[0]
                     raw_dy = pos[1] - state.last_f1_pos[1]
                     
                     if raw_dx != 0 or raw_dy != 0:
-                        # Compute accelerated displacement
-                        #scaled_dx, scaled_dy = calculate_accelerated_delta(raw_dx, raw_dy, config)
                         scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(raw_dx, raw_dy, config)
-                        
-                        # Accumulate fractional remainders to maintain smooth micro-movements
                         state.cursor_acc_x += scaled_dx
                         state.cursor_acc_y += scaled_dy
                         
@@ -445,15 +494,8 @@ def process_touch_batch(reports):
                         
                         if move_x != 0 or move_y != 0:
                             state.mouse.move(move_x, move_y)
-                            # Subtract integer steps executed, leaving fractional remainder for next frame
                             state.cursor_acc_x -= move_x
                             state.cursor_acc_y -= move_y
-                # # Move cursor if enabled
-                # if state.is_dragging_cursor and state.last_f1_pos is not None:
-                #     dx = pos[0] - state.last_f1_pos[0]
-                #     dy = pos[1] - state.last_f1_pos[1]
-                #     if dx != 0 or dy != 0:
-                #         state.mouse.move(int(dx * config.cursor_sensitivity), int(dy * config.cursor_sensitivity))
 
                 if state.max_drift > config.tap_max_movement:
                     state.is_dragging_cursor = True
@@ -461,53 +503,32 @@ def process_touch_batch(reports):
                     if config.feature_toggles.get("1f_double_tap_drag", False) and state.drag_candidate and not state.is_left_held:
                         state.mouse.press(Button.left)
                         state.is_left_held = True
-                        if debug: print("Debug: drag double tap initiated")
 
                 state.last_f1_pos = pos
 
-    # --------------------------------------------------------------------------
-    # 2-FINGER ACTIONS, CONTINUOUS SCROLLING & PINCHING
-    # --------------------------------------------------------------------------
+    # --- 2-FINGER ACTIONS ---
     elif num_active == 2:
-        
         if state.first_time_2finger:
             state.first_time_2finger = False
-            
         else:
-            
             (cx, cy), spread = compute_centroid_and_spread(state.active_contacts)
 
-            # Initialize baseline metrics when starting a 2-finger contact
             if state.mf_start_centroid is None:
                 state.mf_start_centroid = (cx, cy)
                 state.mf_start_spread = spread
                 state.last_pinch_distance = spread
 
-            # Metrics relative to contact start
             dist_centroid = math.hypot(cx - state.mf_start_centroid[0], cy - state.mf_start_centroid[1])
             delta_spread_total = spread - state.mf_start_spread
 
-            # ==================================================================
-            # PHASE 1: EVALUATION / LATCHING (Only runs once per session)
-            # ==================================================================
             if state.active_gesture is None:
-                # Check Pinch Activation
                 if abs(delta_spread_total) >= config.pinch_activation_threshold:
                     state.active_gesture = "2F_PINCH"
                     state.scroll_active = True
-                    if debug: print("[Gesture] Latched: 2F Pinch")
-
-                # Check Scroll Activation
                 elif dist_centroid >= config.scroll_activation_threshold:
                     state.active_gesture = "2F_SCROLL"
                     state.scroll_active = True
-                    # Initialize last centroid directly from the current position to prevent scroll jumping
-                    #state.last_2finger_centroid = (cx, cy)
-                    if debug: print("[Gesture] Latched: 2F Scroll")
 
-            # ==================================================================
-            # PHASE 2: CONTINUOUS EXECUTION (Runs every frame once latched)
-            # ==================================================================
             if state.active_gesture == "2F_SCROLL" and config.feature_toggles.get("2f_scroll", False):
                 if isinstance(state.last_2finger_centroid, tuple):
                     dx = cx - state.last_2finger_centroid[0]
@@ -520,7 +541,6 @@ def process_touch_batch(reports):
                     step_y = int(state.scroll_acc_y)
 
                     if step_x != 0 or step_y != 0:
-                        # Standard Mouse Scroll
                         state.mouse.scroll(step_x, step_y)
                         state.scroll_acc_x -= step_x
                         state.scroll_acc_y -= step_y
@@ -537,10 +557,8 @@ def process_touch_batch(reports):
                         state.last_pinch_distance += steps * config.pinch_continuous_sensitivity   
                         
             state.first_time_2finger = True                 
-    
-    # --------------------------------------------------------------------------
-    # 3, 4, AND 5-FINGER GESTURES
-    # --------------------------------------------------------------------------
+
+    # --- 3, 4, AND 5-FINGER GESTURES ---
     elif num_active > 2:
         if state.active_gesture in ("2F_SCROLL", "2F_PINCH"):
             state.active_gesture = None
@@ -552,77 +570,51 @@ def process_touch_batch(reports):
         state.is_dragging_cursor = False
         (cx, cy), spread = compute_centroid_and_spread(state.active_contacts)
         
-        # Initialize multi-finger start baseline
         if state.mf_start_centroid is None:
             state.mf_start_centroid = (cx, cy)
             state.mf_start_spread = spread
             state.last_pinch_distance = spread
-            state.last_alt_tab_x = cx  # Baseline for Alt-Tab stepping  
+            state.last_alt_tab_x = cx  
 
         dx_total = cx - state.mf_start_centroid[0]
         dy_total = cy - state.mf_start_centroid[1]
         d_spread = spread - state.mf_start_spread
 
-        # ======================================================================
-        # PHASE 1: EVALUATION / LATCHING
-        # ======================================================================            
         if state.active_gesture is None:
-            
-            # --- 5-FINGER CONTINUOUS ALT-TAB SESSION ---
             if num_active >= 5 and config.feature_toggles.get("5f_alt_tab", False):
-                # Trigger when horizontal displacement crosses the activation threshold
-                #if abs(dx_total) >= config.alt_tab_activation_threshold:
                 state.active_gesture = "5F_ALT_TAB"
                 state.alt_tab_active = True
                 state.last_alt_tab_x = cx
-                
-                execute_mapped_action("alt_tab_initiate")
-                        
-                if debug: print("[Gesture] Latched: 5F Continuous Alt-Tab")
+                execute_mapped_action("ctrl_alt_tab_initiate")
 
-            # --- DISCRETE 3 & 4 FINGER GESTURES ---
             elif num_active in (3, 4):
                 prefix = f"{num_active}f_"
                 
-                # 1. Discrete Pinch In / Out
                 if abs(d_spread) >= config.pinch_discrete_threshold:
                     gesture_name = prefix + ("pinch_out" if d_spread > 0 else "pinch_in")
                     dispatch_gesture_event(gesture_name)
                     state.active_gesture = gesture_name
-                    if debug: print(f"[Gesture] Triggered {gesture_name}")                
 
-                # 2. Directional Swipes with Axis Dominance
                 elif abs(dx_total) >= config.swipe_threshold_x and abs(dx_total) > config.axis_dominance_ratio * abs(dy_total):
                     gesture_name = prefix + ("swipe_right" if dx_total > 0 else "swipe_left")
                     dispatch_gesture_event(gesture_name)
                     state.active_gesture = gesture_name
-                    if debug: print(f"[Gesture] Triggered {gesture_name}")
 
                 elif abs(dy_total) >= config.swipe_threshold_y and abs(dy_total) > config.axis_dominance_ratio * abs(dx_total):
                     gesture_name = prefix + ("swipe_down" if dy_total > 0 else "swipe_up")
                     dispatch_gesture_event(gesture_name)
                     state.active_gesture = gesture_name
-                    if debug: print(f"[Gesture] Triggered {gesture_name}")
 
-        # ======================================================================
-        # PHASE 2: CONTINUOUS EXECUTION (Runs every frame once latched)
-        # ======================================================================
         elif state.active_gesture == "5F_ALT_TAB":
             dx_step = cx - state.last_alt_tab_x
-            
-            # Step to next/previous window when passing step threshold
             if abs(dx_step) >= config.alt_tab_step_threshold:
                 if dx_step > 0:
-                    execute_mapped_action("alt_tab_next")
+                    execute_mapped_action("ctrl_alt_tab_next")
                 else:
-                    execute_mapped_action("alt_tab_prev")
-                # Reset step anchor to current position
+                    execute_mapped_action("ctrl_alt_tab_prev")
                 state.last_alt_tab_x = cx
-                    
-    # --------------------------------------------------------------------------
-    # ALL FINGERS LIFTED -> TAP DISPATCH & CLEANUP
-    # --------------------------------------------------------------------------
-        
+
+    # --- RESET / RELEASE ---
     elif num_active == 0:
         if state.is_left_held:
             state.mouse.release(Button.left)
@@ -631,17 +623,11 @@ def process_touch_batch(reports):
         if state.session_start_time is not None and state.active_gesture is None:
             session_duration = current_time - state.session_start_time
             
-            #print(f"debug; session_duration={session_duration:.3f}s, peak_contacts={state.peak_contact_count}, is_dragging={state.is_dragging_cursor}, scroll_active={state.scroll_active}")
-            
-            # Evaluate simultaneous taps if no scrolling/dragging occurred
             if session_duration <= config.max_tap_duration and not state.scroll_active:
-                if debug: print(f"[Gesture] Tap Evaluation: {state.peak_contact_count}F, Duration={session_duration:.3f}s, Moved={state.was_moved}, Dragging={state.is_dragging_cursor}")
                 if state.peak_contact_count == 1:
                     if not state.was_moved or not state.is_dragging_cursor:
                         dispatch_gesture_event("1f_tap")
                         state.last_f1_release_time = current_time
-                        #print("Debug: 1F Tap Detected")
-                        
 
                 elif state.peak_contact_count == 2:
                     dispatch_gesture_event("2f_tap")
@@ -652,14 +638,11 @@ def process_touch_batch(reports):
                 elif state.peak_contact_count >= 4:
                     dispatch_gesture_event("4f_tap")
 
-        # reset Alt tabbing state if active
         if state.alt_tab_active:
             execute_mapped_action("alt_tab_commit")
-            print("[Gesture] Alt-Tab Committed")
             state.alt_tab_active = False
             state.last_alt_tab_x = 0
             
-        # Full reset
         state.session_start_time = None
         state.peak_contact_count = 0
         state.f1_start_time = None
@@ -675,14 +658,14 @@ def process_touch_batch(reports):
         state.last_2finger_centroid = None
         state.was_moved = False
         state.press_hold_fired = False
-        state.first_time_2finger = True # extra round to prevent preemptive 2f latching before more fingers can be recognized - may induce slight latency on 2f pinch/scroll start, but prevents false positives
+        state.first_time_2finger = True
         
         state.active_gesture = None
         state.mf_start_centroid = None
         state.mf_start_spread = 0.0
 
 # ==============================================================================
-# THREAD LOOPS & MAIN
+# THREAD LOOPS
 # ==============================================================================
 def run_pen_interface(device_info):
     dev = hid.device()
@@ -690,7 +673,10 @@ def run_pen_interface(device_info):
         dev.open_path(device_info['path'])
         dev.set_nonblocking(True)
         print(f"[Thread Started] Pen Interface ({device_info.get('interface_number', 0)})")
-        while True:
+        while state.running:
+            if state.touch_paused:
+                time.sleep(0.5)
+                continue
             report = dev.read(2)
             if report:
                 parse_pen_packet(report)
@@ -701,48 +687,58 @@ def run_pen_interface(device_info):
     finally:
         dev.close()
 
-
 def contains_touch_down(report):
-    # Quick check if report contains STATUS_TOUCH_DOWN (0xC0)
     return STATUS_TOUCH_DOWN in [report[3], report[10]] 
 
 def run_touch_interface(device_info):
     dev = hid.device()
     try:
         dev.open_path(device_info['path'])
-        dev.set_nonblocking(False)
+        dev.set_nonblocking(True)
         print(f"[Thread Started] Touch Interface ({device_info.get('interface_number', 0)})")
         
         batch = []
         batch_start_time = None
-        window_duration = 0.010  # Base 10ms
+        window_duration = 0.010
 
-        while True:
-            report = dev.read(66) # max 7 blocks of 8 bytes + 2 header bytes = 66
-            current_time = time.time()
+        while state.running:
 
-            if report:
-                if not batch:
-                    batch_start_time = current_time
-                    window_duration = 0.005
 
-                # Adaptive extension: extend window if a new finger lands mid-batch
-                if contains_touch_down(report):
-                    batch_start_time = time.time() 
-                    window_duration = 0.020
+            report = dev.read(66)
+            if state.touch_paused:
+                print("[Touch Paused] Skipping touch processing...")
+                # Instantly clear active touch references on pause
+                if state.active_contacts:
+                    state.active_contacts.clear()
+                if batch:
+                    batch.clear()
+                time.sleep(0.5)
+            else:
+                
+                current_time = time.time()
 
-                batch.append(report)
+                if report:
+                    if not batch:
+                        batch_start_time = current_time
+                        window_duration = 0.005
 
-            if batch and (current_time - batch_start_time >= window_duration):
-                process_touch_batch(batch)
-                batch.clear()
+                    if contains_touch_down(report):
+                        batch_start_time = time.time() 
+                        window_duration = 0.020
+
+                    batch.append(report)
+
+                if batch and (current_time - batch_start_time >= window_duration):
+                    process_touch_batch(batch)
+                    batch.clear()
+                elif not report:
+                    time.sleep(0.002)
 
     except Exception as e:
         print(f"[Touch Error] {e}")
-        if debug: raise e
+        if DEBUG: raise e
     finally:
         dev.close()
-
 
 def main():
     print("Enumerating HID devices for Wacom Tablet...")
@@ -769,13 +765,15 @@ def main():
     pen_thread.start()
     touch_thread.start()
 
-    print("\n===  Wacom Touch Driver Running ===")
+    print("\n=== Wacom Touch Driver Running ===")
 
     try:
-        while True:
-            time.sleep(1)
-    except KeyboardInterrupt:
-        print("\nShutting down driver...")
+        from gui import launch_gui
+        launch_gui(state, config)
+    except SystemExit:
+        pass
+    finally:
+        print("\n=== Wacom Touch Driver successfully stopped ===")
 
 if __name__ == '__main__':
     main()
