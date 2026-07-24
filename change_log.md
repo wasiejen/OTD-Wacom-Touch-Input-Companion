@@ -1,4 +1,39 @@
-260724-1500:
+260724-1820 (KI generated):
+
+Here is a clean, structured summary you can drop directly into your `CHANGELOG.md` or release history to document the development of the GUI!
+
+---
+
+### 🎨 Settings GUI & System Tray Integration
+
+**Overview:**
+Added a full-featured Tkinter GUI and a `pystray` system tray app (`WTD`) to allow live tuning of motion parameters, feature toggles, action mappings, and advanced thresholds without restarting the driver.
+
+#### Key Features & Improvements
+
+* **Combined Features & Actions View:** Unified feature toggles and customizable action dropdowns into a single scrollable tab. Unmapped features dynamically display as toggleable rows.
+* **Thresholds & Advanced Settings:** Exposed all remaining timing, swipe, pinch, and activation threshold parameters from `DriverConfig`.
+* **Persistent Settings (`user.cfg`):** Added a "Save to File" option to auto-load and persist configuration settings across sessions using JSON.
+* **Dynamic Tray Icon:** High-DPI pre-rendered tray icon featuring a centered "WTD" badge with drop shadow and dynamic color state indicators (Green = Active, Red = Paused).
+* **Non-Blocking Notifications:** Replaced modal alert dialogs with auto-dismissing toast popups for seamless workflow updates.
+
+#### 🛠️ Challenges & Solutions
+
+* **Issue: State Mutability Across Threads (Pause Toggle / Unapplied Settings)**
+* *Problem:* Thread boundary issues and duplicate `state`/`config` module imports caused the GUI and tray callbacks to modify isolated memory copies, ignoring pause toggles and settings changes.
+* *Solution:* Refactored `launch_gui(state, config)` to explicitly pass live singleton references directly into the GUI and tray manager. Added immediate batch clearing on pause to discard buffered contacts instantly.
+
+
+* **Issue: Missing GUI Controls & Scrolling Layout**
+* *Problem:* Fixed-height window frames caused action buttons ("Apply", "Save", "Close") and scrollable canvas elements to cut off.
+* *Solution:* Redesigned the layout hierarchy using packed main container frames with explicit dynamic width binding on canvas configure events.
+
+
+* **Issue: PyInstaller Missing `hidapi` C-Extensions**
+* *Problem:* PyInstaller failed to bundle dynamic C-extension files (`hid.pyd`) from the virtual environment, leading to `ModuleNotFoundError: No module named 'hid'` when running compiled `.exe` files.
+* *Solution:* Added explicit binary data mapping (`--add-data "../.venv/Lib/site-packages/hid.cp312-win_amd64.pyd;."`) and hidden imports for `pynput` and `pystray` backend hooks.
+
+260724-1500 (mostly KI generated):
 
 features_implemented:
 - continuous 2-finger pinch-to-zoom:

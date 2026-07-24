@@ -8,8 +8,8 @@
 /build
 /dist
 /onefile-build
-touch_controller.spec
-user.cfg
+*.spec
+*.cfg
 *.exe
 *.dll
 *.cmd

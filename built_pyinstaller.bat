@@ -1,4 +1,8 @@
 @echo off
+
+:: Define release version tag
+set VERSION=v0.1
+
 :: Activate virtual environment
 call ../.venv/Scripts/activate.bat
 
@@ -31,7 +35,9 @@ set newname=OTD_Wacom_Touch_Driver_pyinst_%filedate%.exe
 :: Check if source file exists
 if exist %src% (
     :: Move and rename the file
-    copy /y %src% %dest%\OTD_Wacom_Touch_Driver_.exe
+    :: copy /y %src% %dest%\OTD_Wacom_Touch_Driver_.exe
+    :: Create a clean release file for GitHub Upload
+    copy /y %src% %dest%\OTD_Wacom_Touch_Driver_%VERSION%_win64.exe
     move /y %src% %dest%\%newname%
     echo Moved and renamed: %newname%
 ) else (
