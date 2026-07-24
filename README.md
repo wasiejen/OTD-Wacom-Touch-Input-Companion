@@ -10,15 +10,13 @@ While OpenTabletDriver excels at handling pen input, touch support on certain ol
 
 | Settings: Motion & Speed | Settings: Features & Actions |
 | :---: | :---: |
-| <img width="301" height="564" alt="grafik" src="https://github.com/user-attachments/assets/ac5b79c7-7b56-40b2-bd51-4f8210ae32d6" /> | <img width="301" height="564" alt="grafik" src="https://github.com/user-attachments/assets/8211b4a4-200f-49b3-b2ac-61bba4a66d05" />
- |
+| <img width="301" height="564" alt="grafik" src="https://github.com/user-attachments/assets/ac5b79c7-7b56-40b2-bd51-4f8210ae32d6" /> | <img width="301" height="564" alt="grafik" src="https://github.com/user-attachments/assets/8211b4a4-200f-49b3-b2ac-61bba4a66d05" /> |
 
 
 
 | Settings: Thresholds & Advanced | Tray Icon & Menu |
 | :---: | :---: |
-| <img width="301" height="564" alt="grafik" src="https://github.com/user-attachments/assets/dab487b9-977b-423d-a319-351a61fd9abe" />
- | <img src="<img width="433" height="179" alt="grafik" src="https://github.com/user-attachments/assets/e7da3518-93af-4bc6-8d8c-99df95d47244" /> |
+| <img width="301" height="564" alt="grafik" src="https://github.com/user-attachments/assets/dab487b9-977b-423d-a319-351a61fd9abe" /> | <img width="216" height="90" alt="grafik" src="https://github.com/user-attachments/assets/e7da3518-93af-4bc6-8d8c-99df95d47244" /> |
 
 ---
 
