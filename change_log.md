@@ -1,4 +1,9 @@
+
+260727-1452:
+-version change to 0.2
+
 260727-1438:
+
 - implemented press actions for all numbers of fingers. 
 - included option to use 5 finger gestures instead of 5 finger alt tabbing 
     - as soon as "f5_alt_tap" is enabled it is replacing/disabling all other 5 finger actions (taps, press, up, down, left, right, pinch_in and out)
@@ -12,7 +17,7 @@
 remaining bugs:
 - touch input not working or only partly working when the task manager window is active
     - running as admin fixes the issue
-    
+
 - touch input does not work when windows admin request menu is open
     - pynput mouse controller seems to not get any current position data to move the mouse relative with the provided deltas.
     - pynput throw as NoneType TypeError in a place I can not fix it.
