@@ -61,14 +61,14 @@ class DriverConfig:
         
         # Available Feature Toggles (True = Enabled, False = Disabled)        
         self.feature_toggles = {
+            "cursor_acceleration": True,
+            "scrolling_acceleration": True,
             "1f_tap" : True,
             "1f_press" : True,
             "1f_double_tap" : True,
-            "cursor_acceleration": True,
             "2f_tap" : False,
             "2f_press" : True,
             "2f_scroll" : True,
-            "scrolling_acceleration": True,
             "2f_pinch" : True,
             "3f_tap" : True,
             "3f_press" : False,
