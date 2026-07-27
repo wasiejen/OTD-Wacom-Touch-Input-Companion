@@ -1,3 +1,14 @@
+260727-1742:
+- smoother scrolling - removed assumption that only full integers could be applied - led to jumpy discreet scroll increaments instead of smooth scrolling
+    - now also additionally uses the acceleration function of the cursor movement :-)
+- made 1f_press and 1f_double_tap now configurable
+- added gesture support to select "left_hold"
+- if any gesture is used for action "left_hold" on 0 touch contact the corresponding "left_hold_release will automatically triggered.
+- added feature toggles for "cursor_acceleration" and "scrolling_acceleration"
+    "cursor_acceleration" - if disabled the base sensitivity setting will be used intepdent of cursor speed
+    "scrolling_acceleration" if disabled will fall back to scolling sensitivity setting without prior application of acceleration function
+
+-version change to 0.2.1
 
 260727-1452:
 -version change to 0.2

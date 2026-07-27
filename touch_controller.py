@@ -10,8 +10,8 @@ import os
 
 CONFIG_FILE_PATH = "user.cfg"
 
-DEBUG = False 
-# DEBUG = True  
+# DEBUG = False 
+DEBUG = True  
 
 # ==============================================================================
 # CONFIGURATION CLASS
@@ -23,17 +23,17 @@ class DriverConfig:
         self.cursor_deadzone = 0.0           # Distance (in px/packet) to discard as noise/jitter
         
         # Piecewise Linear Acceleration Settings
-        self.cursor_min_sens = 0.6          # Flat base multiplier for precision work
+        self.cursor_min_sens = 0.4          # Flat base multiplier for precision work
         self.cursor_max_sens = 2.5           # Hard cap multiplier (e.g., 2.5x to 3.0x base speed)
         self.speed_low = 5.0                 # Upper bound of flat precision zone (px/packet)
         self.speed_high = 50.0               # Speed at which max acceleration ceiling is reached
         
         # Scroll Sensitivity (Positive = Traditional, Negative = Natural)
-        self.scroll_sensitivity_x = -0.015   # Positive = Traditional, Negative = Natural
+        self.scroll_sensitivity_x = 0.015    # Positive = Natural, Negative = Traditional
         self.scroll_sensitivity_y = 0.03     # Natural Vertical Scrolling
         
         # Minimal movement required to declare a 2F intention
-        self.scroll_activation_threshold = 40.0  # Centroid distance in px before scrolling locks in
+        self.scroll_activation_threshold = 15.0  # Centroid distance in px before scrolling locks in
         self.pinch_activation_threshold = 50.0   # Spread change in px before pinching locks in
         
         # Gesture Thresholds
@@ -62,11 +62,13 @@ class DriverConfig:
         # Available Feature Toggles (True = Enabled, False = Disabled)        
         self.feature_toggles = {
             "1f_tap" : True,
-            "1f_press_drag" : True,
-            "1f_double_tap_drag" : True,
-            "2f_tap" : True,
-            "2f_press" : False,
+            "1f_press" : True,
+            "1f_double_tap" : True,
+            "cursor_acceleration": True,
+            "2f_tap" : False,
+            "2f_press" : True,
             "2f_scroll" : True,
+            "scrolling_acceleration": True,
             "2f_pinch" : True,
             "3f_tap" : True,
             "3f_press" : False,
@@ -93,6 +95,7 @@ class DriverConfig:
             "5f_swipe_down" : False,
             "5f_pinch_in" : False,
             "5f_pinch_out" : False,
+            #"0f" : True,
         }
         
         # Available Preset Actions
@@ -128,13 +131,14 @@ class DriverConfig:
         self.action_mapping = {
             # Taps
             "1f_tap": "left_click",
+            "1f_double_tap" : "left_hold",
             "2f_tap": "right_click",
             "3f_tap": "middle_click",
             "4f_tap": "task_view",
             "5f_tap": "task_view",
             
             # Hold Presses            
-            #"1f_press": "left_click",  # deactivated for 1f drag
+            "1f_press" : "left_hold",
             "2f_press": "right_click",  # should it be deactivated for instant 2f scroll and pinch?
             "3f_press": "middle_click",
             "4f_press": "task_view",
@@ -163,6 +167,8 @@ class DriverConfig:
             "5f_swipe_right": "next",  
             "5f_pinch_in": "window_minimize",
             "5f_pinch_out": "window_maximize",
+            
+            #"0f" : "left_hold_release",
         }
         
         # Attempt auto-load on startup
@@ -188,7 +194,6 @@ class DriverConfig:
                 "alt_tab_activation_threshold": self.alt_tab_activation_threshold,
                 "alt_tab_step_threshold": self.alt_tab_step_threshold,
                 "alt_tab_step_sensitivity": self.alt_tab_step_sensitivity,
-                
                 "cursor_deadzone": self.cursor_deadzone,
                 "cursor_min_sens": self.cursor_min_sens,
                 "cursor_max_sens": self.cursor_max_sens,
@@ -321,9 +326,11 @@ def execute_mapped_action(action_name):
         state.mouse.press(Button.left)
         state.is_left_held = True
         state.is_dragging_cursor = True
+        state.active_gesture = None
     elif action_name == "left_hold_release":
         state.mouse.release(Button.left)
         state.is_left_held = False
+        state.active_gesture = None
     elif action_name == "right_click":
         state.mouse.click(Button.right, 1)
     elif action_name == "middle_click":
@@ -412,21 +419,26 @@ def compute_centroid_and_spread(contacts):
     spread = sum(math.hypot(p[0] - cx, p[1] - cy) for p in pts) / n
     return (cx, cy), spread
 
-def calculate_piecewise_accelerated_delta(dx, dy, config):
-    speed = math.hypot(dx, dy)
+def calculate_piecewise_accelerated_delta(dx, dy, config, feature_toggle):
 
-    if speed < config.cursor_deadzone:
-        return 0.0, 0.0
+    if config.feature_toggles.get(feature_toggle, False):
+        speed = math.hypot(dx, dy)
 
-    if speed <= config.speed_low:
-        gain = config.cursor_min_sens
-    elif speed >= config.speed_high:
-        gain = config.cursor_max_sens
+        if speed < config.cursor_deadzone:
+            return 0.0, 0.0
+
+        if speed <= config.speed_low:
+            gain = config.cursor_min_sens
+        elif speed >= config.speed_high:
+            gain = config.cursor_max_sens
+        else:
+            slope = (config.cursor_max_sens - config.cursor_min_sens) / (config.speed_high - config.speed_low)
+            gain = config.cursor_min_sens + slope * (speed - config.speed_low)
+
+        return dx * gain, dy * gain
     else:
-        slope = (config.cursor_max_sens - config.cursor_min_sens) / (config.speed_high - config.speed_low)
-        gain = config.cursor_min_sens + slope * (speed - config.speed_low)
-
-    return dx * gain, dy * gain
+        return dx * config.cursor_min_sens, dy * config.cursor_min_sens
+        
 
 # ==============================================================================
 # PARSING & TOUCH PROCESSING
@@ -566,7 +578,8 @@ def process_touch_report(report):
                     raw_dy = pos[1] - state.last_f1_pos[1]
                     
                     if raw_dx != 0 or raw_dy != 0:
-                        scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(raw_dx, raw_dy, config)
+                        scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(raw_dx, raw_dy, config,"cursor_acceleration")
+  
                         state.cursor_acc_x += scaled_dx
                         state.cursor_acc_y += scaled_dy
                         
@@ -581,11 +594,12 @@ def process_touch_report(report):
                 if (current_time - state.last_f1_tap_time) < config.double_tap_timeout and state.max_drift <= config.tap_max_movement:
                     state.is_dragging_cursor = True
                     
-                    if (config.feature_toggles.get("1f_double_tap_drag", False) 
+                    if (config.feature_toggles.get("1f_double_tap", False) 
                             and state.drag_candidate 
                             and not state.is_left_held
                         ):
-                        execute_mapped_action("left_hold")
+                        dispatch_gesture_event("1f_double_tap")
+                        #execute_mapped_action("left_hold")
                         if DEBUG: print("[Gesture] 1F Double Tap Drag Initiated")
 
                 state.last_f1_pos = pos
@@ -613,17 +627,16 @@ def process_touch_report(report):
             if isinstance(state.last_2finger_centroid, tuple):
                 dx = cx - state.last_2finger_centroid[0]
                 dy = cy - state.last_2finger_centroid[1]
+                # print(f"dx,dy: {dx,dy}")    
 
-                state.scroll_acc_x += dx * config.scroll_sensitivity_x
-                state.scroll_acc_y += dy * config.scroll_sensitivity_y
-
-                step_x = int(state.scroll_acc_x)
-                step_y = int(state.scroll_acc_y)
-
+                scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(dx, dy, config, "scrolling_acceleration")
+                
+                step_x = scaled_dx * -config.scroll_sensitivity_x
+                step_y = scaled_dy * config.scroll_sensitivity_y
+                
                 if step_x != 0 or step_y != 0:
+                    # print(f"step_x,step_y: {step_x,step_y}")  
                     state.mouse.scroll(step_x, step_y)
-                    state.scroll_acc_x -= step_x
-                    state.scroll_acc_y -= step_y
 
             state.last_2finger_centroid = (cx, cy)
 
@@ -753,15 +766,15 @@ def process_touch_report(report):
     # --- PRESS HANDLING ---
     if state.active_gesture is None and hold_duration >= config.press_hold_duration and not state.was_moved:
         # hold_duration = current_time - state.start_time[num_active]
-        if num_active == 1 and config.feature_toggles.get("1f_press_drag", False):
+        if num_active == 1 and config.feature_toggles.get("1f_press", False):
             if (not state.is_left_held 
                     and state.max_drift <= config.tap_max_movement
                     and not state.scroll_active
                     ):
-                execute_mapped_action("left_hold")
+                dispatch_gesture_event("1f_press")
                 if DEBUG: print("[Gesture] 1F Press & Hold Drag Initiated")
                 
-        elif num_active >= 1 and config.feature_toggles.get(f"{num_active}f_press", False):    
+        elif num_active >= 2 and config.feature_toggles.get(f"{num_active}f_press", False):    
             if (hold_duration >= config.press_hold_duration 
                     and dist_centroid <= config.tap_max_movement
                     and abs(delta_spread_total) <= config.pinch_discrete_threshold

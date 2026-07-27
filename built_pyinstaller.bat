@@ -1,7 +1,7 @@
 @echo off
 
 :: Define release version tag
-set VERSION=v0.2
+set VERSION=v0.2.1
 
 :: Activate virtual environment
 call ../.venv/Scripts/activate.bat
