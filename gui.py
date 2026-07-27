@@ -188,6 +188,7 @@ class SettingsWindow(tk.Toplevel):
             ("Double Tap Timeout (s):", "double_tap_timeout", self.config.double_tap_timeout),
             ("Tap Max Movement (px):", "tap_max_movement", self.config.tap_max_movement),
             ("Press & Hold Duration (s):", "press_hold_duration", self.config.press_hold_duration),
+            ("Gesture Session Duration (s):", "max_gesture_touch_session_duration", self.config.max_gesture_touch_session_duration),
             ("Swipe Threshold X (px):", "swipe_threshold_x", self.config.swipe_threshold_x),
             ("Swipe Threshold Y (px):", "swipe_threshold_y", self.config.swipe_threshold_y),
             ("Axis Dominance Ratio:", "axis_dominance_ratio", self.config.axis_dominance_ratio),
@@ -197,6 +198,7 @@ class SettingsWindow(tk.Toplevel):
             ("Pinch Activation Threshold:", "pinch_activation_threshold", self.config.pinch_activation_threshold),
             ("Alt-Tab Activation Threshold:", "alt_tab_activation_threshold", self.config.alt_tab_activation_threshold),
             ("Alt-Tab Step Threshold:", "alt_tab_step_threshold", self.config.alt_tab_step_threshold),
+            ("Alt-Tab Step Sensitivity:", "alt_tab_step_sensitivity", self.config.alt_tab_step_sensitivity),
         ]
 
         frame = ttk.LabelFrame(scroll_frame, text=" Advanced Thresholds & Timings ", padding=10)

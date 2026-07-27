@@ -1,7 +1,7 @@
 @echo off
 
 :: Define release version tag
-set VERSION=v0.1
+set VERSION=v0.1.2
 
 :: Activate virtual environment
 call ../.venv/Scripts/activate.bat
@@ -30,7 +30,8 @@ set filedate=%datetime:~2,6%-%datetime:~8,4%
 set filedate=%filedate: =0%
 
 :: Define new filename (with date/time suffix)
-set newname=OTD_Wacom_Touch_Driver_pyinst_%filedate%.exe
+set newname=OTD_Wacom_Touch_Driver_pyinst_%VERSION%_%filedate%.exe
+::set newname=OTD_Wacom_Touch_Driver_pyinst_%filedate%.exe
 
 :: Check if source file exists
 if exist %src% (
