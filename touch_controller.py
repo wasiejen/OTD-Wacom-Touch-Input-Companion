@@ -33,8 +33,8 @@ class DriverConfig:
         self.scroll_sensitivity_y = 0.03     # Natural Vertical Scrolling
         
         # Minimal movement required to declare a 2F intention
-        self.scroll_activation_threshold = 15.0  # Centroid distance in px before scrolling locks in
-        self.pinch_activation_threshold = 50.0   # Spread change in px before pinching locks in
+        self.scroll_activation_threshold = 30.0  # Centroid distance in px before scrolling locks in
+        self.pinch_activation_threshold = 40.0   # Spread change in px before pinching locks in
         
         # Gesture Thresholds
         self.max_tap_duration = 0.250       # Seconds
@@ -643,11 +643,11 @@ def process_touch_report(report):
         elif state.active_gesture == "2F_PINCH" and config.feature_toggles.get("2f_pinch", False):
             delta_pinch = spread - state.last_pinch_distance
             if abs(delta_pinch) >= config.pinch_continuous_sensitivity:
-                steps = int(delta_pinch / config.pinch_continuous_sensitivity)
+                steps = delta_pinch / config.pinch_continuous_sensitivity
                 if steps != 0:
                     with state.keyboard.pressed(Key.ctrl):
                         state.mouse.scroll(0, steps)
-                    state.last_pinch_distance += steps * config.pinch_continuous_sensitivity     
+                    state.last_pinch_distance += delta_pinch     
                
 
     # --- 3, 4, AND 5-FINGER GESTURES ---

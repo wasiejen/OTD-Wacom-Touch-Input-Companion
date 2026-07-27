@@ -1,3 +1,8 @@
+
+260727-1911:
+
+- 2f_pinch
+
 260727-1742:
 - smoother scrolling - removed assumption that only full integers could be applied - led to jumpy discreet scroll increaments instead of smooth scrolling
     - now also additionally uses the acceleration function of the cursor movement :-)
