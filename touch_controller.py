@@ -55,8 +55,8 @@ class DriverConfig:
         self.pinch_discrete_threshold = 50.0    # Distance change needed for 3F/4F pinch trigger
         
         # 5-Finger Alt-Tab Configuration
-        self.alt_tab_activation_threshold = 30.0  # px distance to initiate Alt-Tab overlay
-        self.alt_tab_step_threshold = 45.0        # px distance per window switch step 
+        self.alt_tab_activation_threshold = 40.0  # px distance to initiate Alt-Tab overlay
+        self.alt_tab_step_threshold = 30.0        # px distance per window switch step 
         self.alt_tab_step_sensitivity = 0.2         # packets needed to move one step
         
         # Available Feature Toggles (True = Enabled, False = Disabled)        

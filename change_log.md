@@ -12,7 +12,9 @@
 - adjusted default cursor sensitivity and accelerations variables
 - gestures now can only be triggered when not finger was in contact before and a new config variable, controls how long after initial touch contact a gesture can be triggered: "max_gesture_touch_session_duration = 0.300"
 - added a config variable for "5f_alt_tap" to control the sensitivity: "alt_tab_step_sensitivity = 0.2"
-- fixed a lot of minor behavior issues when changing touch contact numbers (fingers) and made it a bit more easy to not fall into a state when no action can be taken and all fingers must be lifted again to reset everything. (e.g. now stepping down from multitouch and not gesture was triggered to 1f enables move again)
+- fixed a lot of behavior issues in general
+    - when changing touch contact numbers (fingers) and made it a bit more easy to not fall into a state when no action can be taken and all fingers must be lifted again to reset everything. (e.g. now stepping down from multitouch and not gesture was triggered to 1f enables move again)
+    - cursor jumping when last finger was not the first finger in contact
 
 remaining bugs:
 - touch input not working or only partly working when the task manager window is active
@@ -67,10 +69,6 @@ remaining bugs:
 
 
 260724-1820 (KI generated):
-
-Here is a clean, structured summary you can drop directly into your `CHANGELOG.md` or release history to document the development of the GUI!
-
----
 
 ### 🎨 Settings GUI & System Tray Integration
 

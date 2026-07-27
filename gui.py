@@ -82,8 +82,8 @@ class SettingsWindow(tk.Toplevel):
         self.config = config_ref
 
         self.title("Wacom Touch Driver Settings")
-        self.geometry("400x720")
-        self.minsize(400, 720)
+        self.geometry("400x1100")
+        self.minsize(400, 1100)
 
         main_container = ttk.Frame(self)
         main_container.pack(fill="both", expand=True, padx=10, pady=10)
