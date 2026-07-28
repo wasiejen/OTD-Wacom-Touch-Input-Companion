@@ -1,4 +1,12 @@
 
+260728-2031:
+- replaced pynput completely with SendInput via WIN32.dll and CTYPES.
+- added vk_codes dict as file (maybe a bit too much :_) )
+- introduced action dispatcher to get rid of the elif execute destinction
+- added actions for media keys
+- changed pinch sensitivity behavior - now a multiplier instead of step change
+- implemented continues zoom - ctrl now is only pressed on start of 2f_pinch and released when finger count changes again - thus a very smooth zoom :-)
+
 260728-0949:
 
 - with each reconnection attempt now searches for changed hid interfaces to reconnect to the currently connected device.
@@ -7,7 +15,7 @@
 - updated gui (via AI)
     - display both set of motion parameters
     - added a tooltip functionality for motion and threshold parameters
-    - scolling function to easier access to feature toggles farther down
+    - scolling function to easier access to feature toggles farther down the list
 
 260727-2326:
 

@@ -2,23 +2,267 @@ import hid
 import time
 import math
 import threading
-from pynput.mouse import Button, Controller as MouseController
-from pynput.keyboard import Key, Controller as KeyboardController
-
 import json
 import os
 import ctypes
+from contextlib import contextmanager
 
-# Win32 Constants
-MOUSEEVENTF_MOVE = 0x0001
-MOUSEEVENTF_ABSOLUTE = 0x8000
-
+from vk_codes import vk_codes_dict  # Import vk_code dictionary
 
 CONFIG_FILE_PATH = "user.cfg"
 
 DEBUG = False 
 # DEBUG = True  
 
+
+# ==============================================================================
+# WIN32.dll CTYPES (low level windows input)
+# ==============================================================================
+
+# Win32 Constants
+INPUT_MOUSE = 0
+INPUT_KEYBOARD = 1
+
+# Movement & Coordinate Control
+MOUSEEVENTF_MOVE           = 0x0001  # Mouse movement occurred
+MOUSEEVENTF_ABSOLUTE       = 0x8000  # Map dx/dy to absolute screen coords (0 to 65535)
+MOUSEEVENTF_VIRTUALDESK    = 0x4000  # Map coords to multi-monitor virtual desktop
+MOUSEEVENTF_MOVE_NOCOALESCE= 0x2000  # Do not combine mouse movement messages
+
+# Primary & Secondary Buttons
+MOUSEEVENTF_LEFTDOWN       = 0x0002  # Left button down
+MOUSEEVENTF_LEFTUP         = 0x0004  # Left button up
+MOUSEEVENTF_RIGHTDOWN      = 0x0008  # Right button down
+MOUSEEVENTF_RIGHTUP        = 0x0010  # Right button up
+MOUSEEVENTF_MIDDLEDOWN     = 0x0020  # Middle button down
+MOUSEEVENTF_MIDDLEUP       = 0x0040  # Middle button up
+
+# X-Buttons (Side / Extra Buttons)
+MOUSEEVENTF_XDOWN          = 0x0080  # An X-button was pressed
+MOUSEEVENTF_XUP            = 0x0100  # An X-button was released
+
+# Wheels / Panning
+MOUSEEVENTF_WHEEL          = 0x0800  # Vertical scroll wheel movement
+MOUSEEVENTF_HWHEEL         = 0x1000  # Horizontal scroll wheel movement
+
+# Keyboard Event Flags
+KEYEVENTF_KEYDOWN = 0x0000
+KEYEVENTF_KEYUP = 0x0002
+
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+class KEYBDINPUT(ctypes.Structure):
+    _fields_ = [
+        ("wVk", ctypes.c_ushort),
+        ("wScan", ctypes.c_ushort),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+class HARDWAREINPUT(ctypes.Structure):
+    _fields_ = [
+        ("uMsg", ctypes.c_ulong),
+        ("wParamL", ctypes.c_ushort),
+        ("wParamH", ctypes.c_ushort),
+    ]
+
+class INPUT(ctypes.Structure):
+    class _INPUT(ctypes.Union):
+        _fields_ = [
+            ("mi", MOUSEINPUT),
+            ("ki", KEYBDINPUT),
+            ("hi", HARDWAREINPUT),
+        ]
+
+    _anonymous_ = ("_input",)
+    _fields_ = [
+        ("type", ctypes.c_ulong),
+        ("_input", _INPUT),
+    ]
+
+# ==============================================================================
+# HELPER FUNCTIONS - INPUT CTYPES
+# ==============================================================================
+ 
+def send_mouse_click(dw_flags, data=0):
+    extra = ctypes.c_ulong(0)
+    ii = INPUT()
+    ii.type = INPUT_MOUSE
+    ii.mi = MOUSEINPUT(0, 0, data, dw_flags, 0, ctypes.pointer(extra))
+    ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
+
+
+def send_mouse_scroll(dx, dy):
+    """Handles vertical and horizontal scrolling."""
+    if dy != 0:
+        # Wheel delta is typically 120 units per notch
+        send_mouse_click(MOUSEEVENTF_WHEEL, int(dy))
+    if dx != 0:
+        send_mouse_click(MOUSEEVENTF_HWHEEL, int(dx))
+        
+def _send_wheel_event(flags, delta):
+    """Direct low-level injector with correct signed DWORD bitmasking."""
+    extra = ctypes.c_ulong(0)
+    
+    # Pack signed 32-bit int safely into DWORD bit-pattern
+    dw_data = ctypes.c_ulong(delta & 0xFFFFFFFF)
+
+    ii = INPUT()
+    ii.type = INPUT_MOUSE
+    ii.mi = MOUSEINPUT(0, 0, dw_data, flags, 0, ctypes.pointer(extra))
+    
+    ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
+        
+def send_ctrl_scroll(dx, dy):
+    """Sends Ctrl + Scroll event via ctypes."""
+    ctrl_vk = vk_codes_dict["ctrl"]
+    
+    print(f"dx: {dx}, dy: {dy}")
+    # 1. Press Ctrl down
+    send_key(ctrl_vk, release=False)
+    # 2. Inject scroll delta
+    send_mouse_scroll(dx, dy)
+    # 3. Release Ctrl
+    send_key(ctrl_vk, release=True)
+
+def send_key(vk_code, release=False):
+    """Sends a key down or key up event using a VK code from vk_codes.py."""
+    extra = ctypes.c_ulong(0)
+    flags = KEYEVENTF_KEYUP if release else KEYEVENTF_KEYDOWN
+    ii = INPUT()
+    ii.type = INPUT_KEYBOARD
+    ii.ki = KEYBDINPUT(
+        vk_code, 0, flags, 0, ctypes.pointer(extra)
+    )
+    ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
+
+def send_key_shortcut(*vk_codes):
+    """Taps a combination like Win + Tab or Ctrl + Z."""
+    for code in vk_codes:
+        send_key(code, release=False)
+    for code in reversed(vk_codes):
+        send_key(code, release=True) 
+        
+def send_real_mouse_move(dx: int, dy: int):
+    """Sends a hardware-level mouse move event to Windows, forcing hover states."""
+    extra = ctypes.c_ulong(0)
+    ii = INPUT()
+    ii.type = 0  # INPUT_MOUSE
+    ii.mi = MOUSEINPUT(int(dx), int(dy), 0, MOUSEEVENTF_MOVE, 0, ctypes.pointer(extra))
+    
+    ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
+        
+@contextmanager
+def hold_key(vk_code):
+    send_key(vk_code, release=False)
+    try:
+        yield
+    finally:
+        send_key(vk_code, release=True)
+
+    # # Usage:
+    # with hold_key(vk_codes_dict["ctrl"]):
+    #     send_mouse_scroll(0, steps)
+    
+# ==============================================================================
+# ACTION DISPATCHER
+# ==============================================================================
+
+# Helper to cleanly bind parameters for simple keys
+def key_tap(*vk_keys):
+    return lambda: send_key_shortcut(*(vk_codes_dict[k] for k in vk_keys))
+
+def press_key(vk_code):
+    send_key(vk_codes_dict[vk_code], release=False)
+    
+def release_key(vk_code):
+    send_key(vk_codes_dict[vk_code], release=True)
+
+def handle_left_hold():
+    send_mouse_click(MOUSEEVENTF_LEFTDOWN)
+    state.is_left_held = True
+    state.is_dragging_cursor = True
+    state.active_gesture = None
+    
+def handle_left_hold_release():
+    send_mouse_click(MOUSEEVENTF_LEFTUP)
+    state.is_left_held = False
+    state.active_gesture = None
+    
+# The Dispatch Table
+ACTION_DISPATCH = {
+    # Mouse actions
+    "left_click": lambda: (send_mouse_click(MOUSEEVENTF_LEFTDOWN), send_mouse_click(MOUSEEVENTF_LEFTUP)),
+    "right_click": lambda: (send_mouse_click(MOUSEEVENTF_RIGHTDOWN), send_mouse_click(MOUSEEVENTF_RIGHTUP)),
+    "middle_click": lambda: (send_mouse_click(MOUSEEVENTF_MIDDLEDOWN), send_mouse_click(MOUSEEVENTF_MIDDLEUP)),
+    
+    # State-based holds (delegated to custom handlers if needed)
+    "left_hold": handle_left_hold, 
+    "left_hold_release": handle_left_hold_release,
+    
+    # Windows Shortcuts
+    "task_view": key_tap("lwin", "tab"),
+    "show_desktop": key_tap("lwin", "d"),
+    "window_up": key_tap("lwin", "up"),
+    "window_down": key_tap("lwin", "down"),
+    "window_left": key_tap("lwin", "left"),  
+    "window_right": key_tap("lwin", "right"),
+    "window_minimize": key_tap("lwin", "down"),
+    "window_maximize": key_tap("lwin", "up"),  
+      
+    "undo": key_tap("ctrl", "z"),
+    "redo": key_tap("ctrl", "y"),
+    "prev": key_tap("alt", "left"), 
+    "next": key_tap("alt", "right"),
+    
+    # Media Keys
+    "media_play_pause": key_tap("media_play"),
+    "media_next": key_tap("media_next"),
+    "media_prev": key_tap("media_prev"),
+    "volume_up": key_tap("volume_up"),
+    "volume_down": key_tap("volume_down"),
+    "volume_mute": key_tap("volume_mute"),
+    
+    # Navigation
+    "ctrl_alt_tab_initiate": key_tap("ctrl", "alt", "tab"),
+    "ctrl_alt_tab_next": key_tap("right"),
+    "ctrl_alt_tab_prev": key_tap("left"),
+    "ctrl_alt_tab_commit": key_tap("enter"),
+
+}
+
+def execute_mapped_action(action_name):
+    if DEBUG:
+        print(f"[Gesture] Action triggered: {action_name}")
+
+    action_func = ACTION_DISPATCH.get(action_name)
+    if action_func:
+        action_func()
+    elif action_name is not None:
+        print(f"[Warning] Unknown action name: {action_name}")
+
+
+
+def dispatch_gesture_event(event_type):
+    if config.feature_toggles.get(event_type, False):
+        mapping = config.action_mapping.get(event_type, None)
+        if callable(mapping):
+            action_name = mapping(state)
+        else:
+            action_name = mapping
+        
+        state.active_gesture = event_type
+        execute_mapped_action(action_name)
+        
 # ==============================================================================
 # CONFIGURATION CLASS
 # ==============================================================================
@@ -38,8 +282,8 @@ class DriverConfig:
         
         # Piecewise Linear Acceleration Settings Scrolling
         self.scroll_deadzone = 0.0           # Distance (in px/packet) to discard as noise/jitter
-        self.scroll_min_sens = 0.01          # Flat base multiplier for precision work
-        self.scroll_max_sens = 0.3           # Hard cap multiplier (e.g., 2.5x to 3.0x base speed)
+        self.scroll_min_sens = 1.2          # Flat base multiplier for precision work
+        self.scroll_max_sens = 36.0           # Hard cap multiplier (e.g., 2.5x to 3.0x base speed)
         self.scroll_speed_low = 12.0                 # Upper bound of flat precision zone (px/packet)
         self.scroll_speed_high = 60.0               # Speed at which max acceleration ceiling is reached 
         # Scroll Sensitivity (Positive = Traditional, Negative = Natural)
@@ -66,7 +310,7 @@ class DriverConfig:
         self.axis_dominance_ratio = 1.3  # Primary axis must be 1.3x larger than cross axis
         
         # Pinch Thresholds
-        self.pinch_continuous_sensitivity = 10.0 # Pixels per continuous zoom step
+        self.pinch_sensitivity = 1.0 # Pixels per continuous zoom step
         self.pinch_discrete_threshold = 50.0    # Distance change needed for 3F/4F pinch trigger
         
         # 5-Finger Alt-Tab Configuration
@@ -141,6 +385,7 @@ class DriverConfig:
             # "ctrl_alt_tab_prev",
             # "ctrl_alt_tab_commit"
         ]
+        self.AVAILABLE_ACTIONS = list(ACTION_DISPATCH.keys())
 
         # Mappable Actions
         self.action_mapping = {
@@ -202,7 +447,7 @@ class DriverConfig:
                 "swipe_threshold_x": self.swipe_threshold_x,
                 "swipe_threshold_y": self.swipe_threshold_y,
                 "axis_dominance_ratio": self.axis_dominance_ratio,
-                "pinch_continuous_sensitivity": self.pinch_continuous_sensitivity,
+                "pinch_sensitivity": self.pinch_sensitivity,
                 "pinch_discrete_threshold": self.pinch_discrete_threshold,
                 "scroll_activation_threshold": self.scroll_activation_threshold,
                 "pinch_activation_threshold": self.pinch_activation_threshold,
@@ -268,8 +513,8 @@ class TabletState:
     def __init__(self):
         self.touch_paused = False
         self.running = True
-        self.mouse = MouseController()
-        self.keyboard = KeyboardController()
+        # self.mouse = MouseController()
+        # self.keyboard = KeyboardController()
         self.pen_in_proximity = False
         
         # Active Contacts: slot_id -> (x, y)
@@ -327,97 +572,6 @@ class TabletState:
 
 state = TabletState()
 
-# ==============================================================================
-# ACTION DISPATCHER
-# ==============================================================================
-def execute_mapped_action(action_name):
-    if DEBUG: print(f"[Gesture] Action triggered: {action_name}")
-        
-    if action_name is None:
-        print("[Action] No action mapped for this gesture.")
-    elif action_name == "left_click":
-        state.mouse.click(Button.left, 1)
-    elif action_name == "left_hold":
-        state.mouse.press(Button.left)
-        state.is_left_held = True
-        state.is_dragging_cursor = True
-        state.active_gesture = None
-    elif action_name == "left_hold_release":
-        state.mouse.release(Button.left)
-        state.is_left_held = False
-        state.active_gesture = None
-    elif action_name == "right_click":
-        state.mouse.click(Button.right, 1)
-    elif action_name == "middle_click":
-        state.mouse.click(Button.middle, 1)
-    elif action_name == "task_view":
-        with state.keyboard.pressed(Key.cmd):
-            state.keyboard.tap(Key.tab)
-    elif action_name == "show_desktop":
-        with state.keyboard.pressed(Key.cmd):
-            state.keyboard.tap('d')
-    elif action_name == "window_up":
-        with state.keyboard.pressed(Key.cmd):
-            state.keyboard.tap(Key.up)
-    elif action_name == "window_down":
-        with state.keyboard.pressed(Key.cmd):
-            state.keyboard.tap(Key.down)
-    elif action_name == "window_left":
-        with state.keyboard.pressed(Key.cmd):
-            state.keyboard.tap(Key.left)
-    elif action_name == "window_right":
-        with state.keyboard.pressed(Key.cmd):
-            state.keyboard.tap(Key.right)
-    elif action_name == "window_maximize":
-        with state.keyboard.pressed(Key.cmd):
-            state.keyboard.tap(Key.up)
-    elif action_name == "window_minimize":
-        with state.keyboard.pressed(Key.cmd):
-            state.keyboard.tap(Key.down)
-    elif action_name == "desktop_left":
-        with state.keyboard.pressed(Key.cmd), state.keyboard.pressed(Key.ctrl):
-            state.keyboard.tap(Key.left)
-    elif action_name == "desktop_right":
-        with state.keyboard.pressed(Key.cmd), state.keyboard.pressed(Key.ctrl):
-            state.keyboard.tap(Key.right)
-    elif action_name == "next_window":
-        with state.keyboard.pressed(Key.alt):
-            state.keyboard.tap(Key.tab)
-    elif action_name == "prev_window":
-        with state.keyboard.pressed(Key.alt), state.keyboard.pressed(Key.shift):
-            state.keyboard.tap(Key.tab)
-    elif action_name == "next":
-        with state.keyboard.pressed(Key.alt):
-            state.keyboard.tap(Key.right)
-    elif action_name == "prev":
-        with state.keyboard.pressed(Key.alt):
-            state.keyboard.tap(Key.left)
-    elif action_name == "undo":
-        with state.keyboard.pressed(Key.ctrl):
-            state.keyboard.tap("z")
-    elif action_name == "redo":
-        with state.keyboard.pressed(Key.ctrl):
-            state.keyboard.tap("y")
-    elif action_name == "ctrl_alt_tab_initiate":
-        with state.keyboard.pressed(Key.ctrl), state.keyboard.pressed(Key.alt):
-            state.keyboard.tap(Key.tab)
-    elif action_name == "ctrl_alt_tab_next":
-        state.keyboard.tap(Key.right)
-    elif action_name == "ctrl_alt_tab_prev":
-        state.keyboard.tap(Key.left)
-    elif action_name == "ctrl_alt_tab_commit":
-        state.keyboard.tap(Key.enter)
-
-def dispatch_gesture_event(event_type):
-    if config.feature_toggles.get(event_type, False):
-        mapping = config.action_mapping.get(event_type, None)
-        if callable(mapping):
-            action_name = mapping(state)
-        else:
-            action_name = mapping
-        
-        state.active_gesture = event_type
-        execute_mapped_action(action_name)
 
 # ==============================================================================
 # HELPER FUNCTIONS
@@ -453,36 +607,9 @@ def calculate_piecewise_accelerated_delta(dx, dy, config, feature_toggle):
         return dx * gain * sens_x, dy * gain * sens_y
     else:
         return dx * min_sens * sens_x, dy * min_sens * sens_y
-    
-class MOUSEINPUT(ctypes.Structure):
-    _fields_ = [
-        ("dx", ctypes.c_long),
-        ("dy", ctypes.c_long),
-        ("mouseData", ctypes.c_ulong),
-        ("dwFlags", ctypes.c_ulong),
-        ("time", ctypes.c_ulong),
-        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
-    ]
 
-class INPUT(ctypes.Structure):
-    class _INPUT(ctypes.Union):
-        _fields_ = [("mi", MOUSEINPUT)]
-    _anonymous_ = ("_input",)
-    _fields_ = [
-        ("type", ctypes.c_ulong),
-        ("_input", _INPUT),
-    ]
 
-def send_real_mouse_move(dx: int, dy: int):
-    """Sends a hardware-level mouse move event to Windows, forcing hover states."""
-    extra = ctypes.c_ulong(0)
-    ii_ = INPUT()
-    ii_.type = 0  # INPUT_MOUSE
-    ii_.mi = MOUSEINPUT(int(dx), int(dy), 0, MOUSEEVENTF_MOVE, 0, ctypes.pointer(extra))
-    
-    ctypes.windll.user32.SendInput(1, ctypes.pointer(ii_), ctypes.sizeof(ii_))
-        
-
+            
 # ==============================================================================
 # PARSING & TOUCH PROCESSING
 # ==============================================================================
@@ -575,6 +702,9 @@ def process_touch_report(report):
 
     num_active = len(state.active_contacts)
     
+    if num_active != 2 and state.active_gesture == "2F_PINCH":
+        release_key("ctrl")
+    
     if state.session_start_time is not None:
         session_duration = current_time - state.session_start_time
         #if DEBUG: print(f"Debug: session duration: {session_duration}")
@@ -640,7 +770,6 @@ def process_touch_report(report):
                             move_y = int(state.cursor_acc_y)
                             
                             if move_x != 0 or move_y != 0:
-                                # state.mouse.move(move_x, move_y)
                                 send_real_mouse_move(move_x, move_y)
                                 state.cursor_acc_x -= move_x
                                 state.cursor_acc_y -= move_y
@@ -672,6 +801,7 @@ def process_touch_report(report):
             if state.active_gesture is None:
                 if abs(delta_spread_total) >= config.pinch_activation_threshold:
                     state.active_gesture = "2F_PINCH"
+                    press_key("ctrl")
                     state.scroll_active = True
                 elif dist_centroid >= config.scroll_activation_threshold:
                     state.active_gesture = "2F_SCROLL"
@@ -690,18 +820,20 @@ def process_touch_report(report):
                     
                     if step_x != 0 or step_y != 0:
                         # print(f"step_x,step_y: {step_x,step_y}")  
-                        state.mouse.scroll(step_x, step_y)
+                        send_mouse_scroll(step_x, step_y)
 
                 state.last_2finger_centroid = (cx, cy)
 
             elif state.active_gesture == "2F_PINCH" and config.feature_toggles.get("2f_pinch", False):
                 delta_pinch = spread - state.last_pinch_distance
-                if abs(delta_pinch) >= config.pinch_continuous_sensitivity:
-                    steps = delta_pinch / config.pinch_continuous_sensitivity
-                    if steps != 0:
-                        with state.keyboard.pressed(Key.ctrl):
-                            state.mouse.scroll(0, steps)
-                        state.last_pinch_distance += delta_pinch     
+                send_mouse_scroll(0, delta_pinch * config.pinch_sensitivity)
+                state.last_pinch_distance += delta_pinch 
+                
+                # if abs(delta_pinch) >= config.pinch_continuous_sensitivity:
+                #     steps = delta_pinch / config.pinch_continuous_sensitivity
+                #     if steps != 0:
+                #         send_ctrl_scroll(0, steps)
+                #         state.last_pinch_distance += delta_pinch     
                 
 
         # --- 3, 4, AND 5-FINGER GESTURES ---
@@ -866,7 +998,7 @@ def run_pen_interface(device_info):
                     time.sleep(0.1)
         except OSError:
             if oserror_count == 0:
-                print(f"[Pen Interface][Pen Error] read error thrown")
+                print(f"[Pen Interface][Pen Error] read error")
             oserror_count += 1
             pass    
         
@@ -922,7 +1054,7 @@ def run_touch_interface(device_info):
                     #     time.sleep(0.002)
         except OSError:
             if oserror_count == 0:
-                print(f"[Touch Interface][Touch Error] read error thrown")
+                print(f"[Touch Interface][Touch Error] read error")
             oserror_count += 1
             pass 
         except Exception as e:
@@ -947,7 +1079,6 @@ def run_touch_interface(device_info):
 
 def fetch_interfaces():
     pen_device, touch_device = None, None
-
     for dev in hid.enumerate():
         vendor_match = (VENDOR_ID is None) or (dev['vendor_id'] == VENDOR_ID)
         product_match = (PRODUCT_ID is None) or (dev['product_id'] == PRODUCT_ID)
@@ -957,9 +1088,7 @@ def fetch_interfaces():
                 pen_device = dev
             elif interface_num == 1 and touch_device is None:
                 touch_device = dev
-
     if not pen_device or not touch_device:
-        print("Error: Could not locate both Pen (Int 0) and Touch (Int 1) interfaces.")
         return None, None
     return pen_device, touch_device
 
@@ -967,6 +1096,11 @@ def main():
     print("Enumerating HID devices for Wacom Tablet...")
     pen_device, touch_device = fetch_interfaces()
     print(f"Device found: {touch_device.get('manufacturer_string')} {touch_device.get('product_string')}")
+    #print(f"Pen Interface Object: {pen_device}")
+    #print(f"Touch Interface Object: {touch_device}")
+    if not pen_device or not touch_device:
+        print("Error: Could not locate both Pen (Int 0) and Touch (Int 1) interfaces.")
+        return
     pen_thread = threading.Thread(target=run_pen_interface, args=(pen_device,), daemon=True)
     touch_thread = threading.Thread(target=run_touch_interface, args=(touch_device,), daemon=True)
 
