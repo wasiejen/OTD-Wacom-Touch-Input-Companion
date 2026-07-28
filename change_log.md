@@ -1,7 +1,32 @@
 
+260728-0949:
+
+- with each reconnection attempt now searches for changed hid interfaces to reconnect to the currently connected device.
+    - so hot swap of the drawing tablet is now possible without restarting the program :-)
+
+- updated gui (via AI)
+    - display both set of motion parameters
+    - added a tooltip functionality for motion and threshold parameters
+    - scolling function to easier access to feature toggles farther down
+
+260727-2326:
+
+- update interaction of pen hover touch deactivation. before it stopped tracking of touch packets completely which lead to a lost state if any finger were on the drawing tablet when pen hover ended. thus a not known state the touch input was in.
+    - now it tracks the state even if pen in hover distance but does not run the evaluation for any action. so it will always start in a known state and even can instantly scoll or zoom if 2 fingers are already on the pad, or move the cursor with one finger instandly without first lifting.
+- changed cursor movement from pynput to CTYPES to force windows to recognise the cursor as a mouse and thus provide context sensitive hover information which are supressed for touch input normally.
+- added a second set of sensitivities for scrolling to adjust the acceleration curve, because duo to the change to CTYPES for the cursor movement the sensitivity for the cursor changed a lot
+    - gui change still needs to be done #XXX
+
+
+bug:
+- after 2-3 seconds of no input, 1f_tap. 2f_tap (and the other taps likely) are not working. 2f_press works. seems that the first packets are not registered correctly. 
+    - the drawing tablet is just not sending any packets until a least some contact time and thus short interactions will not be registered. thus is somewhat annoying
+    - tested blocking and non blocking packet reception but both behave the same way
+
 260727-1911:
 
-- 2f_pinch
+- 2f_pinch zoom now works a bit smoother - the same assumption was present as with scolling functionality.
+- minor adjustments to distinquishing between scolling and zooming to work more predictable.
 
 260727-1742:
 - smoother scrolling - removed assumption that only full integers could be applied - led to jumpy discreet scroll increaments instead of smooth scrolling

@@ -7,11 +7,17 @@ from pynput.keyboard import Key, Controller as KeyboardController
 
 import json
 import os
+import ctypes
+
+# Win32 Constants
+MOUSEEVENTF_MOVE = 0x0001
+MOUSEEVENTF_ABSOLUTE = 0x8000
+
 
 CONFIG_FILE_PATH = "user.cfg"
 
-# DEBUG = False 
-DEBUG = True  
+DEBUG = False 
+# DEBUG = True  
 
 # ==============================================================================
 # CONFIGURATION CLASS
@@ -20,17 +26,26 @@ class DriverConfig:
     def __init__(self):
         
         # Motion Parameters
+        
+        self.sensitivities = {}
+        # Piecewise Linear Acceleration Settings Cursor
         self.cursor_deadzone = 0.0           # Distance (in px/packet) to discard as noise/jitter
+        self.cursor_min_sens = 0.3          # Flat base multiplier for precision work
+        self.cursor_max_sens = 1.6           # Hard cap multiplier (e.g., 2.5x to 3.0x base speed)
+        self.cursor_speed_low = 5.0                 # Upper bound of flat precision zone (px/packet)
+        self.cursor_speed_high = 80.0               # Speed at which max acceleration ceiling is reached
+        self.sensitivities["cursor_acceleration"] = [self.cursor_deadzone, self.cursor_min_sens, self.cursor_max_sens, self.cursor_speed_low, self.cursor_speed_high, 1, 1]
         
-        # Piecewise Linear Acceleration Settings
-        self.cursor_min_sens = 0.4          # Flat base multiplier for precision work
-        self.cursor_max_sens = 2.5           # Hard cap multiplier (e.g., 2.5x to 3.0x base speed)
-        self.speed_low = 5.0                 # Upper bound of flat precision zone (px/packet)
-        self.speed_high = 50.0               # Speed at which max acceleration ceiling is reached
-        
+        # Piecewise Linear Acceleration Settings Scrolling
+        self.scroll_deadzone = 0.0           # Distance (in px/packet) to discard as noise/jitter
+        self.scroll_min_sens = 0.01          # Flat base multiplier for precision work
+        self.scroll_max_sens = 0.3           # Hard cap multiplier (e.g., 2.5x to 3.0x base speed)
+        self.scroll_speed_low = 12.0                 # Upper bound of flat precision zone (px/packet)
+        self.scroll_speed_high = 60.0               # Speed at which max acceleration ceiling is reached 
         # Scroll Sensitivity (Positive = Traditional, Negative = Natural)
-        self.scroll_sensitivity_x = 0.015    # Positive = Natural, Negative = Traditional
-        self.scroll_sensitivity_y = 0.03     # Natural Vertical Scrolling
+        self.scroll_sensitivity_x = 1.0    # Positive = Natural, Negative = Traditional
+        self.scroll_sensitivity_y = 1.0     # Natural Vertical Scrolling
+        self.sensitivities["scroll_acceleration"] = [self.scroll_deadzone, self.scroll_min_sens, self.scroll_max_sens, self.scroll_speed_low, self.scroll_speed_high, self.scroll_sensitivity_x, self.scroll_sensitivity_y]
         
         # Minimal movement required to declare a 2F intention
         self.scroll_activation_threshold = 30.0  # Centroid distance in px before scrolling locks in
@@ -62,7 +77,7 @@ class DriverConfig:
         # Available Feature Toggles (True = Enabled, False = Disabled)        
         self.feature_toggles = {
             "cursor_acceleration": True,
-            "scrolling_acceleration": True,
+            "scroll_acceleration": True,
             "1f_tap" : True,
             "1f_press" : True,
             "1f_double_tap" : True,
@@ -197,8 +212,8 @@ class DriverConfig:
                 "cursor_deadzone": self.cursor_deadzone,
                 "cursor_min_sens": self.cursor_min_sens,
                 "cursor_max_sens": self.cursor_max_sens,
-                "speed_low": self.speed_low,
-                "speed_high": self.speed_high,
+                "speed_low": self.cursor_speed_low,
+                "speed_high": self.cursor_speed_high,
             },
             "feature_toggles": self.feature_toggles,
             "action_mapping": self.action_mapping
@@ -421,23 +436,51 @@ def compute_centroid_and_spread(contacts):
 
 def calculate_piecewise_accelerated_delta(dx, dy, config, feature_toggle):
 
+    deadzone, min_sens, max_sens, speed_low, speed_high, sens_x, sens_y = config.sensitivities[feature_toggle]
     if config.feature_toggles.get(feature_toggle, False):
         speed = math.hypot(dx, dy)
-
-        if speed < config.cursor_deadzone:
+        if speed < deadzone:
             return 0.0, 0.0
-
-        if speed <= config.speed_low:
-            gain = config.cursor_min_sens
-        elif speed >= config.speed_high:
-            gain = config.cursor_max_sens
+        
+        if speed <= speed_low:
+            gain = min_sens
+        elif speed >= speed_high:
+            gain = max_sens
         else:
-            slope = (config.cursor_max_sens - config.cursor_min_sens) / (config.speed_high - config.speed_low)
-            gain = config.cursor_min_sens + slope * (speed - config.speed_low)
+            slope = (max_sens - min_sens) / (speed_high - speed_low)
+            gain = min_sens + slope * (speed - speed_low)
 
-        return dx * gain, dy * gain
+        return dx * gain * sens_x, dy * gain * sens_y
     else:
-        return dx * config.cursor_min_sens, dy * config.cursor_min_sens
+        return dx * min_sens * sens_x, dy * min_sens * sens_y
+    
+class MOUSEINPUT(ctypes.Structure):
+    _fields_ = [
+        ("dx", ctypes.c_long),
+        ("dy", ctypes.c_long),
+        ("mouseData", ctypes.c_ulong),
+        ("dwFlags", ctypes.c_ulong),
+        ("time", ctypes.c_ulong),
+        ("dwExtraInfo", ctypes.POINTER(ctypes.c_ulong)),
+    ]
+
+class INPUT(ctypes.Structure):
+    class _INPUT(ctypes.Union):
+        _fields_ = [("mi", MOUSEINPUT)]
+    _anonymous_ = ("_input",)
+    _fields_ = [
+        ("type", ctypes.c_ulong),
+        ("_input", _INPUT),
+    ]
+
+def send_real_mouse_move(dx: int, dy: int):
+    """Sends a hardware-level mouse move event to Windows, forcing hover states."""
+    extra = ctypes.c_ulong(0)
+    ii_ = INPUT()
+    ii_.type = 0  # INPUT_MOUSE
+    ii_.mi = MOUSEINPUT(int(dx), int(dy), 0, MOUSEEVENTF_MOVE, 0, ctypes.pointer(extra))
+    
+    ctypes.windll.user32.SendInput(1, ctypes.pointer(ii_), ctypes.sizeof(ii_))
         
 
 # ==============================================================================
@@ -447,13 +490,20 @@ def parse_pen_packet(report):
     if not report or report[0] != 0x02:
         return
     pen_status = report[1]
-    if pen_status in (0x20, 0xE0, 0xE1, 0xE2):
+    # if pen_status in (0x20, 0xE0, 0xE1, 0xE2):
+    if pen_status in (0xE0, 0xE1, 0xE2):
         if not state.pen_in_proximity:
             state.pen_in_proximity = True
             print("[Palm Rejection] Pen detected -> Touch Disabled")
     elif pen_status == 0x80:
         if state.pen_in_proximity:
             state.pen_in_proximity = False
+            current_time = time.time()
+            state.session_start_time = current_time
+            for i in range(len(state.start_time)):
+                            state.start_time[i] = current_time
+            #reset_tablet_state(full=True)
+            
             print("[Palm Rejection] Pen left hover area -> Touch Enabled")
 
 def parse_sub_block(block):
@@ -471,7 +521,8 @@ def parse_sub_block(block):
     return (byte2, byte3, (x, y))
 
 def process_touch_report(report):
-    if state.pen_in_proximity or state.touch_paused:
+    #if DEBUG: print(f"report: {report}")
+    if state.touch_paused:
         return
 
     current_time = time.time()
@@ -550,238 +601,241 @@ def process_touch_report(report):
 
     # if DEBUG: print(f"Debug: {num_active} fingers detected with Gesture: state: {state.active_gesture}")
 
-    # --- 1-FINGER NAVIGATION ---
-    if num_active == 1:
-        fid, pos = next(iter(state.active_contacts.items()))
-
-        if state.last_num_active == 0 or (state.last_num_active >=2 and state.active_gesture in [None, "2F_SCROLL", "2F_PINCH", "1f_tap","2f_tap", "2f_press"]):
-            state.last_f1_pos = pos
-            state.f1_start_pos = pos
-            state.is_dragging_cursor = True
-            state.last_2finger_centroid = None
-            state.start_time[2]= None
-            state.active_gesture = None
-            state.max_drift = 0.0
-            state.start_time[num_active] = current_time # might be unnecessary
-
-        if state.active_gesture is None:
-            if state.f1_start_pos is not None and pos is not None:
-                dx_start = pos[0] - state.f1_start_pos[0]
-                dy_start = pos[1] - state.f1_start_pos[1]
-                drift = math.hypot(dx_start, dy_start)
-
-                if drift > state.max_drift:
-                    state.max_drift = drift
-
-                if state.is_dragging_cursor and state.last_f1_pos is not None:
-                    raw_dx = pos[0] - state.last_f1_pos[0]
-                    raw_dy = pos[1] - state.last_f1_pos[1]
-                    
-                    if raw_dx != 0 or raw_dy != 0:
-                        scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(raw_dx, raw_dy, config,"cursor_acceleration")
-  
-                        state.cursor_acc_x += scaled_dx
-                        state.cursor_acc_y += scaled_dy
-                        
-                        move_x = int(state.cursor_acc_x)
-                        move_y = int(state.cursor_acc_y)
-                        
-                        if move_x != 0 or move_y != 0:
-                            state.mouse.move(move_x, move_y)
-                            state.cursor_acc_x -= move_x
-                            state.cursor_acc_y -= move_y
-
-                if (current_time - state.last_f1_tap_time) < config.double_tap_timeout and state.max_drift <= config.tap_max_movement:
-                    state.is_dragging_cursor = True
-                    
-                    if (config.feature_toggles.get("1f_double_tap", False) 
-                            and state.drag_candidate 
-                            and not state.is_left_held
-                        ):
-                        dispatch_gesture_event("1f_double_tap")
-                        #execute_mapped_action("left_hold")
-                        if DEBUG: print("[Gesture] 1F Double Tap Drag Initiated")
-
-                state.last_f1_pos = pos
-
-    # --- 2-FINGER ACTIONS ---
-    elif num_active == 2:
-        # if state.first_time_2finger:
-        #     state.first_time_2finger = False
-        # else:
-
-        dist_centroid = math.hypot(cx - state.mf_start_centroid[0], cy - state.mf_start_centroid[1])
-        delta_spread_total = spread - state.mf_start_spread
+    if not state.pen_in_proximity:
         
-        hold_duration = current_time - state.start_time[num_active]
+        # --- 1-FINGER NAVIGATION ---
+        if num_active == 1:
+            fid, pos = next(iter(state.active_contacts.items()))
 
-        if state.active_gesture is None:
-            if abs(delta_spread_total) >= config.pinch_activation_threshold:
-                state.active_gesture = "2F_PINCH"
-                state.scroll_active = True
-            elif dist_centroid >= config.scroll_activation_threshold:
-                state.active_gesture = "2F_SCROLL"
-                state.scroll_active = True
+            if state.last_num_active == 0 or (state.last_num_active >=2 and state.active_gesture in [None, "2F_SCROLL", "2F_PINCH", "1f_tap","2f_tap", "2f_press"]):
+                state.last_f1_pos = pos
+                state.f1_start_pos = pos
+                state.is_dragging_cursor = True
+                state.last_2finger_centroid = None
+                state.start_time[2]= None
+                state.active_gesture = None
+                state.max_drift = 0.0
+                state.start_time[num_active] = current_time # might be unnecessary
 
-        if state.active_gesture == "2F_SCROLL" and config.feature_toggles.get("2f_scroll", False):
-            if isinstance(state.last_2finger_centroid, tuple):
-                dx = cx - state.last_2finger_centroid[0]
-                dy = cy - state.last_2finger_centroid[1]
-                # print(f"dx,dy: {dx,dy}")    
+            if state.active_gesture is None:
+                if state.f1_start_pos is not None and pos is not None:
+                    dx_start = pos[0] - state.f1_start_pos[0]
+                    dy_start = pos[1] - state.f1_start_pos[1]
+                    drift = math.hypot(dx_start, dy_start)
 
-                scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(dx, dy, config, "scrolling_acceleration")
+                    if drift > state.max_drift:
+                        state.max_drift = drift
+
+                    if state.is_dragging_cursor and state.last_f1_pos is not None:
+                        raw_dx = pos[0] - state.last_f1_pos[0]
+                        raw_dy = pos[1] - state.last_f1_pos[1]
+                        
+                        if raw_dx != 0 or raw_dy != 0:
+                            scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(raw_dx, raw_dy, config,"cursor_acceleration")
+    
+                            state.cursor_acc_x += scaled_dx
+                            state.cursor_acc_y += scaled_dy
+                            
+                            move_x = int(state.cursor_acc_x)
+                            move_y = int(state.cursor_acc_y)
+                            
+                            if move_x != 0 or move_y != 0:
+                                # state.mouse.move(move_x, move_y)
+                                send_real_mouse_move(move_x, move_y)
+                                state.cursor_acc_x -= move_x
+                                state.cursor_acc_y -= move_y
+
+                    if (current_time - state.last_f1_tap_time) < config.double_tap_timeout and state.max_drift <= config.tap_max_movement:
+                        state.is_dragging_cursor = True
+                        
+                        if (config.feature_toggles.get("1f_double_tap", False) 
+                                and state.drag_candidate 
+                                and not state.is_left_held
+                            ):
+                            dispatch_gesture_event("1f_double_tap")
+                            #execute_mapped_action("left_hold")
+                            if DEBUG: print("[Gesture] 1F Double Tap Drag Initiated")
+
+                    state.last_f1_pos = pos
+
+        # --- 2-FINGER ACTIONS ---
+        elif num_active == 2:
+            # if state.first_time_2finger:
+            #     state.first_time_2finger = False
+            # else:
+
+            dist_centroid = math.hypot(cx - state.mf_start_centroid[0], cy - state.mf_start_centroid[1])
+            delta_spread_total = spread - state.mf_start_spread
+            
+            hold_duration = current_time - state.start_time[num_active]
+
+            if state.active_gesture is None:
+                if abs(delta_spread_total) >= config.pinch_activation_threshold:
+                    state.active_gesture = "2F_PINCH"
+                    state.scroll_active = True
+                elif dist_centroid >= config.scroll_activation_threshold:
+                    state.active_gesture = "2F_SCROLL"
+                    state.scroll_active = True
+
+            if state.active_gesture == "2F_SCROLL" and config.feature_toggles.get("2f_scroll", False):
+                if isinstance(state.last_2finger_centroid, tuple):
+                    dx = cx - state.last_2finger_centroid[0]
+                    dy = cy - state.last_2finger_centroid[1]
+                    # print(f"dx,dy: {dx,dy}")    
+
+                    scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(dx, dy, config, "scroll_acceleration")
+                    
+                    step_x = scaled_dx * -config.scroll_sensitivity_x
+                    step_y = scaled_dy * config.scroll_sensitivity_y
+                    
+                    if step_x != 0 or step_y != 0:
+                        # print(f"step_x,step_y: {step_x,step_y}")  
+                        state.mouse.scroll(step_x, step_y)
+
+                state.last_2finger_centroid = (cx, cy)
+
+            elif state.active_gesture == "2F_PINCH" and config.feature_toggles.get("2f_pinch", False):
+                delta_pinch = spread - state.last_pinch_distance
+                if abs(delta_pinch) >= config.pinch_continuous_sensitivity:
+                    steps = delta_pinch / config.pinch_continuous_sensitivity
+                    if steps != 0:
+                        with state.keyboard.pressed(Key.ctrl):
+                            state.mouse.scroll(0, steps)
+                        state.last_pinch_distance += delta_pinch     
                 
-                step_x = scaled_dx * -config.scroll_sensitivity_x
-                step_y = scaled_dy * config.scroll_sensitivity_y
+
+        # --- 3, 4, AND 5-FINGER GESTURES ---
+        elif num_active > 2:
+            if state.active_gesture in ("2F_SCROLL", "2F_PINCH"):
+                state.active_gesture = None
+                state.last_f1_pos = None
+                state.f1_start_pos = None
+                state.scroll_active = False
+                state.pinch_active = False
                 
-                if step_x != 0 or step_y != 0:
-                    # print(f"step_x,step_y: {step_x,step_y}")  
-                    state.mouse.scroll(step_x, step_y)
+            # if state.first_time_mutlifinger:
+            #     state.first_time_mutlifinger = False
+            # else:
+                    
+            state.is_dragging_cursor = False
 
-            state.last_2finger_centroid = (cx, cy)
+            dx_total = cx - state.mf_start_centroid[0]
+            dy_total = cy - state.mf_start_centroid[1]
+            dist_centroid = math.hypot(dx_total, dy_total)
+            delta_spread_total = spread - state.mf_start_spread
+                
+            if state.active_gesture is None and session_duration <= config.max_gesture_touch_session_duration:
+                if num_active >= 5 and config.feature_toggles.get("5f_alt_tab", False):
+                    state.active_gesture = "5F_ALT_TAB"
+                    state.alt_tab_active = True
+                    state.last_alt_tab_x = cx
+                    execute_mapped_action("ctrl_alt_tab_initiate")
 
-        elif state.active_gesture == "2F_PINCH" and config.feature_toggles.get("2f_pinch", False):
-            delta_pinch = spread - state.last_pinch_distance
-            if abs(delta_pinch) >= config.pinch_continuous_sensitivity:
-                steps = delta_pinch / config.pinch_continuous_sensitivity
-                if steps != 0:
-                    with state.keyboard.pressed(Key.ctrl):
-                        state.mouse.scroll(0, steps)
-                    state.last_pinch_distance += delta_pinch     
-               
+                else:
+                    prefix = f"{num_active}f_"
+                    
+                    if abs(delta_spread_total) >= config.pinch_discrete_threshold:
+                        gesture_name = prefix + ("pinch_out" if delta_spread_total > 0 else "pinch_in")
+                        dispatch_gesture_event(gesture_name)
 
-    # --- 3, 4, AND 5-FINGER GESTURES ---
-    elif num_active > 2:
-        if state.active_gesture in ("2F_SCROLL", "2F_PINCH"):
-            state.active_gesture = None
-            state.last_f1_pos = None
+                    elif abs(dx_total) >= config.swipe_threshold_x and abs(dx_total) > config.axis_dominance_ratio * abs(dy_total):
+                        gesture_name = prefix + ("swipe_right" if dx_total > 0 else "swipe_left")
+                        dispatch_gesture_event(gesture_name)
+
+                    elif abs(dy_total) >= config.swipe_threshold_y and abs(dy_total) > config.axis_dominance_ratio * abs(dx_total):
+                        gesture_name = prefix + ("swipe_down" if dy_total > 0 else "swipe_up")
+                        dispatch_gesture_event(gesture_name)
+                        
+            elif state.active_gesture == "5F_ALT_TAB" and num_active >= 5:
+                dx_step = cx - state.last_alt_tab_x
+                if abs(dx_step) >= config.alt_tab_step_threshold:
+                    if state.f5_counter >= 1 / config.alt_tab_step_sensitivity: # to slow down the windows selection change
+                        state.f5_counter = 0
+                        if dx_step > 0:
+                            execute_mapped_action("ctrl_alt_tab_next")
+                        else:
+                            execute_mapped_action("ctrl_alt_tab_prev")
+                        state.last_alt_tab_x = cx
+                    else:
+                        state.f5_counter += 1
+                else:
+                    state.f5_counter = 0 # to make sure it does not change to fast after holding still
+            
+        # --- TAPS + RESET / RELEASE ---
+        elif num_active == 0:
+            if state.alt_tab_active:
+                execute_mapped_action("ctrl_alt_tab_commit")
+                state.alt_tab_active = False
+                state.last_alt_tab_x = 0
+                
+            elif state.is_left_held:
+                execute_mapped_action("left_hold_release")
+
+            elif state.session_start_time is not None and state.active_gesture is None:
+
+                #if DEBUG: print(f"session_duration: {session_duration}, config.max_tap_duratio: {config.max_tap_duration}, sd<max_dur: {session_duration <= config.max_tap_duration}")
+                if session_duration <= config.max_tap_duration and not state.scroll_active:
+                    if state.peak_contact_count == 1:
+                        if not state.was_moved or not state.is_dragging_cursor:
+                            dispatch_gesture_event("1f_tap")
+                            state.last_f1_tap_time = current_time
+
+                    elif state.peak_contact_count == 2:
+                        dispatch_gesture_event("2f_tap")
+
+                    elif state.peak_contact_count == 3:
+                        dispatch_gesture_event("3f_tap")
+
+                    elif state.peak_contact_count == 4:
+                        dispatch_gesture_event("4f_tap")
+
+                    elif state.peak_contact_count >= 5:
+                        dispatch_gesture_event("5f_tap")
+                        
+            state.session_start_time = None
+            state.peak_contact_count = 0
+            for i in range(len(state.start_time)):
+                state.start_time[i] = None
+
             state.f1_start_pos = None
+            state.last_f1_pos = None
+            
+            state.f2_start_pos = None
+            state.is_dragging_cursor = False
+            state.drag_candidate = False
+            state.f2_right_click_fired = False
             state.scroll_active = False
             state.pinch_active = False
+            state.last_2finger_centroid = None
+            state.was_moved = False
+            state.first_time_2finger = True
+            state.first_time_multifinger = True
+            state.is_left_held = False
             
-        # if state.first_time_mutlifinger:
-        #     state.first_time_mutlifinger = False
-        # else:
-                
-        state.is_dragging_cursor = False
-
-        dx_total = cx - state.mf_start_centroid[0]
-        dy_total = cy - state.mf_start_centroid[1]
-        dist_centroid = math.hypot(dx_total, dy_total)
-        delta_spread_total = spread - state.mf_start_spread
-              
-        if state.active_gesture is None and session_duration <= config.max_gesture_touch_session_duration:
-            if num_active >= 5 and config.feature_toggles.get("5f_alt_tab", False):
-                state.active_gesture = "5F_ALT_TAB"
-                state.alt_tab_active = True
-                state.last_alt_tab_x = cx
-                execute_mapped_action("ctrl_alt_tab_initiate")
-
-            else:
-                prefix = f"{num_active}f_"
-                
-                if abs(delta_spread_total) >= config.pinch_discrete_threshold:
-                    gesture_name = prefix + ("pinch_out" if delta_spread_total > 0 else "pinch_in")
-                    dispatch_gesture_event(gesture_name)
-
-                elif abs(dx_total) >= config.swipe_threshold_x and abs(dx_total) > config.axis_dominance_ratio * abs(dy_total):
-                    gesture_name = prefix + ("swipe_right" if dx_total > 0 else "swipe_left")
-                    dispatch_gesture_event(gesture_name)
-
-                elif abs(dy_total) >= config.swipe_threshold_y and abs(dy_total) > config.axis_dominance_ratio * abs(dx_total):
-                    gesture_name = prefix + ("swipe_down" if dy_total > 0 else "swipe_up")
-                    dispatch_gesture_event(gesture_name)
+            state.active_gesture = None
+            state.mf_start_centroid = None
+            state.mf_start_spread = 0.0
+        
+        
+        # --- PRESS HANDLING ---
+        if state.active_gesture is None and hold_duration >= config.press_hold_duration and not state.was_moved:
+            # hold_duration = current_time - state.start_time[num_active]
+            if num_active == 1 and config.feature_toggles.get("1f_press", False):
+                if (not state.is_left_held 
+                        and state.max_drift <= config.tap_max_movement
+                        and not state.scroll_active
+                        ):
+                    dispatch_gesture_event("1f_press")
+                    if DEBUG: print("[Gesture] 1F Press & Hold Drag Initiated")
                     
-        elif state.active_gesture == "5F_ALT_TAB" and num_active >= 5:
-            dx_step = cx - state.last_alt_tab_x
-            if abs(dx_step) >= config.alt_tab_step_threshold:
-                if state.f5_counter >= 1 / config.alt_tab_step_sensitivity: # to slow down the windows selection change
-                    state.f5_counter = 0
-                    if dx_step > 0:
-                        execute_mapped_action("ctrl_alt_tab_next")
-                    else:
-                        execute_mapped_action("ctrl_alt_tab_prev")
-                    state.last_alt_tab_x = cx
-                else:
-                    state.f5_counter += 1
-            else:
-                state.f5_counter = 0 # to make sure it does not change to fast after holding still
-        
-    # --- TAPS + RESET / RELEASE ---
-    elif num_active == 0:
-        if state.alt_tab_active:
-            execute_mapped_action("ctrl_alt_tab_commit")
-            state.alt_tab_active = False
-            state.last_alt_tab_x = 0
-            
-        elif state.is_left_held:
-            execute_mapped_action("left_hold_release")
-
-        elif state.session_start_time is not None and state.active_gesture is None:
-
-            #if DEBUG: print(f"session_duration: {session_duration}, config.max_tap_duratio: {config.max_tap_duration}, sd<max_dur: {session_duration <= config.max_tap_duration}")
-            if session_duration <= config.max_tap_duration and not state.scroll_active:
-                if state.peak_contact_count == 1:
-                    if not state.was_moved or not state.is_dragging_cursor:
-                        dispatch_gesture_event("1f_tap")
-                        state.last_f1_tap_time = current_time
-
-                elif state.peak_contact_count == 2:
-                    dispatch_gesture_event("2f_tap")
-
-                elif state.peak_contact_count == 3:
-                    dispatch_gesture_event("3f_tap")
-
-                elif state.peak_contact_count == 4:
-                    dispatch_gesture_event("4f_tap")
-
-                elif state.peak_contact_count >= 5:
-                    dispatch_gesture_event("5f_tap")
-                    
-        state.session_start_time = None
-        state.peak_contact_count = 0
-        for i in range(len(state.start_time)):
-            state.start_time[i] = None
-
-        state.f1_start_pos = None
-        state.last_f1_pos = None
-        
-        state.f2_start_pos = None
-        state.is_dragging_cursor = False
-        state.drag_candidate = False
-        state.f2_right_click_fired = False
-        state.scroll_active = False
-        state.pinch_active = False
-        state.last_2finger_centroid = None
-        state.was_moved = False
-        state.first_time_2finger = True
-        state.first_time_multifinger = True
-        state.is_left_held = False
-        
-        state.active_gesture = None
-        state.mf_start_centroid = None
-        state.mf_start_spread = 0.0
-    
-    
-    # --- PRESS HANDLING ---
-    if state.active_gesture is None and hold_duration >= config.press_hold_duration and not state.was_moved:
-        # hold_duration = current_time - state.start_time[num_active]
-        if num_active == 1 and config.feature_toggles.get("1f_press", False):
-            if (not state.is_left_held 
-                    and state.max_drift <= config.tap_max_movement
-                    and not state.scroll_active
-                    ):
-                dispatch_gesture_event("1f_press")
-                if DEBUG: print("[Gesture] 1F Press & Hold Drag Initiated")
-                
-        elif num_active >= 2 and config.feature_toggles.get(f"{num_active}f_press", False):    
-            if (hold_duration >= config.press_hold_duration 
-                    and dist_centroid <= config.tap_max_movement
-                    and abs(delta_spread_total) <= config.pinch_discrete_threshold
-                    ):
-                if DEBUG: print(f"[Gesture] Press hold for {num_active} Fingers triggered")
-                gesture_name = f"{num_active}f_press"
-                dispatch_gesture_event(gesture_name)                    
+            elif num_active >= 2 and config.feature_toggles.get(f"{num_active}f_press", False):    
+                if (hold_duration >= config.press_hold_duration 
+                        and dist_centroid <= config.tap_max_movement
+                        and abs(delta_spread_total) <= config.pinch_discrete_threshold
+                        ):
+                    if DEBUG: print(f"[Gesture] Press hold for {num_active} Fingers triggered")
+                    gesture_name = f"{num_active}f_press"
+                    dispatch_gesture_event(gesture_name)                    
         
     state.last_num_active = num_active
 
@@ -821,12 +875,16 @@ def run_pen_interface(device_info):
         finally:
             dev.close()
             
-        if oserror_count > 60:
+        if oserror_count > 30:
             oserror_count = 0
             print(f"[Pen Interface] failed to reconnect to Interface ({device_info.get('interface_number', 0)}) \n --> [Pen Interface] Pen Hover Control now disabled. \n [Info] Reenable via context menu to try again. ")
             state.touch_paused = True
         else:
             time.sleep(5)
+            pen_device, _ = fetch_interfaces()
+            if pen_device is not None:
+                print(f"[Pen Interface] new Interface detected: {device_info.get('manufacturer_string')} { device_info.get('product_string')}")
+                device_info = pen_device
             print(f"[Pen Interface] trying to reconnect to Interface ({device_info.get('interface_number', 0)}) Attempt:{oserror_count}")
 
 def contains_touch_down(report):
@@ -858,38 +916,41 @@ def run_touch_interface(device_info):
                     time.sleep(0.5)
                 else:
                     if pause_messaged : pause_messaged = False
-                    if report:
-                        process_touch_report(report)
-                    elif not report:
-                        time.sleep(0.002)
+                    # if report:
+                    process_touch_report(report)
+                    # else:
+                    #     time.sleep(0.002)
         except OSError:
             if oserror_count == 0:
-                print(f"[Toucn Interface][Touch Error] read error thrown")
+                print(f"[Touch Interface][Touch Error] read error thrown")
             oserror_count += 1
             pass 
         except Exception as e:
             print(f"[Touch Interface][Touch Error] {e}")
             oserror_count += 1
+            
             if DEBUG: raise e
         finally:
             dev.close()
         
-        if oserror_count > 60:
+        if oserror_count > 30:
             oserror_count = 0
             print(f"[Touch Interface] failed to reconnect to Interface ({device_info.get('interface_number', 0)}) \n --> [Touch Interface] Touch input now disabled. \n [Info] Reenable via context menu to try again. ")
             state.touch_paused = True
         else:
             time.sleep(5)
+            _, touch_device = fetch_interfaces()
+            if touch_device is not None:
+                print(f"[Touch Interface] new Interface detected: {device_info.get('manufacturer_string')} {device_info.get('product_string')}")
+                device_info = touch_device
             print(f"[Touch Interface] trying to reconnect to Interface ({device_info.get('interface_number', 0)}) Attempt:{oserror_count}")
 
-def main():
-    print("Enumerating HID devices for Wacom Tablet...")
+def fetch_interfaces():
     pen_device, touch_device = None, None
 
     for dev in hid.enumerate():
         vendor_match = (VENDOR_ID is None) or (dev['vendor_id'] == VENDOR_ID)
         product_match = (PRODUCT_ID is None) or (dev['product_id'] == PRODUCT_ID)
-
         if vendor_match and product_match:
             interface_num = dev.get('interface_number', -1)
             if interface_num == 0 and pen_device is None:
@@ -899,8 +960,13 @@ def main():
 
     if not pen_device or not touch_device:
         print("Error: Could not locate both Pen (Int 0) and Touch (Int 1) interfaces.")
-        return
+        return None, None
+    return pen_device, touch_device
 
+def main():
+    print("Enumerating HID devices for Wacom Tablet...")
+    pen_device, touch_device = fetch_interfaces()
+    print(f"Device found: {touch_device.get('manufacturer_string')} {touch_device.get('product_string')}")
     pen_thread = threading.Thread(target=run_pen_interface, args=(pen_device,), daemon=True)
     touch_thread = threading.Thread(target=run_touch_interface, args=(touch_device,), daemon=True)
 
@@ -919,3 +985,5 @@ def main():
 
 if __name__ == '__main__':
     main()
+    
+
