@@ -6,6 +6,7 @@ import json
 import os
 import ctypes
 from contextlib import contextmanager
+import sys
 
 from vk_codes import vk_codes_dict  # Import vk_code dictionary
 
@@ -13,41 +14,11 @@ CONFIG_FILE_PATH = "user.cfg"
 
 DEBUG = False 
 # DEBUG = True  
+running = True
+interface_groups = []
+used_interfaces = []
 
 
-# ==============================================================================
-# WIN32.dll CTYPES (low level windows input)
-# ==============================================================================
-
-# Win32 Constants
-INPUT_MOUSE = 0
-INPUT_KEYBOARD = 1
-
-# Movement & Coordinate Control
-MOUSEEVENTF_MOVE           = 0x0001  # Mouse movement occurred
-MOUSEEVENTF_ABSOLUTE       = 0x8000  # Map dx/dy to absolute screen coords (0 to 65535)
-MOUSEEVENTF_VIRTUALDESK    = 0x4000  # Map coords to multi-monitor virtual desktop
-MOUSEEVENTF_MOVE_NOCOALESCE= 0x2000  # Do not combine mouse movement messages
-
-# Primary & Secondary Buttons
-MOUSEEVENTF_LEFTDOWN       = 0x0002  # Left button down
-MOUSEEVENTF_LEFTUP         = 0x0004  # Left button up
-MOUSEEVENTF_RIGHTDOWN      = 0x0008  # Right button down
-MOUSEEVENTF_RIGHTUP        = 0x0010  # Right button up
-MOUSEEVENTF_MIDDLEDOWN     = 0x0020  # Middle button down
-MOUSEEVENTF_MIDDLEUP       = 0x0040  # Middle button up
-
-# X-Buttons (Side / Extra Buttons)
-MOUSEEVENTF_XDOWN          = 0x0080  # An X-button was pressed
-MOUSEEVENTF_XUP            = 0x0100  # An X-button was released
-
-# Wheels / Panning
-MOUSEEVENTF_WHEEL          = 0x0800  # Vertical scroll wheel movement
-MOUSEEVENTF_HWHEEL         = 0x1000  # Horizontal scroll wheel movement
-
-# Keyboard Event Flags
-KEYEVENTF_KEYDOWN = 0x0000
-KEYEVENTF_KEYUP = 0x0002
 
 class MOUSEINPUT(ctypes.Structure):
     _fields_ = [
@@ -88,181 +59,225 @@ class INPUT(ctypes.Structure):
         ("type", ctypes.c_ulong),
         ("_input", _INPUT),
     ]
-
-# ==============================================================================
-# HELPER FUNCTIONS - INPUT CTYPES
-# ==============================================================================
- 
-def send_mouse_click(dw_flags, data=0):
-    extra = ctypes.c_ulong(0)
-    ii = INPUT()
-    ii.type = INPUT_MOUSE
-    ii.mi = MOUSEINPUT(0, 0, data, dw_flags, 0, ctypes.pointer(extra))
-    ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
-
-
-def send_mouse_scroll(dx, dy):
-    """Handles vertical and horizontal scrolling."""
-    if dy != 0:
-        # Wheel delta is typically 120 units per notch
-        send_mouse_click(MOUSEEVENTF_WHEEL, int(dy))
-    if dx != 0:
-        send_mouse_click(MOUSEEVENTF_HWHEEL, int(dx))
         
-def _send_wheel_event(flags, delta):
-    """Direct low-level injector with correct signed DWORD bitmasking."""
-    extra = ctypes.c_ulong(0)
-    
-    # Pack signed 32-bit int safely into DWORD bit-pattern
-    dw_data = ctypes.c_ulong(delta & 0xFFFFFFFF)
-
-    ii = INPUT()
-    ii.type = INPUT_MOUSE
-    ii.mi = MOUSEINPUT(0, 0, dw_data, flags, 0, ctypes.pointer(extra))
-    
-    ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
-        
-def send_ctrl_scroll(dx, dy):
-    """Sends Ctrl + Scroll event via ctypes."""
-    ctrl_vk = vk_codes_dict["ctrl"]
-    
-    print(f"dx: {dx}, dy: {dy}")
-    # 1. Press Ctrl down
-    send_key(ctrl_vk, release=False)
-    # 2. Inject scroll delta
-    send_mouse_scroll(dx, dy)
-    # 3. Release Ctrl
-    send_key(ctrl_vk, release=True)
-
-def send_key(vk_code, release=False):
-    """Sends a key down or key up event using a VK code from vk_codes.py."""
-    extra = ctypes.c_ulong(0)
-    flags = KEYEVENTF_KEYUP if release else KEYEVENTF_KEYDOWN
-    ii = INPUT()
-    ii.type = INPUT_KEYBOARD
-    ii.ki = KEYBDINPUT(
-        vk_code, 0, flags, 0, ctypes.pointer(extra)
-    )
-    ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
-
-def send_key_shortcut(*vk_codes):
-    """Taps a combination like Win + Tab or Ctrl + Z."""
-    for code in vk_codes:
-        send_key(code, release=False)
-    for code in reversed(vk_codes):
-        send_key(code, release=True) 
-        
-def send_real_mouse_move(dx: int, dy: int):
-    """Sends a hardware-level mouse move event to Windows, forcing hover states."""
-    extra = ctypes.c_ulong(0)
-    ii = INPUT()
-    ii.type = 0  # INPUT_MOUSE
-    ii.mi = MOUSEINPUT(int(dx), int(dy), 0, MOUSEEVENTF_MOVE, 0, ctypes.pointer(extra))
-    
-    ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
-        
-@contextmanager
-def hold_key(vk_code):
-    send_key(vk_code, release=False)
-    try:
-        yield
-    finally:
-        send_key(vk_code, release=True)
-
-    # # Usage:
-    # with hold_key(vk_codes_dict["ctrl"]):
-    #     send_mouse_scroll(0, steps)
-    
+#
 # ==============================================================================
 # ACTION DISPATCHER
 # ==============================================================================
 
-# Helper to cleanly bind parameters for simple keys
-def key_tap(*vk_keys):
-    return lambda: send_key_shortcut(*(vk_codes_dict[k] for k in vk_keys))
-
-def press_key(vk_code):
-    send_key(vk_codes_dict[vk_code], release=False)
+class ActionDispatcher():
     
-def release_key(vk_code):
-    send_key(vk_codes_dict[vk_code], release=True)
+    # ==============================================================================
+    # WIN32.dll CTYPES (low level windows input)
+    # ==============================================================================
 
-def handle_left_hold():
-    send_mouse_click(MOUSEEVENTF_LEFTDOWN)
-    state.is_left_held = True
-    state.is_dragging_cursor = True
-    state.active_gesture = None
+    # Win32 Constants
+    INPUT_MOUSE = 0
+    INPUT_KEYBOARD = 1
+
+    # Movement & Coordinate Control
+    MOUSEEVENTF_MOVE           = 0x0001  # Mouse movement occurred
+    MOUSEEVENTF_ABSOLUTE       = 0x8000  # Map dx/dy to absolute screen coords (0 to 65535)
+    MOUSEEVENTF_VIRTUALDESK    = 0x4000  # Map coords to multi-monitor virtual desktop
+    MOUSEEVENTF_MOVE_NOCOALESCE= 0x2000  # Do not combine mouse movement messages
+
+    # Primary & Secondary Buttons
+    MOUSEEVENTF_LEFTDOWN       = 0x0002  # Left button down
+    MOUSEEVENTF_LEFTUP         = 0x0004  # Left button up
+    MOUSEEVENTF_RIGHTDOWN      = 0x0008  # Right button down
+    MOUSEEVENTF_RIGHTUP        = 0x0010  # Right button up
+    MOUSEEVENTF_MIDDLEDOWN     = 0x0020  # Middle button down
+    MOUSEEVENTF_MIDDLEUP       = 0x0040  # Middle button up
+
+    # X-Buttons (Side / Extra Buttons)
+    MOUSEEVENTF_XDOWN          = 0x0080  # An X-button was pressed
+    MOUSEEVENTF_XUP            = 0x0100  # An X-button was released
+
+    # Wheels / Panning
+    MOUSEEVENTF_WHEEL          = 0x0800  # Vertical scroll wheel movement
+    MOUSEEVENTF_HWHEEL         = 0x1000  # Horizontal scroll wheel movement
+
+    # Keyboard Event Flags
+    KEYEVENTF_KEYDOWN = 0x0000
+    KEYEVENTF_KEYUP = 0x0002  
     
-def handle_left_hold_release():
-    send_mouse_click(MOUSEEVENTF_LEFTUP)
-    state.is_left_held = False
-    state.active_gesture = None
+    def __init__(self, state):
+        self.state = state
+
+        # The Dispatch Table
+        self.ACTION_DISPATCH = {
+            # Mouse actions
+            "left_click": lambda: (self.send_mouse_click(self.MOUSEEVENTF_LEFTDOWN), self.send_mouse_click(self.MOUSEEVENTF_LEFTUP)),
+            "right_click": lambda: (self.send_mouse_click(self.MOUSEEVENTF_RIGHTDOWN), self.send_mouse_click(self.MOUSEEVENTF_RIGHTUP)),
+            "middle_click": lambda: (self.send_mouse_click(self.MOUSEEVENTF_MIDDLEDOWN), self.send_mouse_click(self.MOUSEEVENTF_MIDDLEUP)),
+            
+            # State-based holds (delegated to custom handlers if needed)
+            "left_hold": self.handle_left_hold, 
+            "left_hold_release": self.handle_left_hold_release,
+            
+            # Windows Shortcuts
+            "task_view": self.key_tap("lwin", "tab"),
+            "show_desktop": self.key_tap("lwin", "d"),
+            "window_up": self.key_tap("lwin", "up"),
+            "window_down": self.key_tap("lwin", "down"),
+            "window_left": self.key_tap("lwin", "left"),  
+            "window_right": self.key_tap("lwin", "right"),
+            "window_minimize": self.key_tap("lwin", "down"),
+            "window_maximize": self.key_tap("lwin", "up"),  
+            
+            "undo": self.key_tap("ctrl", "z"),
+            "redo": self.key_tap("ctrl", "y"),
+            "prev": self.key_tap("alt", "left"), 
+            "next": self.key_tap("alt", "right"),
+            
+            # Media Keys
+            "media_play_pause": self.key_tap("media_play"),
+            "media_next": self.key_tap("media_next"),
+            "media_prev": self.key_tap("media_prev"),
+            "volume_up": self.key_tap("volume_up"),
+            "volume_down": self.key_tap("volume_down"),
+            "volume_mute": self.key_tap("volume_mute"),
+            
+            # Navigation
+            "ctrl_alt_tab_initiate": self.key_tap("ctrl", "alt", "tab"),
+            "ctrl_alt_tab_next": self.key_tap("right"),
+            "ctrl_alt_tab_prev": self.key_tap("left"),
+            "ctrl_alt_tab_commit": self.key_tap("enter"),
     
-# The Dispatch Table
-ACTION_DISPATCH = {
-    # Mouse actions
-    "left_click": lambda: (send_mouse_click(MOUSEEVENTF_LEFTDOWN), send_mouse_click(MOUSEEVENTF_LEFTUP)),
-    "right_click": lambda: (send_mouse_click(MOUSEEVENTF_RIGHTDOWN), send_mouse_click(MOUSEEVENTF_RIGHTUP)),
-    "middle_click": lambda: (send_mouse_click(MOUSEEVENTF_MIDDLEDOWN), send_mouse_click(MOUSEEVENTF_MIDDLEUP)),
+        }
+
+    # ==============================================================================
+    # HELPER FUNCTIONS - INPUT CTYPES
+    # ==============================================================================
     
-    # State-based holds (delegated to custom handlers if needed)
-    "left_hold": handle_left_hold, 
-    "left_hold_release": handle_left_hold_release,
-    
-    # Windows Shortcuts
-    "task_view": key_tap("lwin", "tab"),
-    "show_desktop": key_tap("lwin", "d"),
-    "window_up": key_tap("lwin", "up"),
-    "window_down": key_tap("lwin", "down"),
-    "window_left": key_tap("lwin", "left"),  
-    "window_right": key_tap("lwin", "right"),
-    "window_minimize": key_tap("lwin", "down"),
-    "window_maximize": key_tap("lwin", "up"),  
-      
-    "undo": key_tap("ctrl", "z"),
-    "redo": key_tap("ctrl", "y"),
-    "prev": key_tap("alt", "left"), 
-    "next": key_tap("alt", "right"),
-    
-    # Media Keys
-    "media_play_pause": key_tap("media_play"),
-    "media_next": key_tap("media_next"),
-    "media_prev": key_tap("media_prev"),
-    "volume_up": key_tap("volume_up"),
-    "volume_down": key_tap("volume_down"),
-    "volume_mute": key_tap("volume_mute"),
-    
-    # Navigation
-    "ctrl_alt_tab_initiate": key_tap("ctrl", "alt", "tab"),
-    "ctrl_alt_tab_next": key_tap("right"),
-    "ctrl_alt_tab_prev": key_tap("left"),
-    "ctrl_alt_tab_commit": key_tap("enter"),
-
-}
-
-def execute_mapped_action(action_name):
-    if DEBUG:
-        print(f"[Gesture] Action triggered: {action_name}")
-
-    action_func = ACTION_DISPATCH.get(action_name)
-    if action_func:
-        action_func()
-    elif action_name is not None:
-        print(f"[Warning] Unknown action name: {action_name}")
+    def send_mouse_click(self, dw_flags, data=0):
+        extra = ctypes.c_ulong(0)
+        ii = INPUT()
+        ii.type = self.INPUT_MOUSE
+        ii.mi = MOUSEINPUT(0, 0, data, dw_flags, 0, ctypes.pointer(extra))
+        ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
 
 
-
-def dispatch_gesture_event(event_type):
-    if config.feature_toggles.get(event_type, False):
-        mapping = config.action_mapping.get(event_type, None)
-        if callable(mapping):
-            action_name = mapping(state)
-        else:
-            action_name = mapping
+    def send_mouse_scroll(self, dx, dy):
+        """Handles vertical and horizontal scrolling."""
+        if dy != 0:
+            # Wheel delta is typically 120 units per notch
+            self.send_mouse_click(self.MOUSEEVENTF_WHEEL, int(dy))
+        if dx != 0:
+            self.send_mouse_click(self.MOUSEEVENTF_HWHEEL, int(dx))
+            
+    def _send_wheel_event(self, flags, delta):
+        """Direct low-level injector with correct signed DWORD bitmasking."""
+        extra = ctypes.c_ulong(0)
         
-        state.active_gesture = event_type
-        execute_mapped_action(action_name)
+        # Pack signed 32-bit int safely into DWORD bit-pattern
+        dw_data = ctypes.c_ulong(delta & 0xFFFFFFFF)
+
+        ii = INPUT()
+        ii.type = self.INPUT_MOUSE
+        ii.mi = MOUSEINPUT(0, 0, dw_data, flags, 0, ctypes.pointer(extra))
         
+        ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
+            
+    def send_ctrl_scroll(self, dx, dy):
+        """Sends Ctrl + Scroll event via ctypes."""
+        ctrl_vk = vk_codes_dict["ctrl"]
+        
+        print(f"dx: {dx}, dy: {dy}")
+        # 1. Press Ctrl down
+        self.send_key(ctrl_vk, release=False)
+        # 2. Inject scroll delta
+        self.send_mouse_scroll(dx, dy)
+        # 3. Release Ctrl
+        self.send_key(ctrl_vk, release=True)
+
+    def send_key(self, vk_code, release=False):
+        """Sends a key down or key up event using a VK code from vk_codes.py."""
+        extra = ctypes.c_ulong(0)
+        flags = self.KEYEVENTF_KEYUP if release else self.KEYEVENTF_KEYDOWN
+        ii = INPUT()
+        ii.type = self.INPUT_KEYBOARD
+        ii.ki = KEYBDINPUT(
+            vk_code, 0, flags, 0, ctypes.pointer(extra)
+        )
+        ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
+
+    def send_key_shortcut(self, *vk_codes):
+        """Taps a combination like Win + Tab or Ctrl + Z."""
+        for code in vk_codes:
+            self.send_key(code, release=False)
+        for code in reversed(vk_codes):
+            self.send_key(code, release=True) 
+            
+    def send_real_mouse_move(self, dx: int, dy: int):
+        """Sends a hardware-level mouse move event to Windows, forcing hover states."""
+        extra = ctypes.c_ulong(0)
+        ii = INPUT()
+        ii.type = 0  # INPUT_MOUSE
+        ii.mi = MOUSEINPUT(int(dx), int(dy), 0, self.MOUSEEVENTF_MOVE, 0, ctypes.pointer(extra))
+        
+        ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
+            
+    @contextmanager
+    def hold_key(self, vk_code):
+        self.send_key(vk_code, release=False)
+        try:
+            yield
+        finally:
+            self.send_key(vk_code, release=True)
+
+        # # Usage:
+        # with hold_key(vk_codes_dict["ctrl"]):
+        #     send_mouse_scroll(0, steps)
+        
+    # ==============================================================================
+    # HELPER FUNCTIONS - INPUT
+    # ==============================================================================  
+
+    
+    # Helper to cleanly bind parameters for simple keys
+    def key_tap(self, *vk_keys):
+        return lambda: self.send_key_shortcut(*(vk_codes_dict[k] for k in vk_keys))
+
+    def press_key(self, vk_code):
+        self.send_key(vk_codes_dict[vk_code], release=False)
+        
+    def release_key(self, vk_code):
+        self.send_key(vk_codes_dict[vk_code], release=True)
+
+    def handle_left_hold(self):
+        self.send_mouse_click(self.MOUSEEVENTF_LEFTDOWN)
+        self.state.is_left_held = True
+        self.state.is_dragging_cursor = True
+        self.state.active_gesture = None
+        
+    def handle_left_hold_release(self):
+        self.send_mouse_click(self.MOUSEEVENTF_LEFTUP)
+        self.state.is_left_held = False
+        self.state.active_gesture = None
+
+    def execute_mapped_action(self, action_name):
+        if DEBUG:
+            print(f"[Gesture] Action triggered: {action_name}")
+
+        action_func = self.ACTION_DISPATCH.get(action_name)
+        if action_func:
+            action_func()
+        elif action_name is not None:
+            print(f"[Warning] Unknown action name: {action_name}")
+
+    def dispatch_gesture_event(self, event_type):
+        if config.feature_toggles.get(event_type, False):
+            mapping = config.action_mapping.get(event_type, None)
+            if callable(mapping):
+                action_name = mapping(self.state)
+            else:
+                action_name = mapping
+            
+            self.state.active_gesture = event_type
+            self.execute_mapped_action(action_name)
+             
+
 # ==============================================================================
 # CONFIGURATION CLASS
 # ==============================================================================
@@ -315,7 +330,7 @@ class DriverConfig:
         
         # 5-Finger Alt-Tab Configuration
         self.alt_tab_activation_threshold = 40.0  # px distance to initiate Alt-Tab overlay
-        self.alt_tab_step_threshold = 30.0        # px distance per window switch step 
+        self.alt_tab_step_threshold = 60.0        # px distance per window switch step 
         self.alt_tab_step_sensitivity = 0.2         # packets needed to move one step
         
         # Available Feature Toggles (True = Enabled, False = Disabled)        
@@ -385,8 +400,7 @@ class DriverConfig:
             # "ctrl_alt_tab_prev",
             # "ctrl_alt_tab_commit"
         ]
-        self.AVAILABLE_ACTIONS = list(ACTION_DISPATCH.keys())
-
+        
         # Mappable Actions
         self.action_mapping = {
             # Taps
@@ -431,8 +445,12 @@ class DriverConfig:
             #"0f" : "left_hold_release",
         }
         
+        
         # Attempt auto-load on startup
         self.load_from_file()
+        
+    def set_available_actions(self, actions):
+        self.AVAILABLE_ACTIONS = actions
         
     def save_to_file(self, filepath=CONFIG_FILE_PATH):
         data = {
@@ -513,8 +531,6 @@ class TabletState:
     def __init__(self):
         self.touch_paused = False
         self.running = True
-        # self.mouse = MouseController()
-        # self.keyboard = KeyboardController()
         self.pen_in_proximity = False
         
         # Active Contacts: slot_id -> (x, y)
@@ -522,6 +538,7 @@ class TabletState:
         
         # Touch Session Metadata
         self.session_start_time = None
+        self.session_duration = 0.0
         self.peak_contact_count = 0
         
         # 1-Finger Tracking
@@ -569,8 +586,12 @@ class TabletState:
         self.start_time = []
         for i in range(11):
             self.start_time.append(None)
+            
+    def set_running_global(self, var):
+        global running
+        running = var
 
-state = TabletState()
+# state = TabletState()
 
 
 # ==============================================================================
@@ -613,7 +634,7 @@ def calculate_piecewise_accelerated_delta(dx, dy, config, feature_toggle):
 # ==============================================================================
 # PARSING & TOUCH PROCESSING
 # ==============================================================================
-def parse_pen_packet(report):
+def parse_pen_packet(report, state):
     if not report or report[0] != 0x02:
         return
     pen_status = report[1]
@@ -647,7 +668,8 @@ def parse_sub_block(block):
     y = (block[3] << 4) | (block[4] & 0x0F)
     return (byte2, byte3, (x, y))
 
-def process_touch_report(report):
+def process_touch_report(report, state, action_dispatch):
+    ad = action_dispatch
     #if DEBUG: print(f"report: {report}")
     if state.touch_paused:
         return
@@ -703,10 +725,10 @@ def process_touch_report(report):
     num_active = len(state.active_contacts)
     
     if num_active != 2 and state.active_gesture == "2F_PINCH":
-        release_key("ctrl")
+        ad.release_key("ctrl")
     
     if state.session_start_time is not None:
-        session_duration = current_time - state.session_start_time
+        state.session_duration = current_time - state.session_start_time
         #if DEBUG: print(f"Debug: session duration: {session_duration}")
     if state.start_time[num_active] is not None:
         hold_duration = current_time - state.start_time[num_active]
@@ -770,7 +792,7 @@ def process_touch_report(report):
                             move_y = int(state.cursor_acc_y)
                             
                             if move_x != 0 or move_y != 0:
-                                send_real_mouse_move(move_x, move_y)
+                                ad.send_real_mouse_move(move_x, move_y)
                                 state.cursor_acc_x -= move_x
                                 state.cursor_acc_y -= move_y
 
@@ -781,8 +803,8 @@ def process_touch_report(report):
                                 and state.drag_candidate 
                                 and not state.is_left_held
                             ):
-                            dispatch_gesture_event("1f_double_tap")
-                            #execute_mapped_action("left_hold")
+                            ad.dispatch_gesture_event("1f_double_tap")
+                            #ad.execute_mapped_action("left_hold")
                             if DEBUG: print("[Gesture] 1F Double Tap Drag Initiated")
 
                     state.last_f1_pos = pos
@@ -801,7 +823,7 @@ def process_touch_report(report):
             if state.active_gesture is None:
                 if abs(delta_spread_total) >= config.pinch_activation_threshold:
                     state.active_gesture = "2F_PINCH"
-                    press_key("ctrl")
+                    ad.press_key("ctrl")
                     state.scroll_active = True
                 elif dist_centroid >= config.scroll_activation_threshold:
                     state.active_gesture = "2F_SCROLL"
@@ -820,13 +842,13 @@ def process_touch_report(report):
                     
                     if step_x != 0 or step_y != 0:
                         # print(f"step_x,step_y: {step_x,step_y}")  
-                        send_mouse_scroll(step_x, step_y)
+                        ad.send_mouse_scroll(step_x, step_y)
 
                 state.last_2finger_centroid = (cx, cy)
 
             elif state.active_gesture == "2F_PINCH" and config.feature_toggles.get("2f_pinch", False):
                 delta_pinch = spread - state.last_pinch_distance
-                send_mouse_scroll(0, delta_pinch * config.pinch_sensitivity)
+                ad.send_mouse_scroll(0, delta_pinch * config.pinch_sensitivity)
                 state.last_pinch_distance += delta_pinch 
                 
                 # if abs(delta_pinch) >= config.pinch_continuous_sensitivity:
@@ -856,27 +878,27 @@ def process_touch_report(report):
             dist_centroid = math.hypot(dx_total, dy_total)
             delta_spread_total = spread - state.mf_start_spread
                 
-            if state.active_gesture is None and session_duration <= config.max_gesture_touch_session_duration:
+            if state.active_gesture is None and state.session_duration <= config.max_gesture_touch_session_duration:
                 if num_active >= 5 and config.feature_toggles.get("5f_alt_tab", False):
                     state.active_gesture = "5F_ALT_TAB"
                     state.alt_tab_active = True
                     state.last_alt_tab_x = cx
-                    execute_mapped_action("ctrl_alt_tab_initiate")
+                    ad.execute_mapped_action("ctrl_alt_tab_initiate")
 
                 else:
                     prefix = f"{num_active}f_"
                     
                     if abs(delta_spread_total) >= config.pinch_discrete_threshold:
                         gesture_name = prefix + ("pinch_out" if delta_spread_total > 0 else "pinch_in")
-                        dispatch_gesture_event(gesture_name)
+                        ad.dispatch_gesture_event(gesture_name)
 
                     elif abs(dx_total) >= config.swipe_threshold_x and abs(dx_total) > config.axis_dominance_ratio * abs(dy_total):
                         gesture_name = prefix + ("swipe_right" if dx_total > 0 else "swipe_left")
-                        dispatch_gesture_event(gesture_name)
+                        ad.dispatch_gesture_event(gesture_name)
 
                     elif abs(dy_total) >= config.swipe_threshold_y and abs(dy_total) > config.axis_dominance_ratio * abs(dx_total):
                         gesture_name = prefix + ("swipe_down" if dy_total > 0 else "swipe_up")
-                        dispatch_gesture_event(gesture_name)
+                        ad.dispatch_gesture_event(gesture_name)
                         
             elif state.active_gesture == "5F_ALT_TAB" and num_active >= 5:
                 dx_step = cx - state.last_alt_tab_x
@@ -884,9 +906,9 @@ def process_touch_report(report):
                     if state.f5_counter >= 1 / config.alt_tab_step_sensitivity: # to slow down the windows selection change
                         state.f5_counter = 0
                         if dx_step > 0:
-                            execute_mapped_action("ctrl_alt_tab_next")
+                            ad.execute_mapped_action("ctrl_alt_tab_next")
                         else:
-                            execute_mapped_action("ctrl_alt_tab_prev")
+                            ad.execute_mapped_action("ctrl_alt_tab_prev")
                         state.last_alt_tab_x = cx
                     else:
                         state.f5_counter += 1
@@ -896,35 +918,37 @@ def process_touch_report(report):
         # --- TAPS + RESET / RELEASE ---
         elif num_active == 0:
             if state.alt_tab_active:
-                execute_mapped_action("ctrl_alt_tab_commit")
+                ad.execute_mapped_action("ctrl_alt_tab_commit")
                 state.alt_tab_active = False
                 state.last_alt_tab_x = 0
                 
             elif state.is_left_held:
-                execute_mapped_action("left_hold_release")
+                ad.execute_mapped_action("left_hold_release")
 
             elif state.session_start_time is not None and state.active_gesture is None:
 
                 #if DEBUG: print(f"session_duration: {session_duration}, config.max_tap_duratio: {config.max_tap_duration}, sd<max_dur: {session_duration <= config.max_tap_duration}")
-                if session_duration <= config.max_tap_duration and not state.scroll_active:
+                if state.session_duration <= config.max_tap_duration and not state.scroll_active:
                     if state.peak_contact_count == 1:
                         if not state.was_moved or not state.is_dragging_cursor:
-                            dispatch_gesture_event("1f_tap")
+                            ad.dispatch_gesture_event("1f_tap")
                             state.last_f1_tap_time = current_time
 
                     elif state.peak_contact_count == 2:
-                        dispatch_gesture_event("2f_tap")
+                        ad.dispatch_gesture_event("2f_tap")
 
                     elif state.peak_contact_count == 3:
-                        dispatch_gesture_event("3f_tap")
+                        ad.dispatch_gesture_event("3f_tap")
 
                     elif state.peak_contact_count == 4:
-                        dispatch_gesture_event("4f_tap")
+                        ad.dispatch_gesture_event("4f_tap")
 
                     elif state.peak_contact_count >= 5:
-                        dispatch_gesture_event("5f_tap")
+                        ad.dispatch_gesture_event("5f_tap")
                         
             state.session_start_time = None
+            state.session_duration = 0.0
+            
             state.peak_contact_count = 0
             for i in range(len(state.start_time)):
                 state.start_time[i] = None
@@ -957,7 +981,7 @@ def process_touch_report(report):
                         and state.max_drift <= config.tap_max_movement
                         and not state.scroll_active
                         ):
-                    dispatch_gesture_event("1f_press")
+                    ad.dispatch_gesture_event("1f_press")
                     if DEBUG: print("[Gesture] 1F Press & Hold Drag Initiated")
                     
             elif num_active >= 2 and config.feature_toggles.get(f"{num_active}f_press", False):    
@@ -967,151 +991,251 @@ def process_touch_report(report):
                         ):
                     if DEBUG: print(f"[Gesture] Press hold for {num_active} Fingers triggered")
                     gesture_name = f"{num_active}f_press"
-                    dispatch_gesture_event(gesture_name)                    
+                    ad.dispatch_gesture_event(gesture_name)                    
         
     state.last_num_active = num_active
+# ==============================================================================
+# INTERFACE MANAGER
+# ==============================================================================
+#
 
-# ==============================================================================
-# THREAD LOOPS
-# ==============================================================================
-def run_pen_interface(device_info):
-    dev = hid.device()
-    oserror_count = 0
+class InterfaceManager():
     
-    while state.running:
-        if state.touch_paused:
-            time.sleep(1)
-            continue
-        try:
-            dev.open_path(device_info['path'])
-            dev.set_nonblocking(True)
-            print(f"[Pen Interface][Thread Started] on Interface ({device_info.get('interface_number', 0)})")
-            while state.running:
+    # ==============================================================================
+    # HID HARDWARE CONSTANTS
+    # ==============================================================================
+    VENDOR_ID = 0x056A  # Wacom Co., Ltd.
+    PRODUCT_ID = [132, 791, 789, 788]   
+    
+    def __init__(self, prefer_wireless):
+        self.prefer_wireless = prefer_wireless
+        self.interface_groups = []
+        self.used_interfaces = []
+        self.last_update = time.time() - 60
+    
+    def update_interfaces(self):
+        current_time = time.time()
+        if (current_time - self.last_update) > 10:
+            self.last_update = current_time
+            self.interface_groups = self.fetch_interfaces()
+            if self.interface_groups is None:
+                print("[Interfaces] No Valid Interfaces Found")
+                return 1
+            
+            if self.prefer_wireless:
+                self.interface_groups.sort(key=lambda group: group['product_string'], reverse=True)
+            else: 
+                self.interface_groups.sort(key=lambda group: group['product_string'])
+            
+            self.used_interfaces = []
+            for i in self.interface_groups:
+                self.used_interfaces.append([False, False])
+            
+            print(f"[Interfaces] Updated Interfaces - found: {len(self.interface_groups)}")
+            for group in self.interface_groups:
+                print(f"[Interfaces] Device available: {group['product_string']} {group['product_id']}")
+            print(f"[Interfaces] =============================================")
+            return 0
+        else:
+            #print("[Interfaces] Already updated in last 10 seconds")
+            return 0
+
+
+    def fetch_interfaces(self):
+        self.interface_groups = []
+        pen_device, touch_device = None, None
+        for dev in hid.enumerate():
+            fetched_vendor_id = dev['vendor_id'] 
+            fetched_product_string = dev['product_string'] 
+                # 'product_string': 'Wacom Wireless Receiver' 'product_id': 132
+                # 'product_string': 'Intuos5 touch L' 'product_id': 791
+                # 'product_string': 'Intuos5 touch M' 'product_id': 789
+                # 'product_string': 'Intuos5 touch S' 'product_id': 788
+            fetched_product_id = dev['product_id']
+            
+            vendor_match = dev['vendor_id'] == self.VENDOR_ID
+            product_match = fetched_product_id in self.PRODUCT_ID
+            if vendor_match and product_match:
+                interface_num = dev.get('interface_number', -1)
+                wireless = fetched_product_string == 'Wacom Wireless Receiver'
+                if interface_num == (1 if wireless else 0):
+                    pen_device = dev
+                elif interface_num == (2 if wireless else 1):
+                    touch_device = dev
+    
+            if pen_device != None and touch_device != None:
+                # interface_groups.append([fetched_product_id, fetched_product_string, pen_device, touch_device])
+                self.interface_groups.append({
+                    'product_id': fetched_product_id, 
+                    'product_string': fetched_product_string, 
+                    'pen_device': pen_device, 
+                    'touch_device': touch_device})
+                pen_device, touch_device = None, None
+
+        if len(self.interface_groups) == 0:       
+            return None
+        return self.interface_groups
+
+    def run_interface(self, type, number, state, action):               
+        global running
+        
+        header = f"[{number}: {type} Interface]"
+        if type == "Touch":
+            touch = True
+            device_type = 'touch_device'
+            place = 1
+            
+        elif type == "Pen":
+            touch = False
+            device_type = 'pen_device'
+            place = 0
+            
+        try:  
+            self.used_interfaces[number][place] = number
+                
+            device_info = self.interface_groups[number][device_type]
+            dev = hid.device()
+
+            oserror_count = 0
+            pause_messaged = False
+            
+            while running:
                 if state.touch_paused:
-                    time.sleep(0.5)
+                    time.sleep(1)
                     continue
-                report = dev.read(2)
-                if oserror_count != 0: oserror_count = 0
-                if report:
-                    parse_pen_packet(report)
+                try:
+                    dev.open_path(device_info['path'])
+                    dev.set_nonblocking(False)
+                    print(f"{header}[Thread Started] on Interface ({device_info.get('interface_number', 0)})")
+                    
+                    while running:
+                        # Touch Input
+                        self.used_interfaces[number][place] = number
+                        if touch:
+                            report = dev.read(66)
+                            if state.touch_paused:
+                                if not pause_messaged:
+                                    print("{header}[Touch Paused] Skipping touch processing...")
+                                    pause_messaged = True
+                                    # Instantly clear active touch references on pause
+                                if state.active_contacts:
+                                    state.active_contacts.clear()
+                                time.sleep(0.5)
+                            else:
+                                if pause_messaged : pause_messaged = False
+                                process_touch_report(report, state, action)
+                        
+                        # Pen Input
+                        else:
+                            if state.touch_paused:
+                                time.sleep(0.5)
+                                continue
+                            report = dev.read(2)
+                            if report:
+                                parse_pen_packet(report, state)
+                        if oserror_count != 0: oserror_count = 0
+                except OSError:
+                    if oserror_count == 0:
+                        print(f"{header}[Touch Error] read error")
+                    oserror_count += 1
+                    pass 
+                except Exception as e:
+                    print(f"{header}[Touch Error] {e}")
+                    oserror_count += 1
+                    
+                    if DEBUG: raise e
+                finally:
+                    dev.close()
+                
+                if oserror_count > 30:
+                    oserror_count = 0
+                    print(f"{header} failed to reconnect to Interface ({device_info.get('interface_number', 0)}) \n --> [{type} Interface] {type} input now disabled. \n [Info] Reenable via context menu to try again. ")
+                    state.touch_paused = True
                 else:
-                    time.sleep(0.1)
-        except OSError:
-            if oserror_count == 0:
-                print(f"[Pen Interface][Pen Error] read error")
-            oserror_count += 1
-            pass    
-        
-        except Exception as e:
-            print(f"[Pen Interface][Pen Error] {e}")
-        finally:
-            dev.close()
-            
-        if oserror_count > 30:
-            oserror_count = 0
-            print(f"[Pen Interface] failed to reconnect to Interface ({device_info.get('interface_number', 0)}) \n --> [Pen Interface] Pen Hover Control now disabled. \n [Info] Reenable via context menu to try again. ")
-            state.touch_paused = True
-        else:
-            time.sleep(5)
-            pen_device, _ = fetch_interfaces()
-            if pen_device is not None:
-                print(f"[Pen Interface] new Interface detected: {device_info.get('manufacturer_string')} { device_info.get('product_string')}")
-                device_info = pen_device
-            print(f"[Pen Interface] trying to reconnect to Interface ({device_info.get('interface_number', 0)}) Attempt:{oserror_count}")
+                    time.sleep(5)
+                    code = self.update_interfaces()
+                    time.sleep(0.5+number) # to stagger the different threads and thus to prevent crossing of pads in interfaces
+                    if code == 1:
+                        print(f"[{type} Thread {number}] Ending Thread")
+                        running = False
+                        sys.exit("[Interfaces] No Interfaces found")
+                        break
+                    device = None                        
+                    for i, group in enumerate(self.interface_groups):
+                        #print(type, self.used_interfaces)
+                        
+                        if self.used_interfaces[i][place] is False:
+                            device = group[device_type]
+                            self.used_interfaces[i][place] = number
+                            #print(type, self.used_interfaces)
+                            break
+                    if device is not None:
+                        device_info = device
+                        print(f"{header} new Interface detected: {device_info.get('manufacturer_string')} {device_info.get('product_string')}")
+                    else:
+                        print(f"[{number} {type} Thread ] All Interfaces already in use -  closing {type} Thread {number}")
+                        # running = False
+                        # sys.exit("[Interfaces] All Interfaces in use")
+                        break
 
-def contains_touch_down(report):
-    return STATUS_TOUCH_DOWN in [report[3], report[10]] 
-
-def run_touch_interface(device_info):
-    dev = hid.device()
-    oserror_count = 0
-    pause_messaged = False
-    
-    while state.running:
-        if state.touch_paused:
-            time.sleep(1)
-            continue
-        try:
-            dev.open_path(device_info['path'])
-            dev.set_nonblocking(False)
-            print(f"[Touch Interface][Thread Started] on Interface ({device_info.get('interface_number', 0)})")
+                    print(f"{header} trying to reconnect to Interface ({device_info.get('interface_number', 0)}) Attempt:{oserror_count}")
+        except IndexError as ie:
+            print(f"{header} More Threads than Devices found - closing Thread")
             
-            while state.running:
-                report = dev.read(66)
-                if state.touch_paused:
-                    if not pause_messaged:
-                        print("[Touch Interface][Touch Paused] Skipping touch processing...")
-                        pause_messaged = True
-                    # Instantly clear active touch references on pause
-                    if state.active_contacts:
-                        state.active_contacts.clear()
-                    time.sleep(0.5)
-                else:
-                    if pause_messaged : pause_messaged = False
-                    # if report:
-                    process_touch_report(report)
-                    # else:
-                    #     time.sleep(0.002)
-        except OSError:
-            if oserror_count == 0:
-                print(f"[Touch Interface][Touch Error] read error")
-            oserror_count += 1
-            pass 
-        except Exception as e:
-            print(f"[Touch Interface][Touch Error] {e}")
-            oserror_count += 1
-            
-            if DEBUG: raise e
-        finally:
-            dev.close()
-        
-        if oserror_count > 30:
-            oserror_count = 0
-            print(f"[Touch Interface] failed to reconnect to Interface ({device_info.get('interface_number', 0)}) \n --> [Touch Interface] Touch input now disabled. \n [Info] Reenable via context menu to try again. ")
-            state.touch_paused = True
-        else:
-            time.sleep(5)
-            _, touch_device = fetch_interfaces()
-            if touch_device is not None:
-                print(f"[Touch Interface] new Interface detected: {device_info.get('manufacturer_string')} {device_info.get('product_string')}")
-                device_info = touch_device
-            print(f"[Touch Interface] trying to reconnect to Interface ({device_info.get('interface_number', 0)}) Attempt:{oserror_count}")
 
-def fetch_interfaces():
-    pen_device, touch_device = None, None
-    for dev in hid.enumerate():
-        vendor_match = (VENDOR_ID is None) or (dev['vendor_id'] == VENDOR_ID)
-        product_match = (PRODUCT_ID is None) or (dev['product_id'] == PRODUCT_ID)
-        if vendor_match and product_match:
-            interface_num = dev.get('interface_number', -1)
-            if interface_num == 0 and pen_device is None:
-                pen_device = dev
-            elif interface_num == 1 and touch_device is None:
-                touch_device = dev
-    if not pen_device or not touch_device:
-        return None, None
-    return pen_device, touch_device
 
 def main():
-    print("Enumerating HID devices for Wacom Tablet...")
-    pen_device, touch_device = fetch_interfaces()
-    print(f"Device found: {touch_device.get('manufacturer_string')} {touch_device.get('product_string')}")
-    #print(f"Pen Interface Object: {pen_device}")
-    #print(f"Touch Interface Object: {touch_device}")
-    if not pen_device or not touch_device:
-        print("Error: Could not locate both Pen (Int 0) and Touch (Int 1) interfaces.")
-        return
-    pen_thread = threading.Thread(target=run_pen_interface, args=(pen_device,), daemon=True)
-    touch_thread = threading.Thread(target=run_touch_interface, args=(touch_device,), daemon=True)
+    prefer_wireless = False
+    connect_all = False
+    for arg in sys.argv[1:]:
+        if "-DEBUG" in arg or "-debug" in arg or "-Debug" in arg:
+            global DEBUG
+            DEBUG = True
+            print("[Start Paramater] DEBUG active")
+        elif "-wireless" in arg:
+            prefer_wireless = True
+            print("[Start Paramater] Wireless preference active")
+        elif "-connectall" in arg:
+            connect_all = True
+            print("[Start Paramater] Connect all active")
+        else:
+            print(f"[Start Paramater] Unknown parameter: {arg}")
+    
+    print("[Interfaces] Enumerating HID devices for Wacom Tablet...")
+    
 
-    pen_thread.start()
-    touch_thread.start()
-    time.sleep(0.2) # Allow threads to initialize
+    im = InterfaceManager(prefer_wireless)
+    
+    code = im.update_interfaces()
+    if code == 1:
+        print("[Interfaces] Ending Program")
+        sys.exit("[Interfaces] No Interfaces found")
+    
+    # print(interface_groups)
+               
+    for number, group in enumerate(im.interface_groups if connect_all else im.interface_groups[0:1]):
+        
+        tablet_state = TabletState()
+        action_dispatch = ActionDispatcher(tablet_state)
+        
+        pen_thread = threading.Thread(target=im.run_interface, args=("Pen", number, tablet_state, action_dispatch,), daemon=True)
+        touch_thread = threading.Thread(target=im.run_interface, args=("Touch", number, tablet_state, action_dispatch,), daemon=True)
+        
+        print(f"[Interfaces] Connecting to Device: {group['product_string']} {group['product_id']}")
+        print(f"[Interfaces] Connecting via: {"USB Cable" if group['product_string'] != 'Wacom Wireless Receiver' else "Wireless Receiver"}")
+        
+        pen_thread.start()
+        touch_thread.start()  
+        
+        time.sleep(0.2) # Allow threads to initialize
+
+    
+    config.set_available_actions(list(action_dispatch.ACTION_DISPATCH.keys()))
     print("\n=== Wacom Touch Driver Running ===")
 
     try:
         from gui import launch_gui
-        launch_gui(state, config)
+        launch_gui(tablet_state, config)
     except SystemExit:
         pass
     finally:
@@ -1121,3 +1245,4 @@ if __name__ == '__main__':
     main()
     
 
+ 

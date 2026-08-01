@@ -455,7 +455,7 @@ class DriverTrayApp:
 
     def quit_driver(self, icon=None, item=None):
         print("[Tray] Exiting Wacom Touch Driver...")
-        self.state.running = False
+        self.state.set_running_global(False)
         if self.icon:
             self.icon.stop()
         self.root.after(0, self.root.quit)

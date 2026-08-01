@@ -1,3 +1,31 @@
+260731-1054:
+- added support for the wireless receiver. will now automatically recogniced.
+- cable connection will be prefered if both cable and wireless receiver are connected at the same time
+- when using 2 wacom pads at the same time it should now check if the touch interface is not already blocked by another device and will connect to the first pad with non blocked touch input 
+- added start parameter when starting the program via console
+    - `-wireless` prefers wireless connection instead of default cable connection
+        - but keep in mind that wireless connection is not supported by OpenTabletDriver
+    - `-debug` activated debug output
+
+- added ability to connect to multiple wacom pads at the same time and implemented some a bit more smart reconnect mechanism
+    - rearranged some code into new classes to support multiple independent wacom touch devices at the same time without influencing each other
+        - all use the same config setting though
+    - used with start parameter `-connectall`
+
+
+idea:
+- if wireless connection is established the buttons are not controlled via OpenTabletDriver and thus can be freely used.
+- could i even implement a basic relative pen movement and thus replacing the need for OTD completely for pen input?
+    - movement + sensitivity
+    - pen click and hold behaviour
+    - pen buttons
+    - tablet buttons and rotary control
+    (i personally do not need pressure or tilt functionality)
+
+idea2: 
+- to implement a manager thread that simply manages the connections and has an overview of what interfaces are present and regularly looks for changes and starts new interface threads as needed.
+    - the current interface thread can be heavily simplified because they do not have to hold the reconnect code and try to synchronise with each other without knowing about other threads itself
+
 
 260728-2031:
 - replaced pynput completely with SendInput via WIN32.dll and CTYPES.
