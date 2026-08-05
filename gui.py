@@ -420,29 +420,34 @@ class SettingsWindow(tk.Toplevel):
 
 
 class DriverTrayApp:
-    def __init__(self, root, state_ref, config_ref):
+    def __init__(self, root, state_ref, config_ref, enabled_event_ref, stop_event_ref):
         self.root = root
         self.state = state_ref
         self.config = config_ref
+        self.touch_enabled_event = enabled_event_ref
+        self.stop_event = stop_event_ref
         self.icon = None
         self.settings_window = None
-
         self.icon_cache = IconCache(text="WT")
 
     def toggle_touch(self, icon=None, item=None):
-        self.state.touch_paused = not self.state.touch_paused
-        status = "Paused" if self.state.touch_paused else "Active"
-        print(f"[Tray] Touch input is now {status} (touch_paused = {self.state.touch_paused})")
+        if self.touch_enabled_event.is_set():
+            self.touch_enabled_event.clear()
+        else:
+            self.touch_enabled_event.set()
+        
+        status = "Paused" if not self.touch_enabled_event.is_set() else "Active"
+        print(f"[Tray] Touch input is now {status} (touch_paused = {not self.touch_enabled_event.is_set()})")
         self.update_icon()
-
+        
     def is_touch_enabled(self, item=None):
-        return not self.state.touch_paused
-
+        return not self.touch_enabled_event.is_set()
+    
     def update_icon(self):
         if self.icon:
-            is_enabled = not self.state.touch_paused
+            is_enabled = self.touch_enabled_event.is_set()
             self.icon.icon = self.icon_cache.get(is_enabled)
-            self.icon.title = f"Wacom Touch Driver ({'Disabled' if self.state.touch_paused else 'Enabled'})"
+            self.icon.title = f"Wacom Touch Driver ({'Enabled' if self.touch_enabled_event.is_set() else 'Disabled'})"
 
     def open_settings(self, icon=None, item=None):
         self.root.after(0, self._show_settings_gui)
@@ -455,7 +460,11 @@ class DriverTrayApp:
 
     def quit_driver(self, icon=None, item=None):
         print("[Tray] Exiting Wacom Touch Driver...")
-        self.state.set_running_global(False)
+        self.stop_event.set()
+        #self.state.set_running_global(False)
+        # to stop waiting of device manager if touch is disabled
+        if self.touch_enabled_event:
+            self.touch_enabled_event.set()
         if self.icon:
             self.icon.stop()
         self.root.after(0, self.root.quit)
@@ -468,7 +477,7 @@ class DriverTrayApp:
             item('Exit Driver', self.quit_driver)
         )
 
-        initial_state = not self.state.touch_paused
+        initial_state = self.touch_enabled_event.is_set()
         self.icon = pystray.Icon(
             "WacomTouchDriver",
             self.icon_cache.get(initial_state),
@@ -478,11 +487,11 @@ class DriverTrayApp:
         self.icon.run()
 
 
-def launch_gui(state_ref, config_ref):
+def launch_gui(state_ref, config_ref, pause_event_ref, stop_event_ref):
     root = tk.Tk()
     root.withdraw()
 
-    app = DriverTrayApp(root, state_ref, config_ref)
+    app = DriverTrayApp(root, state_ref, config_ref, pause_event_ref, stop_event_ref)
     tray_thread = threading.Thread(target=app.run_tray, daemon=True)
     tray_thread.start()
 

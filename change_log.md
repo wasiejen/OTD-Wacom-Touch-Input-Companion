@@ -1,3 +1,12 @@
+260805-1328:
+- fixed not working touch_paused function.
+- introduced events for 
+    - touch_enabled_event to use the wait function to pause the device manager 
+    - stop_event to replace global variable running
+- fixed bug that would lead to program not closing correctly due to incorrect usage of event.wait() that caused busy polling and then getting stuck in wait
+- general code cleanup
+
+
 260805-1146:
 - device manager class that runs it own thread and manages the devices and interfaces and populates them with threads.
     - thus automatic discovery and connection to new devices and changing devices
