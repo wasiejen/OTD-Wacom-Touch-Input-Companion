@@ -7,6 +7,7 @@ import os
 import ctypes
 from contextlib import contextmanager
 import sys
+import re
 
 from vk_codes import vk_codes_dict  # Import vk_code dictionary
 
@@ -999,250 +1000,516 @@ def process_touch_report(report, state, action_dispatch):
 # ==============================================================================
 #
 
-class InterfaceManager():
+# class InterfaceManager():
     
-    # ==============================================================================
-    # HID HARDWARE CONSTANTS
-    # ==============================================================================
-    VENDOR_ID = 0x056A  # Wacom Co., Ltd.
-    PRODUCT_ID = [132, 791, 789, 788]   
+#     # ==============================================================================
+#     # HID HARDWARE CONSTANTS
+#     # ==============================================================================
+#     VENDOR_ID = 0x056A  # Wacom Co., Ltd.
+#     PRODUCT_ID = [132, 791, 789, 788]   
     
-    def __init__(self, prefer_wireless):
-        self.prefer_wireless = prefer_wireless
-        self.interface_groups = []
-        self.used_interfaces = []
-        self.last_update = time.time() - 60
+#     def __init__(self, prefer_wireless):
+#         self.prefer_wireless = prefer_wireless
+#         self.interface_groups = []
+#         self.used_interfaces = []
+#         self.last_update = time.time() - 60
     
-    def update_interfaces(self):
-        current_time = time.time()
-        if (current_time - self.last_update) > 10:
-            self.last_update = current_time
-            self.interface_groups = self.fetch_interfaces()
-            if self.interface_groups is None:
-                print("[Interfaces] No Valid Interfaces Found")
-                return 1
+#     def update_interfaces(self):
+#         current_time = time.time()
+#         if (current_time - self.last_update) > 10:
+#             self.last_update = current_time
+#             self.interface_groups = self.fetch_interfaces()
+#             if self.interface_groups is None:
+#                 print("[Interfaces] No Valid Interfaces Found")
+#                 return 1
             
-            if self.prefer_wireless:
-                self.interface_groups.sort(key=lambda group: group['product_string'], reverse=True)
-            else: 
-                self.interface_groups.sort(key=lambda group: group['product_string'])
+#             if self.prefer_wireless:
+#                 self.interface_groups.sort(key=lambda group: group['product_string'], reverse=True)
+#             else: 
+#                 self.interface_groups.sort(key=lambda group: group['product_string'])
             
-            self.used_interfaces = []
-            for i in self.interface_groups:
-                self.used_interfaces.append([False, False])
+#             self.used_interfaces = []
+#             for i in self.interface_groups:
+#                 self.used_interfaces.append([False, False])
             
-            print(f"[Interfaces] Updated Interfaces - found: {len(self.interface_groups)}")
-            for group in self.interface_groups:
-                print(f"[Interfaces] Device available: {group['product_string']} {group['product_id']}")
-            print(f"[Interfaces] =============================================")
-            return 0
-        else:
-            #print("[Interfaces] Already updated in last 10 seconds")
-            return 0
+#             print(f"[Interfaces] Updated Interfaces - found: {len(self.interface_groups)}")
+#             for group in self.interface_groups:
+#                 print(f"[Interfaces] Device available: {group['product_string']} {group['product_id']}")
+#             print(f"[Interfaces] =============================================")
+#             return 0
+#         else:
+#             #print("[Interfaces] Already updated in last 10 seconds")
+#             return 0
 
 
-    def fetch_interfaces(self):
-        self.interface_groups = []
-        pen_device, touch_device = None, None
-        for dev in hid.enumerate():
-            fetched_vendor_id = dev['vendor_id'] 
-            fetched_product_string = dev['product_string'] 
-                # 'product_string': 'Wacom Wireless Receiver' 'product_id': 132
-                # 'product_string': 'Intuos5 touch L' 'product_id': 791
-                # 'product_string': 'Intuos5 touch M' 'product_id': 789
-                # 'product_string': 'Intuos5 touch S' 'product_id': 788
-            fetched_product_id = dev['product_id']
+#     def fetch_interfaces(self):
+#         self.interface_groups = []
+#         pen_device, touch_device = None, None
+#         for dev in hid.enumerate():
+#             fetched_vendor_id = dev['vendor_id'] 
+#             fetched_product_string = dev['product_string'] 
+#                 # 'product_string': 'Wacom Wireless Receiver' 'product_id': 132
+#                 # 'product_string': 'Intuos5 touch L' 'product_id': 791
+#                 # 'product_string': 'Intuos5 touch M' 'product_id': 789
+#                 # 'product_string': 'Intuos5 touch S' 'product_id': 788
+#             fetched_product_id = dev['product_id']
             
-            vendor_match = dev['vendor_id'] == self.VENDOR_ID
-            product_match = fetched_product_id in self.PRODUCT_ID
-            if vendor_match and product_match:
-                interface_num = dev.get('interface_number', -1)
-                wireless = fetched_product_string == 'Wacom Wireless Receiver'
-                if interface_num == (1 if wireless else 0):
-                    pen_device = dev
-                elif interface_num == (2 if wireless else 1):
-                    touch_device = dev
+#             vendor_match = dev['vendor_id'] == self.VENDOR_ID
+#             product_match = fetched_product_id in self.PRODUCT_ID
+#             if vendor_match and product_match:
+#                 interface_num = dev.get('interface_number', -1)
+#                 wireless = fetched_product_string == 'Wacom Wireless Receiver'
+#                 if interface_num == (1 if wireless else 0):
+#                     pen_device = dev
+#                 elif interface_num == (2 if wireless else 1):
+#                     touch_device = dev
     
-            if pen_device != None and touch_device != None:
-                # interface_groups.append([fetched_product_id, fetched_product_string, pen_device, touch_device])
-                self.interface_groups.append({
-                    'product_id': fetched_product_id, 
-                    'product_string': fetched_product_string, 
-                    'pen_device': pen_device, 
-                    'touch_device': touch_device})
-                pen_device, touch_device = None, None
+#             if pen_device != None and touch_device != None:
+#                 # interface_groups.append([fetched_product_id, fetched_product_string, pen_device, touch_device])
+#                 self.interface_groups.append({
+#                     'product_id': fetched_product_id, 
+#                     'product_string': fetched_product_string, 
+#                     'pen_device': pen_device, 
+#                     'touch_device': touch_device})
+#                 pen_device, touch_device = None, None
 
-        if len(self.interface_groups) == 0:       
-            return None
-        return self.interface_groups
+#         if len(self.interface_groups) == 0:       
+#             return None
+#         return self.interface_groups
 
-    def run_interface(self, type, number, state, action):               
-        global running
+#     def run_interface(self, type, number, state, action):               
+#         global running
         
-        header = f"[{number}: {type} Interface]"
-        if type == "Touch":
-            touch = True
-            device_type = 'touch_device'
-            place = 1
+#         header = f"[{number}: {type} Interface]"
+#         if type == "Touch":
+#             touch = True
+#             device_type = 'touch_device'
+#             place = 1
             
-        elif type == "Pen":
-            touch = False
-            device_type = 'pen_device'
-            place = 0
+#         elif type == "Pen":
+#             touch = False
+#             device_type = 'pen_device'
+#             place = 0
             
-        try:  
-            self.used_interfaces[number][place] = number
+#         try:  
+#             self.used_interfaces[number][place] = number
                 
-            device_info = self.interface_groups[number][device_type]
-            dev = hid.device()
+#             device_info = self.interface_groups[number][device_type]
+#             dev = hid.device()
 
-            oserror_count = 0
-            pause_messaged = False
+#             oserror_count = 0
+#             pause_messaged = False
             
-            while running:
-                if state.touch_paused:
-                    time.sleep(1)
-                    continue
-                try:
-                    dev.open_path(device_info['path'])
-                    dev.set_nonblocking(False)
-                    print(f"{header}[Thread Started] on Interface ({device_info.get('interface_number', 0)})")
+#             while running:
+#                 if state.touch_paused:
+#                     time.sleep(1)
+#                     continue
+#                 try:
+#                     dev.open_path(device_info['path'])
+#                     dev.set_nonblocking(False)
+#                     print(f"{header}[Thread Started] on Interface ({device_info.get('interface_number', 0)})")
                     
-                    while running:
-                        # Touch Input
-                        self.used_interfaces[number][place] = number
-                        if touch:
-                            report = dev.read(66)
-                            if state.touch_paused:
-                                if not pause_messaged:
-                                    print("{header}[Touch Paused] Skipping touch processing...")
-                                    pause_messaged = True
-                                    # Instantly clear active touch references on pause
-                                if state.active_contacts:
-                                    state.active_contacts.clear()
-                                time.sleep(0.5)
-                            else:
-                                if pause_messaged : pause_messaged = False
-                                process_touch_report(report, state, action)
+#                     while running:
+#                         # Touch Input
+#                         self.used_interfaces[number][place] = number
+#                         if touch:
+#                             report = dev.read(66)
+#                             if state.touch_paused:
+#                                 if not pause_messaged:
+#                                     print("{header}[Touch Paused] Skipping touch processing...")
+#                                     pause_messaged = True
+#                                     # Instantly clear active touch references on pause
+#                                 if state.active_contacts:
+#                                     state.active_contacts.clear()
+#                                 time.sleep(0.5)
+#                             else:
+#                                 if pause_messaged : pause_messaged = False
+#                                 process_touch_report(report, state, action)
                         
-                        # Pen Input
-                        else:
-                            if state.touch_paused:
-                                time.sleep(0.5)
-                                continue
-                            report = dev.read(2)
-                            if report:
-                                parse_pen_packet(report, state)
-                        if oserror_count != 0: oserror_count = 0
-                except OSError:
-                    if oserror_count == 0:
-                        print(f"{header}[Touch Error] read error")
-                    oserror_count += 1
-                    pass 
-                except Exception as e:
-                    print(f"{header}[Touch Error] {e}")
-                    oserror_count += 1
+#                         # Pen Input
+#                         else:
+#                             if state.touch_paused:
+#                                 time.sleep(0.5)
+#                                 continue
+#                             report = dev.read(2)
+#                             if report:
+#                                 parse_pen_packet(report, state)
+#                         if oserror_count != 0: oserror_count = 0
+#                 except OSError:
+#                     if oserror_count == 0:
+#                         print(f"{header}[Touch Error] read error")
+#                     oserror_count += 1
+#                     pass 
+#                 except Exception as e:
+#                     print(f"{header}[Touch Error] {e}")
+#                     oserror_count += 1
                     
-                    if DEBUG: raise e
-                finally:
-                    dev.close()
+#                     if DEBUG: raise e
+#                 finally:
+#                     dev.close()
                 
-                if oserror_count > 30:
-                    oserror_count = 0
-                    print(f"{header} failed to reconnect to Interface ({device_info.get('interface_number', 0)}) \n --> [{type} Interface] {type} input now disabled. \n [Info] Reenable via context menu to try again. ")
-                    state.touch_paused = True
-                else:
-                    time.sleep(5)
-                    code = self.update_interfaces()
-                    time.sleep(0.5+number) # to stagger the different threads and thus to prevent crossing of pads in interfaces
-                    if code == 1:
-                        print(f"[{type} Thread {number}] Ending Thread")
-                        running = False
-                        sys.exit("[Interfaces] No Interfaces found")
-                        break
-                    device = None                        
-                    for i, group in enumerate(self.interface_groups):
-                        #print(type, self.used_interfaces)
+#                 if oserror_count > 30:
+#                     oserror_count = 0
+#                     print(f"{header} failed to reconnect to Interface ({device_info.get('interface_number', 0)}) \n --> [{type} Interface] {type} input now disabled. \n [Info] Reenable via context menu to try again. ")
+#                     state.touch_paused = True
+#                 else:
+#                     time.sleep(5)
+#                     code = self.update_interfaces()
+#                     time.sleep(0.5+number) # to stagger the different threads and thus to prevent crossing of pads in interfaces
+#                     if code == 1:
+#                         print(f"[{type} Thread {number}] Ending Thread")
+#                         running = False
+#                         sys.exit("[Interfaces] No Interfaces found")
+#                         break
+#                     device = None                        
+#                     for i, group in enumerate(self.interface_groups):
+#                         #print(type, self.used_interfaces)
                         
-                        if self.used_interfaces[i][place] is False:
-                            device = group[device_type]
-                            self.used_interfaces[i][place] = number
-                            #print(type, self.used_interfaces)
-                            break
-                    if device is not None:
-                        device_info = device
-                        print(f"{header} new Interface detected: {device_info.get('manufacturer_string')} {device_info.get('product_string')}")
-                    else:
-                        print(f"[{number} {type} Thread ] All Interfaces already in use -  closing {type} Thread {number}")
-                        # running = False
-                        # sys.exit("[Interfaces] All Interfaces in use")
-                        break
+#                         if self.used_interfaces[i][place] is False:
+#                             device = group[device_type]
+#                             self.used_interfaces[i][place] = number
+#                             #print(type, self.used_interfaces)
+#                             break
+#                     if device is not None:
+#                         device_info = device
+#                         print(f"{header} new Interface detected: {device_info.get('manufacturer_string')} {device_info.get('product_string')}")
+#                     else:
+#                         print(f"[{number} {type} Thread ] All Interfaces already in use -  closing {type} Thread {number}")
+#                         # running = False
+#                         # sys.exit("[Interfaces] All Interfaces in use")
+#                         break
 
-                    print(f"{header} trying to reconnect to Interface ({device_info.get('interface_number', 0)}) Attempt:{oserror_count}")
-        except IndexError as ie:
-            print(f"{header} More Threads than Devices found - closing Thread")
+#                     print(f"{header} trying to reconnect to Interface ({device_info.get('interface_number', 0)}) Attempt:{oserror_count}")
+#         except IndexError as ie:
+#             print(f"{header} More Threads than Devices found - closing Thread")
             
 
+
+# def main():
+#     prefer_wireless = False
+#     connect_all = False
+#     for arg in sys.argv[1:]:
+#         if "-DEBUG" in arg or "-debug" in arg or "-Debug" in arg:
+#             global DEBUG
+#             DEBUG = True
+#             print("[Start Paramater] DEBUG active")
+#         elif "-wireless" in arg:
+#             prefer_wireless = True
+#             print("[Start Paramater] Wireless preference active")
+#         elif "-connectall" in arg:
+#             connect_all = True
+#             print("[Start Paramater] Connect all active")
+#         else:
+#             print(f"[Start Paramater] Unknown parameter: {arg}")
+    
+#     print("[Interfaces] Enumerating HID devices for Wacom Tablet...")
+    
+
+#     im = InterfaceManager(prefer_wireless)
+    
+#     code = im.update_interfaces()
+#     if code == 1:
+#         print("[Interfaces] Ending Program")
+#         sys.exit("[Interfaces] No Interfaces found")
+    
+#     # print(interface_groups)
+               
+#     for number, group in enumerate(im.interface_groups if connect_all else im.interface_groups[0:1]):
+        
+#         tablet_state = TabletState()
+#         action_dispatch = ActionDispatcher(tablet_state)
+        
+#         pen_thread = threading.Thread(target=im.run_interface, args=("Pen", number, tablet_state, action_dispatch,), daemon=True)
+#         touch_thread = threading.Thread(target=im.run_interface, args=("Touch", number, tablet_state, action_dispatch,), daemon=True)
+        
+#         print(f"[Interfaces] Connecting to Device: {group['product_string']} {group['product_id']}")
+#         print(f"[Interfaces] Connecting via: {"USB Cable" if group['product_string'] != 'Wacom Wireless Receiver' else "Wireless Receiver"}")
+        
+#         pen_thread.start()
+#         touch_thread.start()  
+        
+#         time.sleep(0.2) # Allow threads to initialize
+
+    
+#     config.set_available_actions(list(action_dispatch.ACTION_DISPATCH.keys()))
+#     print("\n=== Wacom Touch Driver Running ===")
+
+#     try:
+#         from gui import launch_gui
+#         launch_gui(tablet_state, config)
+#     except SystemExit:
+#         pass
+#     finally:
+#         print("\n=== Wacom Touch Driver successfully stopped ===")
+
+# if __name__ == '__main__':
+#     main()
+    
+
+
+# ==============================================================================
+# SIMPLIFIED INTERFACE WORKER THREAD
+# ==============================================================================
+
+def run_interface(interface_type, device_info, state, action_dispatch):
+    """
+    Simplified worker thread for either 'Pen' or 'Touch' input.
+    Exits as soon as an OSError/Exception is thrown or state.touch_paused is set.
+    """
+    global running
+    interface_num = device_info.get('interface_number', -1)
+    path = device_info.get('path')
+    header = f"[{interface_type} Thread | Interface: {interface_num}]"
+
+    dev = hid.device()
+
+    try:
+        dev.open_path(path)
+        dev.set_nonblocking(False)
+        print(f"{header} Started successfully.")
+
+        while running:
+            # Check pause state requirement
+            if state.touch_paused:
+                print(f"{header} Interrupted by touch_paused state. Exiting interface thread.")
+                if interface_type == "Touch":
+                    state.active_contacts.clear()
+                break
+
+            # Read and process packets according to input type
+            if interface_type == "Touch":
+                report = dev.read(66)
+                if report:
+                    process_touch_report(report, state, action_dispatch)
+            elif interface_type == "Pen":
+                report = dev.read(2)
+                if report:
+                    parse_pen_packet(report, state)
+
+    except OSError as e:
+        print(f"{header} Read Error (Disconnected/OSError): {e}")
+    except Exception as e:
+        print(f"{header} Unexpected Error: {e}")
+        if DEBUG:
+            raise e
+    finally:
+        try:
+            dev.close()
+        except Exception:
+            pass
+        print(f"{header} Interface thread closed.")
+
+
+# ==============================================================================
+# MASTER DEVICE MANAGEMENT THREAD
+# ==============================================================================
+
+class DeviceManagerThread(threading.Thread):
+    VENDOR_ID = 0x056A  # Wacom Co., Ltd.
+    PRODUCT_IDS = [132, 791, 789, 788]
+
+    def __init__(self, prefer_wireless=False, poll_interval=3.0):
+        super().__init__(daemon=True)
+        self.prefer_wireless = prefer_wireless
+        self.poll_interval = poll_interval
+        self.lock = threading.Lock()
+        
+        # State tracking: path -> info dict
+        # Structure per connected pair: 
+        # {
+        #   'device_path': str (key),
+        #   'product_id': int,
+        #   'product_string': str,
+        #   'state': TabletState,
+        #   'action': ActionDispatcher,
+        #   'threads': {'Pen': Thread, 'Touch': Thread}
+        # }
+        self.active_connections = {}
+
+    def run(self):
+        global running
+        print("[Manager Thread] Started Master Management Thread.")
+        
+        while running:
+            self.manage_connections()
+            time.sleep(self.poll_interval)
+
+        print("[Manager Thread] Master Management Thread stopped.")
+
+
+
+    def get_device_parent_id(self, path_bytes):
+        """Extracts base hardware instance ID by stripping interface (MI_xx) suffixes."""
+        path_str = path_bytes.decode('utf-8', errors='ignore')
+        return re.sub(r'&MI_\d+.*$', '', path_str)
+
+    def enumerate_wacom_devices(self):
+        # Store lists of interfaces per parent ID to support multiple identical tablets
+        found_pen = {}    # parent_id -> list of pen dev dicts
+        found_touch = {}  # parent_id -> list of touch dev dicts
+
+        for dev in hid.enumerate():
+            v_id = dev.get('vendor_id')
+            p_id = dev.get('product_id')
+            p_str = dev.get('product_string', '')
+
+            if v_id == self.VENDOR_ID and p_id in self.PRODUCT_IDS:
+                interface_num = dev.get('interface_number', -1)
+                wireless = (p_str == 'Wacom Wireless Receiver')
+                
+                pen_iface = 1 if wireless else 0
+                touch_iface = 2 if wireless else 1
+
+                parent_id = self.get_device_parent_id(dev['path'])
+
+                if interface_num == pen_iface:
+                    found_pen.setdefault(parent_id, []).append(dev)
+                elif interface_num == touch_iface:
+                    found_touch.setdefault(parent_id, []).append(dev)
+
+        paired_devices = []
+
+        # Pair pen & touch interfaces index-by-index for each unique physical device
+        for parent_id, pen_list in found_pen.items():
+            if parent_id in found_touch:
+                touch_list = found_touch[parent_id]
+                
+                # Pair corresponding interface instances (handles duplicate devices gracefully)
+                for idx, pen_dev in enumerate(pen_list):
+                    if idx < len(touch_list):
+                        touch_dev = touch_list[idx]
+                        
+                        # Create a truly unique device key using interface paths
+                        unique_dev_id = f"{parent_id}_instance_{idx}"
+
+                        paired_devices.append({
+                            'id': unique_dev_id,
+                            'product_id': pen_dev['product_id'],
+                            'product_string': pen_dev['product_string'],
+                            'pen_device': pen_dev,
+                            'touch_device': touch_dev
+                        })
+
+        return paired_devices
+
+    def manage_connections(self):
+        with self.lock:
+            # 1. Clean up stale or exited threads
+            dead_keys = []
+            for dev_id, conn in self.active_connections.items():
+                pen_alive = conn['threads']['Pen'].is_alive()
+                touch_alive = conn['threads']['Touch'].is_alive()
+
+                # If either thread died (e.g. from OSError or paused), clean up state
+                if not pen_alive or not touch_alive:
+                    print(f"[Manager] Device disconnected/stopped: {conn['product_string']} ({dev_id})")
+                    dead_keys.append(dev_id)
+
+            for dev_id in dead_keys:
+                del self.active_connections[dev_id]
+
+            # 2. Update available devices and spawn new interface threads
+            available_devices = self.enumerate_wacom_devices()
+
+            for dev_pair in available_devices:
+                dev_id = dev_pair['id']
+
+                if dev_id not in self.active_connections:
+                    print(f"\n[Manager] New Device Detected! Initializing: {dev_pair['product_string']}")
+                    
+                    # Create unique state & dispatcher context per device
+                    t_state = TabletState()
+                    a_dispatch = ActionDispatcher(t_state)
+
+                    pen_dev = dev_pair['pen_device']
+                    touch_dev = dev_pair['touch_device']
+
+                    t_pen = threading.Thread(
+                        target=run_interface,
+                        args=("Pen", pen_dev, t_state, a_dispatch),
+                        daemon=True
+                    )
+                    t_touch = threading.Thread(
+                        target=run_interface,
+                        args=("Touch", touch_dev, t_state, a_dispatch),
+                        daemon=True
+                    )
+
+                    self.active_connections[dev_id] = {
+                        'product_id': dev_pair['product_id'],
+                        'product_string': dev_pair['product_string'],
+                        'state': t_state,
+                        'action': a_dispatch,
+                        'threads': {
+                            'Pen': t_pen,
+                            'Touch': t_touch
+                        }
+                    }
+
+                    t_pen.start()
+                    t_touch.start()
+                    print(f"[Manager] Spawned Pen (Interface: {pen_dev.get('interface_number')}) "
+                          f"& Touch (Interface: {touch_dev.get('interface_number')}) threads for {dev_id}")
+
+    def get_primary_state_and_action(self):
+        """Helper to pass active state and dispatcher references to the GUI."""
+        with self.lock:
+            if self.active_connections:
+                first_conn = next(iter(self.active_connections.values()))
+                return first_conn['state'], first_conn['action']
+            return None, None
+
+
+# ==============================================================================
+# MAIN ENTRY POINT
+# ==============================================================================
 
 def main():
+    global DEBUG, running
     prefer_wireless = False
-    connect_all = False
+
     for arg in sys.argv[1:]:
-        if "-DEBUG" in arg or "-debug" in arg or "-Debug" in arg:
-            global DEBUG
+        if "-DEBUG" in arg.upper():
             DEBUG = True
-            print("[Start Paramater] DEBUG active")
+            print("[Start Parameter] DEBUG active")
         elif "-wireless" in arg:
             prefer_wireless = True
-            print("[Start Paramater] Wireless preference active")
-        elif "-connectall" in arg:
-            connect_all = True
-            print("[Start Paramater] Connect all active")
-        else:
-            print(f"[Start Paramater] Unknown parameter: {arg}")
-    
-    print("[Interfaces] Enumerating HID devices for Wacom Tablet...")
-    
+            print("[Start Parameter] Wireless preference active")
 
-    im = InterfaceManager(prefer_wireless)
-    
-    code = im.update_interfaces()
-    if code == 1:
-        print("[Interfaces] Ending Program")
-        sys.exit("[Interfaces] No Interfaces found")
-    
-    # print(interface_groups)
-               
-    for number, group in enumerate(im.interface_groups if connect_all else im.interface_groups[0:1]):
-        
-        tablet_state = TabletState()
-        action_dispatch = ActionDispatcher(tablet_state)
-        
-        pen_thread = threading.Thread(target=im.run_interface, args=("Pen", number, tablet_state, action_dispatch,), daemon=True)
-        touch_thread = threading.Thread(target=im.run_interface, args=("Touch", number, tablet_state, action_dispatch,), daemon=True)
-        
-        print(f"[Interfaces] Connecting to Device: {group['product_string']} {group['product_id']}")
-        print(f"[Interfaces] Connecting via: {"USB Cable" if group['product_string'] != 'Wacom Wireless Receiver' else "Wireless Receiver"}")
-        
-        pen_thread.start()
-        touch_thread.start()  
-        
-        time.sleep(0.2) # Allow threads to initialize
+    print("\n=== Initializing Wacom Device Manager Thread ===")
 
-    
-    config.set_available_actions(list(action_dispatch.ACTION_DISPATCH.keys()))
+    # Initialize and start the master management thread
+    manager = DeviceManagerThread(prefer_wireless=prefer_wireless, poll_interval=5.0)
+    manager.start()
+
+    # Wait for the manager to attempt the initial connection
+    time.sleep(1.0)
+
+    # Fetch active state reference for GUI bindings (if available)
+    state, action_dispatch = manager.get_primary_state_and_action()
+    if not state:
+        state = TabletState()  # Fallback empty state for GUI
+
+    if action_dispatch:
+        config.set_available_actions(list(action_dispatch.ACTION_DISPATCH.keys()))
+
     print("\n=== Wacom Touch Driver Running ===")
 
     try:
         from gui import launch_gui
-        launch_gui(tablet_state, config)
+        launch_gui(state, config)
     except SystemExit:
         pass
+    except ImportError:
+        # Fallback loop if GUI isn't installed in the environment
+        try:
+            while running:
+                time.sleep(1)
+        except KeyboardInterrupt:
+            pass
     finally:
+        running = False
         print("\n=== Wacom Touch Driver successfully stopped ===")
 
 if __name__ == '__main__':
     main()
-    
-
- 

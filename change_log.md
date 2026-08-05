@@ -1,3 +1,9 @@
+260805-1146:
+- device manager class that runs it own thread and manages the devices and interfaces and populates them with threads.
+    - thus automatic discovery and connection to new devices and changing devices
+    - significantly simplified interface threads to migration of the reconnect and sync logic to the device manager class
+
+
 260731-1054:
 - added support for the wireless receiver. will now automatically recogniced.
 - cable connection will be prefered if both cable and wireless receiver are connected at the same time
