@@ -1,5 +1,4 @@
 hidapi==0.15.0
 pillow==12.3.0
-pynput==1.8.2
 pystray==0.19.5
 six==1.17.0
