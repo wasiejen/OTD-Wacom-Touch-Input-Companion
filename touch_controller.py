@@ -100,6 +100,9 @@ class ActionDispatcher():
     
     def __init__(self, state):
         self.state = state
+        # Inputs this dispatcher currently holds; released on thread exit.
+        self.held_keys = set()
+        self.left_held = False
 
         # The Dispatch Table
         self.ACTION_DISPATCH = {
@@ -238,18 +241,45 @@ class ActionDispatcher():
 
     def press_key(self, vk_code):
         self.send_key(vk_codes_dict[vk_code], release=False)
+        self.held_keys.add(vk_code)
         
     def release_key(self, vk_code):
         self.send_key(vk_codes_dict[vk_code], release=True)
+        self.held_keys.discard(vk_code)
+
+    def release_held_inputs(self):
+        """Releases every modifier key and the left button this dispatcher holds.
+
+        Called on interface-thread exit so a pause or disconnect mid-gesture
+        cannot leave Ctrl or the left button pressed system-wide.
+        """
+        released = []
+
+        for vk_code in list(self.held_keys):
+            self.release_key(vk_code)
+            released.append(vk_code)
+
+        if self.left_held:
+            self.send_mouse_click(self.MOUSEEVENTF_LEFTUP)
+            self.left_held = False
+            self.state.is_left_held = False
+            released.append("left_button")
+
+        if released:
+            print(f"[Safety] Released held input on thread exit: {released}")
+
+        return released
 
     def handle_left_hold(self):
         self.send_mouse_click(self.MOUSEEVENTF_LEFTDOWN)
+        self.left_held = True
         self.state.is_left_held = True
         self.state.is_dragging_cursor = True
         self.state.active_gesture = None
         
     def handle_left_hold_release(self):
         self.send_mouse_click(self.MOUSEEVENTF_LEFTUP)
+        self.left_held = False
         self.state.is_left_held = False
         self.state.active_gesture = None
 
@@ -1049,6 +1079,10 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
         if DEBUG:
             raise e
     finally:
+        try:
+            action_dispatch.release_held_inputs()
+        except Exception as e:
+            print(f"{header} Held-input release failed: {e}")
         try:
             dev.close()
         except Exception:
