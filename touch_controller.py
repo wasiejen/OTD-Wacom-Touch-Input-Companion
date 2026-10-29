@@ -574,6 +574,9 @@ config = DriverConfig()
 VENDOR_ID = 0x056A  # Wacom Co., Ltd.
 PRODUCT_ID = None   # Auto-detect or integer PID
 
+# Poll tick for the idle (report-less) read loop, in seconds.
+IDLE_POLL_SECONDS = 0.05
+
 STATUS_TOUCH_DOWN = 0xC0
 STATUS_RELEASE_TERMINAL = {0x20}
 STATUS_ACTIVE_CONTACTS = {0x80, 0x90, 0x88, 0x98}
@@ -1040,10 +1043,11 @@ def process_touch_report(report, state, action_dispatch):
 # SIMPLIFIED INTERFACE WORKER THREAD
 # ==============================================================================
 
-def run_interface(interface_type, device_info, state, action_dispatch, touch_enabled_event, stop_event):
+def run_interface(interface_type, device_info, state, action_dispatch, touch_enabled_event, stop_event, idle_poll=IDLE_POLL_SECONDS):
     """
     Simplified worker thread for either 'Pen' or 'Touch' input.
     Exits as soon as an OSError/Exception is thrown or stop_event is set or touch_enabled_event not set.
+    Reads are non-blocking, so pause/stop take effect within one poll tick even while the device is idle.
     """
     interface_num = device_info.get('interface_number', -1)
     path = device_info.get('path')
@@ -1053,7 +1057,7 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
 
     try:
         dev.open_path(path)
-        dev.set_nonblocking(False)
+        dev.set_nonblocking(True)
         print(f"{header} Started successfully.")
 
         while not stop_event.is_set():
@@ -1065,12 +1069,19 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
             # Read and process packets according to input type
             if interface_type == "Touch":
                 report = dev.read(66)
-                if report:
-                    process_touch_report(report, state, action_dispatch)
             elif interface_type == "Pen":
                 report = dev.read(2)
-                if report:
+            else:
+                report = []
+
+            if report:
+                if interface_type == "Touch":
+                    process_touch_report(report, state, action_dispatch)
+                elif interface_type == "Pen":
                     parse_pen_packet(report, state)
+            else:
+                # Idle device: sleep one poll tick; stop_event wakes it instantly.
+                stop_event.wait(idle_poll)
 
     except OSError as e:
         print(f"{header} Read Error (Disconnected/OSError): {e}")
