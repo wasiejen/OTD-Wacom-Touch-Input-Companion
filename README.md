@@ -88,7 +88,7 @@ Everything in the driver is exposed and editable via the GUI:
 
 4. **Verify touch input (optional):**
    ```bash
-   python test/test_touch.py
+   python probe/touch_stream_probe.py
    ```
    Needs a connected Wacom tablet — it prints raw touch reports for
    troubleshooting.
