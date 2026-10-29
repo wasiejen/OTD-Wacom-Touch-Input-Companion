@@ -86,6 +86,13 @@ Everything in the driver is exposed and editable via the GUI:
    python touch_controller.py
    ```
 
+4. **Verify touch input (optional):**
+   ```bash
+   python test/test_touch.py
+   ```
+   Needs a connected Wacom tablet — it prints raw touch reports for
+   troubleshooting.
+
 ### Using the portable Executable
 
 On the Release Page there is now an "OTD_Wacom_Touch_Driver_%VERSION%_win64.exe" to be downloaded, which can be used directly. When saving your configuration the user.cfg will be created in the same folder the executable is residing in.

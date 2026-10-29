@@ -4,7 +4,7 @@
 /build
 /testing
 /pictures
-/__pycache__
+__pycache__/
 /build
 /dist
 /onefile-build

@@ -1,3 +1,9 @@
+# Changelog
+
+All notable changes are documented here. Entries are development timestamps
+(`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
+on GitHub mark shipped states — `v0.2.2` is the latest release.
+
 260805-1328:
 - fixed not working touch_paused function.
 - introduced events for 

@@ -6,8 +6,9 @@ set VERSION=v0.2.2
 :: Activate virtual environment
 call ../.venv/Scripts/activate.bat
 
-:: Update requirements.txt (optional)
-pip3 freeze > requirements.txt
+:: NOTE: requirements.txt is maintained by hand (runtime only). Do NOT write
+:: `pip freeze` over it — the build venv also holds packaging tools, which
+:: belong in a separate build requirement file if needed.
 
 :: Build with Pyinstaller
 pyinstaller --onefile --windowed ^
