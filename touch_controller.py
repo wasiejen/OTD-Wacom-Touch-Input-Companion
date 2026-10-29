@@ -574,8 +574,10 @@ config = DriverConfig()
 VENDOR_ID = 0x056A  # Wacom Co., Ltd.
 PRODUCT_ID = None   # Auto-detect or integer PID
 
-# Poll tick for the idle (report-less) read loop, in seconds.
+# Poll tick for the silent-device read loop, in seconds.
 IDLE_POLL_SECONDS = 0.05
+# Shortest idle wait; grows up to the poll tick and resets on every report.
+IDLE_BACKOFF_MIN_SECONDS = 0.002
 
 STATUS_TOUCH_DOWN = 0xC0
 STATUS_RELEASE_TERMINAL = {0x20}
@@ -1047,7 +1049,10 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
     """
     Simplified worker thread for either 'Pen' or 'Touch' input.
     Exits as soon as an OSError/Exception is thrown or stop_event is set or touch_enabled_event not set.
-    Reads are non-blocking, so pause/stop take effect within one poll tick even while the device is idle.
+    Reads wait for reports at device cadence: a timed read is used when the HID
+    binding offers read_timeout, otherwise non-blocking reads with an idle
+    backoff that never sleeps between reports. Pause/stop still take effect
+    within one poll tick while the device is silent.
     """
     interface_num = device_info.get('interface_number', -1)
     path = device_info.get('path')
@@ -1060,6 +1065,12 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
         dev.set_nonblocking(True)
         print(f"{header} Started successfully.")
 
+        # Timed reads exist only on some HID bindings; the Windows hidapi wheel
+        # exposes plain read() only, so the non-blocking fallback backs off from
+        # IDLE_BACKOFF_MIN_SECONDS up to the poll tick and resets on every report.
+        timed_read = getattr(dev, "read_timeout", None)
+        idle_backoff = IDLE_BACKOFF_MIN_SECONDS
+
         while not stop_event.is_set():
             # Check pause state requirement
             if not touch_enabled_event.is_set():
@@ -1068,20 +1079,34 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
 
             # Read and process packets according to input type
             if interface_type == "Touch":
-                report = dev.read(66)
+                read_size = 66
             elif interface_type == "Pen":
-                report = dev.read(2)
+                read_size = 2
             else:
+                read_size = 0
+
+            if read_size == 0:
                 report = []
+            elif timed_read is not None:
+                # Blocks up to one poll tick; returns the moment a report arrives.
+                report = timed_read(read_size, int(idle_poll * 1000))
+            else:
+                report = dev.read(read_size)
 
             if report:
                 if interface_type == "Touch":
                     process_touch_report(report, state, action_dispatch)
                 elif interface_type == "Pen":
                     parse_pen_packet(report, state)
+                # A report arrived: sample again immediately, no idle sleep.
+                idle_backoff = IDLE_BACKOFF_MIN_SECONDS
+            elif timed_read is not None:
+                # The timed read already waited one poll tick for a report.
+                pass
             else:
-                # Idle device: sleep one poll tick; stop_event wakes it instantly.
-                stop_event.wait(idle_poll)
+                # Silent device: bounded sleep that stop_event can wake early.
+                idle_backoff = min(idle_backoff * 2, idle_poll)
+                stop_event.wait(idle_backoff)
 
     except OSError as e:
         print(f"{header} Read Error (Disconnected/OSError): {e}")

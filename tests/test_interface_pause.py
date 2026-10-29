@@ -1,7 +1,9 @@
-"""Interface-thread pause/stop responsiveness (TODO #251).
+"""Interface-thread read cadence plus pause/stop responsiveness (TODO #251).
 
-A fake HID device emits nothing, so these tests prove the exit path does not
-depend on device traffic. No device, no GUI.
+Covers both read paths and both traffic cases:
+  - reports arrive  -> sampled at device rate, no idle wait taken
+  - zero traffic    -> bounded wait, thread exits within one poll tick
+A fake HID device stands in for hardware; no device, no GUI.
 """
 
 import threading
@@ -12,9 +14,10 @@ import pytest
 import touch_controller
 from touch_controller import ActionDispatcher, TabletState, run_interface
 
-from conftest import FakeDevice
+from conftest import FakeDevice, PlainDevice
 
 TICK = 0.02
+PEN_PACKET = [0x02, 0xE0]
 
 
 def start_thread(interface_type, dev, state, dispatcher, idle_poll=TICK):
@@ -39,9 +42,16 @@ def start_thread(interface_type, dev, state, dispatcher, idle_poll=TICK):
 
     deadline = time.monotonic() + 1.0
     while dev.read_calls == 0 and time.monotonic() < deadline:
-        time.sleep(0.005)
+        time.sleep(0.002)
 
     return thread, enabled, stop
+
+
+def stop_and_join(thread, enabled, stop, timeout=1.0):
+    stop.set()
+    enabled.clear()
+    thread.join(timeout=timeout)
+    return not thread.is_alive()
 
 
 @pytest.fixture
@@ -52,9 +62,7 @@ def idle_touch_thread(fake_hid, stub_send_input):
     dispatcher = ActionDispatcher(state)
     thread, enabled, stop = start_thread("Touch", dev, state, dispatcher)
     yield dev, thread, enabled, stop
-    stop.set()
-    enabled.clear()
-    thread.join(timeout=1.0)
+    stop_and_join(thread, enabled, stop)
 
 
 def test_pause_stops_touch_thread_with_zero_traffic(idle_touch_thread):
@@ -109,6 +117,81 @@ def test_device_is_opened_nonblocking(idle_touch_thread):
     assert dev.nonblocking is True
 
 
+def test_timed_path_exercises_bounded_wait_when_silent(fake_hid, stub_send_input):
+    dev = FakeDevice()
+    fake_hid._queue.append(dev)
+    state = TabletState()
+    dispatcher = ActionDispatcher(state)
+
+    thread, enabled, stop = start_thread("Touch", dev, state, dispatcher, idle_poll=TICK)
+    time.sleep(TICK * 4)
+    waits = dev.timeout_waits
+    slept = dev.slept_seconds
+
+    assert stop_and_join(thread, enabled, stop)
+    assert waits >= 2, "silent device should wait on the timed read, not busy-spin"
+    assert slept >= waits * TICK * 0.5
+
+
+def test_reports_are_sampled_at_device_rate_with_timed_read(fake_hid, stub_send_input):
+    dev = FakeDevice(reports=[PEN_PACKET] * 20)
+    fake_hid._queue.append(dev)
+    state = TabletState()
+    dispatcher = ActionDispatcher(state)
+
+    thread, enabled, stop = start_thread("Pen", dev, state, dispatcher, idle_poll=0.05)
+
+    started = time.monotonic()
+    deadline = time.monotonic() + 2.0
+    while dev.reports and time.monotonic() < deadline:
+        time.sleep(0.002)
+    drained = time.monotonic() - started
+
+    assert stop_and_join(thread, enabled, stop)
+    assert not dev.reports, "thread did not drain the report queue"
+    assert drained < 0.1, f"20 reports took {drained:.3f}s while idle_poll was 0.05s"
+    # At most one wait: the read issued after the queue drained, never between reports.
+    assert dev.timeout_waits <= 1, f"{dev.timeout_waits} idle waits taken while reports arrived"
+
+
+def test_reports_are_sampled_at_device_rate_with_plain_read(fake_hid, stub_send_input):
+    """The Windows hidapi wheel has no read_timeout; the fallback must not throttle."""
+    dev = PlainDevice(reports=[PEN_PACKET] * 20)
+    fake_hid._queue.append(dev)
+    state = TabletState()
+    dispatcher = ActionDispatcher(state)
+
+    thread, enabled, stop = start_thread("Pen", dev, state, dispatcher, idle_poll=0.05)
+
+    started = time.monotonic()
+    deadline = time.monotonic() + 2.0
+    while dev.reports and time.monotonic() < deadline:
+        time.sleep(0.002)
+    drained = time.monotonic() - started
+
+    assert stop_and_join(thread, enabled, stop)
+    assert not dev.reports, "thread did not drain the report queue"
+    assert drained < 0.1, f"20 reports took {drained:.3f}s while idle_poll was 0.05s"
+
+
+def test_plain_read_device_exits_on_pause_within_one_tick(fake_hid, stub_send_input):
+    dev = PlainDevice()
+    fake_hid._queue.append(dev)
+    state = TabletState()
+    dispatcher = ActionDispatcher(state)
+
+    thread, enabled, stop = start_thread("Touch", dev, state, dispatcher, idle_poll=TICK)
+
+    enabled.clear()
+    started = time.monotonic()
+    thread.join(timeout=0.5)
+    elapsed = time.monotonic() - started
+
+    assert not thread.is_alive()
+    assert elapsed < TICK * 5, f"exit took {elapsed:.3f}s, poll tick {TICK}s"
+    assert dev.closed is True
+
+
 def test_idle_device_paces_reads(fake_hid, stub_send_input):
     dev = FakeDevice()
     fake_hid._queue.append(dev)
@@ -119,10 +202,7 @@ def test_idle_device_paces_reads(fake_hid, stub_send_input):
     time.sleep(0.2)
     reads_in_window = dev.read_calls
 
-    enabled.clear()
-    thread.join(timeout=1.0)
-
-    assert not thread.is_alive()
+    assert stop_and_join(thread, enabled, stop)
     assert reads_in_window <= 8, f"busy read loop: {reads_in_window} reads in 0.2s"
 
 
@@ -137,7 +217,7 @@ def test_touch_report_is_processed_by_thread(fake_hid, stub_send_input):
 
     deadline = time.monotonic() + 1.0
     while not state.active_contacts and time.monotonic() < deadline:
-        time.sleep(0.005)
+        time.sleep(0.002)
 
     enabled.clear()
     thread.join(timeout=0.5)
@@ -147,7 +227,7 @@ def test_touch_report_is_processed_by_thread(fake_hid, stub_send_input):
 
 
 def test_pen_proximity_is_processed_by_thread(fake_hid, stub_send_input):
-    dev = FakeDevice(reports=[[0x02, 0xE0]])
+    dev = FakeDevice(reports=[PEN_PACKET])
     fake_hid._queue.append(dev)
     state = TabletState()
     dispatcher = ActionDispatcher(state)
@@ -156,7 +236,7 @@ def test_pen_proximity_is_processed_by_thread(fake_hid, stub_send_input):
 
     deadline = time.monotonic() + 1.0
     while not state.pen_in_proximity and time.monotonic() < deadline:
-        time.sleep(0.005)
+        time.sleep(0.002)
 
     enabled.clear()
     thread.join(timeout=0.5)

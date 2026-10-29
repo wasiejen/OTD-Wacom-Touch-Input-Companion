@@ -5,6 +5,7 @@ No real Wacom device, no network, and no GUI window is touched by this suite.
 
 import os
 import sys
+import time
 import types
 
 import pytest
@@ -14,7 +15,11 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
 class FakeDevice:
-    """Stand-in for hid.device() driven by a scripted report queue."""
+    """Stand-in for hid.device() driven by a scripted report queue.
+
+    Exposes read_timeout() like some HID bindings do: a queued report returns
+    immediately, and an empty queue waits at most the requested timeout.
+    """
 
     def __init__(self, reports=None):
         self.reports = list(reports or [])
@@ -22,6 +27,8 @@ class FakeDevice:
         self.nonblocking = None
         self.closed = False
         self.read_calls = 0
+        self.timeout_waits = 0
+        self.slept_seconds = 0.0
 
     def open_path(self, path):
         self.opened_path = path
@@ -36,14 +43,38 @@ class FakeDevice:
             return self.reports.pop(0)
         return []
 
+    def read_timeout(self, max_size, timeout_ms):
+        """Timed semantics: return on arrival, otherwise wait the timeout."""
+        self.read_calls += 1
+        if self.reports:
+            return self.reports.pop(0)
+        self.timeout_waits += 1
+        wait_s = min(timeout_ms / 1000.0, 0.2)
+        self.slept_seconds += wait_s
+        time.sleep(wait_s)
+        return []
+
     def close(self):
         self.closed = True
 
 
+class PlainDevice(FakeDevice):
+    """Device exposing only read(), matching the Windows hidapi 0.15 wheel."""
+
+    read_timeout = None
+
+
 class ExplodingDevice(FakeDevice):
-    """Fake device whose read() raises OSError after the queue drains."""
+    """Fake device whose reads raise OSError once the queue drains."""
 
     def read(self, max_size=64):
+        self.read_calls += 1
+        if self.reports:
+            return self.reports.pop(0)
+        raise OSError("device disconnected")
+
+    def read_timeout(self, max_size, timeout_ms):
+        self.read_calls += 1
         if self.reports:
             return self.reports.pop(0)
         raise OSError("device disconnected")
