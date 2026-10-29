@@ -445,10 +445,31 @@ class DriverConfig:
         
         # Attempt auto-load on startup
         self.load_from_file()
+        self.sync_sensitivities()
         
     def set_available_actions(self, actions):
         self.AVAILABLE_ACTIONS = actions
-        
+
+    def sync_sensitivities(self):
+        """Rebuild the derived acceleration parameter lists from the current fields."""
+        self.sensitivities["cursor_acceleration"] = [
+            self.cursor_deadzone,
+            self.cursor_min_sens,
+            self.cursor_max_sens,
+            self.cursor_speed_low,
+            self.cursor_speed_high,
+            1, 1
+        ]
+        self.sensitivities["scroll_acceleration"] = [
+            self.scroll_deadzone,
+            self.scroll_min_sens,
+            self.scroll_max_sens,
+            self.scroll_speed_low,
+            self.scroll_speed_high,
+            self.scroll_sensitivity_x,
+            self.scroll_sensitivity_y
+        ]
+
     def save_to_file(self, filepath=CONFIG_FILE_PATH):
         data = {
             "motion_and_thresholds": {
@@ -472,8 +493,13 @@ class DriverConfig:
                 "cursor_deadzone": self.cursor_deadzone,
                 "cursor_min_sens": self.cursor_min_sens,
                 "cursor_max_sens": self.cursor_max_sens,
-                "speed_low": self.cursor_speed_low,
-                "speed_high": self.cursor_speed_high,
+                "cursor_speed_low": self.cursor_speed_low,
+                "cursor_speed_high": self.cursor_speed_high,
+                "scroll_deadzone": self.scroll_deadzone,
+                "scroll_min_sens": self.scroll_min_sens,
+                "scroll_max_sens": self.scroll_max_sens,
+                "scroll_speed_low": self.scroll_speed_low,
+                "scroll_speed_high": self.scroll_speed_high,
             },
             "feature_toggles": self.feature_toggles,
             "action_mapping": self.action_mapping
@@ -506,6 +532,7 @@ class DriverConfig:
                 if key in self.action_mapping:
                     self.action_mapping[key] = str(val)
 
+            self.sync_sensitivities()
             print(f"[Config] Successfully loaded settings from '{filepath}'")
         except Exception as e:
             print(f"[Config Error] Failed loading '{filepath}': {e}")
