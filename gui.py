@@ -441,7 +441,7 @@ class DriverTrayApp:
         self.update_icon()
         
     def is_touch_enabled(self, item=None):
-        return not self.touch_enabled_event.is_set()
+        return self.touch_enabled_event.is_set()
     
     def update_icon(self):
         if self.icon:
