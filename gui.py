@@ -124,6 +124,28 @@ class ToastNotification(tk.Toplevel):
         self.after(timeout_ms, self.destroy)
 
 
+INVALID_ACTION_PREFIX = "! invalid: "
+
+
+def action_display_value(action, options):
+    """Combo display text: the saved action, marked when it is not a valid option."""
+    if action in options:
+        return action
+    return INVALID_ACTION_PREFIX + str(action)
+
+
+def resolve_action_mapping(display, saved_action, options):
+    """Resolve a combobox display back to the value that should be stored.
+
+    A display still showing the marked saved value keeps that saved action, so
+    an invalid mapping survives open plus Apply instead of being rewritten to
+    the first option.
+    """
+    if saved_action is not None and display == action_display_value(saved_action, options):
+        return saved_action
+    return display
+
+
 def parse_numeric_values(values):
     """Validate raw settings-entry strings and return them as floats.
 
@@ -313,6 +335,8 @@ class SettingsWindow(tk.Toplevel):
 
         self.feature_vars = {}
         self.action_combos = {}
+        # Mapping values as they were when the window opened, keyed by feature.
+        self.saved_actions = {}
         options = getattr(self.config, "AVAILABLE_ACTIONS", [])
 
         # Filter out cursor_acceleration & scroll_acceleration since they are in Motion tab
@@ -333,9 +357,10 @@ class SettingsWindow(tk.Toplevel):
             if feature_key in self.config.action_mapping:
                 current_action = self.config.action_mapping[feature_key]
                 combo = ttk.Combobox(row_frame, values=options, state="readonly", width=18)
-                combo.set(current_action if current_action in options else (options[0] if options else ""))
+                combo.set(action_display_value(current_action, options))
                 combo.pack(side="right", anchor="e")
                 self.action_combos[feature_key] = combo
+                self.saved_actions[feature_key] = current_action
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
@@ -417,7 +442,16 @@ class SettingsWindow(tk.Toplevel):
                 "scroll_acceleration": self.scroll_accel_var.get(),
             }
             feature_toggles = {feat: var.get() for feat, var in self.feature_vars.items()}
-            action_mappings = {feat_key: combo.get() for feat_key, combo in self.action_combos.items()}
+            options = getattr(self.config, "AVAILABLE_ACTIONS", [])
+            saved_actions = getattr(self, "saved_actions", {})
+            action_mappings = {
+                feat_key: resolve_action_mapping(
+                    combo.get(),
+                    saved_actions.get(feat_key, self.config.action_mapping.get(feat_key)),
+                    options,
+                )
+                for feat_key, combo in self.action_combos.items()
+            }
 
             # 2. Validate everything, then apply all-or-nothing
             apply_settings_to_config(
