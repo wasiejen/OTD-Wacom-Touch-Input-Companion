@@ -124,6 +124,43 @@ class ToastNotification(tk.Toplevel):
         self.after(timeout_ms, self.destroy)
 
 
+def parse_numeric_values(values):
+    """Validate raw settings-entry strings and return them as floats.
+
+    Raises ValueError naming the offending key. Nothing is mutated here.
+    """
+    parsed = {}
+    for key, raw in values.items():
+        try:
+            parsed[key] = float(raw)
+        except (TypeError, ValueError):
+            raise ValueError(f"Field '{key}' is not a number: {raw!r}")
+    return parsed
+
+
+def apply_settings_to_config(config, numeric_values, accel_toggles, feature_toggles, action_mappings):
+    """Apply a complete settings set to config, or apply nothing at all.
+
+    numeric_values are raw entry strings; they are validated before the first
+    mutation, so one bad entry cannot leave config half-applied.
+    """
+    parsed = parse_numeric_values(numeric_values)
+
+    for key, val in parsed.items():
+        setattr(config, key, val)
+
+    config.sync_sensitivities()
+
+    config.feature_toggles["cursor_acceleration"] = accel_toggles["cursor_acceleration"]
+    config.feature_toggles["scroll_acceleration"] = accel_toggles["scroll_acceleration"]
+
+    for feat, enabled in feature_toggles.items():
+        config.feature_toggles[feat] = enabled
+
+    for feat_key, action in action_mappings.items():
+        config.action_mapping[feat_key] = action
+
+
 class SettingsWindow(tk.Toplevel):
     def __init__(self, parent, state_ref, config_ref):
         super().__init__(parent)
@@ -371,52 +408,35 @@ class SettingsWindow(tk.Toplevel):
         scrollbar.pack(side="right", fill="y")
 
     def apply_settings(self):
+        """Apply the widget values to the live config; returns False on bad input."""
         try:
-            # 1. Update individual numeric variables
-            for key, ent in self.entries.items():
-                val = float(ent.get())
-                setattr(self.config, key, val)
+            # 1. Collect widget values only; config is untouched until validation passes
+            numeric_values = {key: ent.get() for key, ent in self.entries.items()}
+            accel_toggles = {
+                "cursor_acceleration": self.cursor_accel_var.get(),
+                "scroll_acceleration": self.scroll_accel_var.get(),
+            }
+            feature_toggles = {feat: var.get() for feat, var in self.feature_vars.items()}
+            action_mappings = {feat_key: combo.get() for feat_key, combo in self.action_combos.items()}
 
-            # 2. Re-sync sensitivities dictionaries for active driver calculations
-            self.config.sensitivities["cursor_acceleration"] = [
-                self.config.cursor_deadzone,
-                self.config.cursor_min_sens,
-                self.config.cursor_max_sens,
-                self.config.cursor_speed_low,
-                self.config.cursor_speed_high,
-                1, 1
-            ]
-
-            self.config.sensitivities["scroll_acceleration"] = [
-                self.config.scroll_deadzone,
-                self.config.scroll_min_sens,
-                self.config.scroll_max_sens,
-                self.config.scroll_speed_low,
-                self.config.scroll_speed_high,
-                self.config.scroll_sensitivity_x,
-                self.config.scroll_sensitivity_y
-            ]
-
-            # 3. Acceleration Feature Toggles
-            self.config.feature_toggles["cursor_acceleration"] = self.cursor_accel_var.get()
-            self.config.feature_toggles["scroll_acceleration"] = self.scroll_accel_var.get()
-
-            # 4. Standard Feature Toggles
-            for feat, var in self.feature_vars.items():
-                self.config.feature_toggles[feat] = var.get()
-
-            # 5. Action Mappings
-            for feat_key, combo in self.action_combos.items():
-                self.config.action_mapping[feat_key] = combo.get()
-
-            ToastNotification(self, "Success", "Settings applied directly to driver!", timeout_ms=1500)
+            # 2. Validate everything, then apply all-or-nothing
+            apply_settings_to_config(
+                self.config, numeric_values, accel_toggles, feature_toggles, action_mappings
+            )
         except ValueError as e:
             messagebox.showerror("Invalid Input", f"Please enter valid numeric values.\nDetails: {e}")
+            return False
+
+        ToastNotification(self, "Success", "Settings applied directly to driver!", timeout_ms=1500)
+        return True
 
     def save_to_file(self):
-        self.apply_settings()
+        """Apply first; the file is written only when the apply succeeded."""
+        if not self.apply_settings():
+            return False
         self.config.save_to_file("user.cfg")
         ToastNotification(self, "File Saved", "Configuration saved to user.cfg", timeout_ms=1800)
+        return True
 
 
 class DriverTrayApp:
