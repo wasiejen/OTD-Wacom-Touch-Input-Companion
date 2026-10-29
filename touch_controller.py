@@ -159,12 +159,24 @@ class ActionDispatcher():
 
 
     def send_mouse_scroll(self, dx, dy):
-        """Handles vertical and horizontal scrolling."""
-        if dy != 0:
+        """Handles vertical and horizontal scrolling with a fractional accumulator.
+
+        Sub-notch deltas accumulate in state.scroll_acc_x/y instead of being
+        truncated to zero, mirroring the cursor accumulator.
+        """
+        self.state.scroll_acc_x += dx
+        self.state.scroll_acc_y += dy
+
+        steps_x = int(self.state.scroll_acc_x)
+        steps_y = int(self.state.scroll_acc_y)
+
+        if steps_y != 0:
             # Wheel delta is typically 120 units per notch
-            self.send_mouse_click(self.MOUSEEVENTF_WHEEL, int(dy))
-        if dx != 0:
-            self.send_mouse_click(self.MOUSEEVENTF_HWHEEL, int(dx))
+            self.send_mouse_click(self.MOUSEEVENTF_WHEEL, steps_y)
+            self.state.scroll_acc_y -= steps_y
+        if steps_x != 0:
+            self.send_mouse_click(self.MOUSEEVENTF_HWHEEL, steps_x)
+            self.state.scroll_acc_x -= steps_x
             
     def _send_wheel_event(self, flags, delta):
         """Direct low-level injector with correct signed DWORD bitmasking."""
