@@ -586,6 +586,10 @@ config = DriverConfig()
 VENDOR_ID = 0x056A  # Wacom Co., Ltd.
 PRODUCT_ID = None   # Auto-detect or integer PID
 
+# Touch slots the report format carries. The per-contact-count start_time table
+# has one extra cell; an over-cap contact count clamps to that last cell.
+MAX_TOUCH_CONTACTS = 10
+
 # Poll tick for the silent-device read loop, in seconds.
 IDLE_POLL_SECONDS = 0.05
 # Shortest idle wait; grows up to the poll tick and resets on every report.
@@ -652,13 +656,21 @@ class TabletState:
         
         self.last_num_active = 0
         
-        self.start_time = []
-        for i in range(11):
-            self.start_time.append(None)
+        # One cell per contact count, from 0 to MAX_TOUCH_CONTACTS inclusive.
+        self.start_time = [None] * (MAX_TOUCH_CONTACTS + 1)
 
 # ==============================================================================
 # HELPER FUNCTIONS
 # ==============================================================================
+def clamped_contact_index(count):
+    """Index into TabletState.start_time for a contact count, clamped to the table.
+
+    An over-cap report (more contacts than the format carries) must not raise
+    inside the report loop; it clamps to the last cell and processing continues.
+    """
+    return min(max(count, 0), MAX_TOUCH_CONTACTS)
+
+
 def compute_centroid_and_spread(contacts):
     pts = list(contacts.values())
     n = len(pts)
@@ -753,7 +765,7 @@ def process_touch_report(report, state, action_dispatch):
 
         if status == STATUS_TOUCH_DOWN:
             state.active_contacts[slot_id] = pos
-            state.start_time[len(state.active_contacts)] = current_time
+            state.start_time[clamped_contact_index(len(state.active_contacts))] = current_time
             state.peak_contact_count = max(state.peak_contact_count, len(state.active_contacts))
             if len(state.active_contacts) == 1 and state.last_num_active == 0:
                 state.session_start_time = current_time
@@ -776,11 +788,12 @@ def process_touch_report(report, state, action_dispatch):
                     
         elif status in STATUS_RELEASE_TERMINAL:
             state.active_contacts.pop(slot_id, None)
-            state.start_time[len(state.active_contacts)] = current_time
+            state.start_time[clamped_contact_index(len(state.active_contacts))] = current_time
             if state.max_drift > config.tap_max_movement:
                 state.was_moved = True
 
     num_active = len(state.active_contacts)
+    contact_index = clamped_contact_index(num_active)
     
     if num_active != 2 and state.active_gesture == "2F_PINCH":
         ad.release_key("ctrl")
@@ -788,8 +801,8 @@ def process_touch_report(report, state, action_dispatch):
     if state.session_start_time is not None:
         state.session_duration = current_time - state.session_start_time
         #if DEBUG: print(f"Debug: session duration: {session_duration}")
-    if state.start_time[num_active] is not None:
-        hold_duration = current_time - state.start_time[num_active]
+    if state.start_time[contact_index] is not None:
+        hold_duration = current_time - state.start_time[contact_index]
     else:
         hold_duration = 0
         
@@ -825,7 +838,7 @@ def process_touch_report(report, state, action_dispatch):
                 state.start_time[2]= None
                 state.active_gesture = None
                 state.max_drift = 0.0
-                state.start_time[num_active] = current_time # might be unnecessary
+                state.start_time[contact_index] = current_time # might be unnecessary
 
             if state.active_gesture is None:
                 if state.f1_start_pos is not None and pos is not None:
@@ -876,7 +889,7 @@ def process_touch_report(report, state, action_dispatch):
             dist_centroid = math.hypot(cx - state.mf_start_centroid[0], cy - state.mf_start_centroid[1])
             delta_spread_total = spread - state.mf_start_spread
             
-            hold_duration = current_time - state.start_time[num_active]
+            hold_duration = current_time - state.start_time[contact_index]
 
             if state.active_gesture is None:
                 if abs(delta_spread_total) >= config.pinch_activation_threshold:
