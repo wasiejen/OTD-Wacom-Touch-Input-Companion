@@ -4,7 +4,7 @@
 set VERSION=v0.2.2
 
 :: Activate virtual environment
-call ../.venv/Scripts/activate.bat
+call ./.venv/Scripts/activate.bat
 
 :: NOTE: requirements.txt is maintained by hand (runtime only). Do NOT write
 :: `pip freeze` over it — the build venv also holds packaging tools, which
@@ -12,7 +12,7 @@ call ../.venv/Scripts/activate.bat
 
 :: Build with Pyinstaller
 pyinstaller --onefile --windowed ^
-    --add-data "../.venv/Lib/site-packages/hid.cp312-win_amd64.pyd;." ^
+    --add-data "./.venv/Lib/site-packages/hid.cp312-win_amd64.pyd;." ^
     --hidden-import "hid" ^
     --hidden-import "pynput.keyboard._win32" ^
     --hidden-import "pynput.mouse._win32" ^
@@ -25,10 +25,9 @@ pyinstaller --onefile --windowed ^
 set src=dist\OTD_Wacom_Touch_Driver.exe
 set dest=.
 
-:: Get current date and time in YYMMDD-HHMM format
-for /f "tokens=2 delims==" %%a in ('wmic os get localdatetime /value') do set datetime=%%a
-set filedate=%datetime:~2,6%-%datetime:~8,4%
-set filedate=%filedate: =0%
+:: Get current date and time in YYMMDD-HHMM format.
+:: wmic is deprecated/removed on Windows 11 24H2+, so use PowerShell here.
+for /f %%a in ('powershell -NoProfile -Command "Get-Date -Format yyMMdd-HHmm"') do set filedate=%%a
 
 :: Define new filename (with date/time suffix)
 set newname=OTD_Wacom_Touch_Driver_pyinst_%VERSION%_%filedate%.exe

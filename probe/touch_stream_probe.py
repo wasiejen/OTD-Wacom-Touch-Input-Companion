@@ -6,7 +6,7 @@ VENDOR_ID = 0x056A
 PRODUCT_ID = 791
 TOUCH_INTERFACE = 0  # Standard for Intuos touch data
 
-def test_raw_touch_stream():
+def probe_raw_touch_stream():
     # 1. Locate the path for Interface 1
     device_path = None
     #print(hid.enumerate())
@@ -49,4 +49,4 @@ def test_raw_touch_stream():
         tablet.close()
 
 if __name__ == "__main__":
-    test_raw_touch_stream()
+    probe_raw_touch_stream()
