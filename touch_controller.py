@@ -319,7 +319,7 @@ class DriverConfig:
         self.max_tap_duration = 0.250       # Seconds
         self.double_tap_timeout = 0.250     # Seconds for 1F drag
         self.tap_max_movement = 10          # Coordinate drift 
-        self.max_gesture_touch_session_duration = 0.300       # Secondslimit
+        self.max_gesture_touch_session_duration = 0.300       # Seconds limit
         
         # 1-Finger Press-and-Hol Drag Config
         self.press_hold_duration = 0.200    # Seconds required to convert static touch into left-click hold
@@ -434,8 +434,8 @@ class DriverConfig:
             # 4-Finger Swipes & Pinches
             "4f_swipe_up": "task_view",         # Win + Tab
             "4f_swipe_down": "show_desktop",    # Win + D
-            "4f_swipe_left": "prev",     # Win + Ctrl + Left
-            "4f_swipe_right": "next",     # Win + Ctrl + Right
+            "4f_swipe_left": "prev",     # Alt + Left
+            "4f_swipe_right": "next",     # Alt + Right
             "4f_pinch_in": "window_minimize",
             "4f_pinch_out": "window_maximize",
 
@@ -691,16 +691,16 @@ def parse_pen_packet(report, state):
 def parse_sub_block(block):
     if len(block) < 5:
         return None
-    byte2, byte3 = block[0], block[1]
+    slot_id, status = block[0], block[1]
 
-    if byte2 == 0x81:
-        return ('SYNC', byte3, None)
-    if byte2 == 0:
+    if slot_id == 0x81:
+        return ('SYNC', status, None)
+    if slot_id == 0:
         return None
 
     x = (block[2] << 4) | ((block[4] & 0xF0) >> 4)
     y = (block[3] << 4) | (block[4] & 0x0F)
-    return (byte2, byte3, (x, y))
+    return (slot_id, status, (x, y))
 
 def process_touch_report(report, state, action_dispatch):
     ad = action_dispatch
@@ -754,7 +754,7 @@ def process_touch_report(report, state, action_dispatch):
     num_active = len(state.active_contacts)
     contact_index = clamped_contact_index(num_active)
     
-    if num_active != 2 and state.active_gesture == "2F_PINCH":
+    if num_active != 2 and state.active_gesture == "2f_pinch":
         ad.release_key("ctrl")
     
     if state.session_start_time is not None:
@@ -784,7 +784,7 @@ def process_touch_report(report, state, action_dispatch):
         if num_active == 1:
             fid, pos = next(iter(state.active_contacts.items()))
 
-            if state.last_num_active == 0 or (state.last_num_active >=2 and state.active_gesture in [None, "2F_SCROLL", "2F_PINCH", "1f_tap","2f_tap", "2f_press"]):
+            if state.last_num_active == 0 or (state.last_num_active >=2 and state.active_gesture in [None, "2f_scroll", "2f_pinch", "1f_tap","2f_tap", "2f_press"]):
                 state.last_f1_pos = pos
                 state.f1_start_pos = pos
                 state.is_dragging_cursor = True
@@ -847,14 +847,14 @@ def process_touch_report(report, state, action_dispatch):
 
             if state.active_gesture is None:
                 if abs(delta_spread_total) >= config.pinch_activation_threshold:
-                    state.active_gesture = "2F_PINCH"
+                    state.active_gesture = "2f_pinch"
                     ad.press_key("ctrl")
                     state.scroll_active = True
                 elif dist_centroid >= config.scroll_activation_threshold:
-                    state.active_gesture = "2F_SCROLL"
+                    state.active_gesture = "2f_scroll"
                     state.scroll_active = True
 
-            if state.active_gesture == "2F_SCROLL" and config.feature_toggles.get("2f_scroll", False):
+            if state.active_gesture == "2f_scroll" and config.feature_toggles.get("2f_scroll", False):
                 if isinstance(state.last_2finger_centroid, tuple):
                     dx = cx - state.last_2finger_centroid[0]
                     dy = cy - state.last_2finger_centroid[1]
@@ -871,7 +871,7 @@ def process_touch_report(report, state, action_dispatch):
 
                 state.last_2finger_centroid = (cx, cy)
 
-            elif state.active_gesture == "2F_PINCH" and config.feature_toggles.get("2f_pinch", False):
+            elif state.active_gesture == "2f_pinch" and config.feature_toggles.get("2f_pinch", False):
                 delta_pinch = spread - state.last_pinch_distance
                 ad.send_mouse_scroll(0, delta_pinch * config.pinch_sensitivity)
                 state.last_pinch_distance += delta_pinch 
@@ -885,7 +885,7 @@ def process_touch_report(report, state, action_dispatch):
 
         # --- 3, 4, AND 5-FINGER GESTURES ---
         elif num_active > 2:
-            if state.active_gesture in ("2F_SCROLL", "2F_PINCH"):
+            if state.active_gesture in ("2f_scroll", "2f_pinch"):
                 state.active_gesture = None
                 state.last_f1_pos = None
                 state.f1_start_pos = None
@@ -904,7 +904,7 @@ def process_touch_report(report, state, action_dispatch):
                 
             if state.active_gesture is None and state.session_duration <= config.max_gesture_touch_session_duration:
                 if num_active >= 5 and config.feature_toggles.get("5f_alt_tab", False):
-                    state.active_gesture = "5F_ALT_TAB"
+                    state.active_gesture = "5f_alt_tab"
                     state.alt_tab_active = True
                     state.last_alt_tab_x = cx
                     ad.execute_mapped_action("ctrl_alt_tab_initiate")
@@ -924,7 +924,7 @@ def process_touch_report(report, state, action_dispatch):
                         gesture_name = prefix + ("swipe_down" if dy_total > 0 else "swipe_up")
                         ad.dispatch_gesture_event(gesture_name)
                         
-            elif state.active_gesture == "5F_ALT_TAB" and num_active >= 5:
+            elif state.active_gesture == "5f_alt_tab" and num_active >= 5:
                 dx_step = cx - state.last_alt_tab_x
                 if abs(dx_step) >= config.alt_tab_step_threshold:
                     if state.f5_counter >= 1 / config.alt_tab_step_sensitivity: # to slow down the windows selection change
