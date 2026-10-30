@@ -287,8 +287,72 @@ class ActionDispatcher():
 # CONFIGURATION CLASS
 # ==============================================================================
 class DriverConfig:
-    def __init__(self):
-        
+    # Keys saved under "motion_and_thresholds", in file order. Load validation
+    # accepts exactly these keys.
+    MOTION_KEYS = (
+        "scroll_sensitivity_x", "scroll_sensitivity_y",
+        "max_tap_duration", "double_tap_timeout", "tap_max_movement",
+        "max_gesture_touch_session_duration", "press_hold_duration",
+        "swipe_threshold_x", "swipe_threshold_y", "axis_dominance_ratio",
+        "pinch_sensitivity", "pinch_discrete_threshold",
+        "scroll_activation_threshold", "pinch_activation_threshold",
+        "alt_tab_activation_threshold", "alt_tab_step_threshold",
+        "alt_tab_step_sensitivity", "cursor_deadzone", "cursor_min_sens",
+        "cursor_max_sens", "cursor_speed_low", "cursor_speed_high",
+        "scroll_deadzone", "scroll_min_sens", "scroll_max_sens",
+        "scroll_speed_low", "scroll_speed_high",
+    )
+
+    # Sections the saved file may hold. "devices" is the reserved slot (c):
+    # accepted on load, no device-keyed behavior yet.
+    CONFIG_SECTIONS = ("motion_and_thresholds", "feature_toggles",
+                       "action_mapping", "devices")
+
+    @staticmethod
+    def _describe(value):
+        """Short type/value label for config error messages."""
+        return f"{type(value).__name__} {value!r}"
+
+    @staticmethod
+    def _coerce_number(value):
+        """Return a float for numbers and numeric strings; None otherwise."""
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value.strip())
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _coerce_bool(value):
+        """Return a bool for bools and 0/1; None otherwise."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int) and value in (0, 1):
+            return bool(value)
+        return None
+
+    @staticmethod
+    def _error_reference(raw_text, key, item_index):
+        """Point at the offending entry: its file line when it has one,
+        otherwise its item index inside the section."""
+        needle = f'"{key}"'
+        for lineno, line in enumerate(raw_text.splitlines(), start=1):
+            if needle in line:
+                return f"line {lineno}"
+        return f"item {item_index + 1}"
+
+    def __init__(self, filepath=None):
+        # Resolved load/save lanes; --config/--save-as overwrite these in main().
+        self.config_path = filepath or CONFIG_FILE_PATH
+        self.save_path = self.config_path
+        # Reserved per-device map (c): identity rules are pending upstream research.
+        self.devices = {}
+
         # Motion Parameters
         
         self.sensitivities = {}
@@ -478,72 +542,147 @@ class DriverConfig:
             self.scroll_sensitivity_y
         ]
 
-    def save_to_file(self, filepath=CONFIG_FILE_PATH):
+    def save_to_file(self, filepath=None):
+        filepath = filepath or self.save_path
         data = {
-            "motion_and_thresholds": {
-                "scroll_sensitivity_x": self.scroll_sensitivity_x,
-                "scroll_sensitivity_y": self.scroll_sensitivity_y,
-                "max_tap_duration": self.max_tap_duration,
-                "double_tap_timeout": self.double_tap_timeout,
-                "tap_max_movement": self.tap_max_movement,
-                "max_gesture_touch_session_duration" : self.max_gesture_touch_session_duration,
-                "press_hold_duration": self.press_hold_duration,
-                "swipe_threshold_x": self.swipe_threshold_x,
-                "swipe_threshold_y": self.swipe_threshold_y,
-                "axis_dominance_ratio": self.axis_dominance_ratio,
-                "pinch_sensitivity": self.pinch_sensitivity,
-                "pinch_discrete_threshold": self.pinch_discrete_threshold,
-                "scroll_activation_threshold": self.scroll_activation_threshold,
-                "pinch_activation_threshold": self.pinch_activation_threshold,
-                "alt_tab_activation_threshold": self.alt_tab_activation_threshold,
-                "alt_tab_step_threshold": self.alt_tab_step_threshold,
-                "alt_tab_step_sensitivity": self.alt_tab_step_sensitivity,
-                "cursor_deadzone": self.cursor_deadzone,
-                "cursor_min_sens": self.cursor_min_sens,
-                "cursor_max_sens": self.cursor_max_sens,
-                "cursor_speed_low": self.cursor_speed_low,
-                "cursor_speed_high": self.cursor_speed_high,
-                "scroll_deadzone": self.scroll_deadzone,
-                "scroll_min_sens": self.scroll_min_sens,
-                "scroll_max_sens": self.scroll_max_sens,
-                "scroll_speed_low": self.scroll_speed_low,
-                "scroll_speed_high": self.scroll_speed_high,
-            },
+            "motion_and_thresholds": {key: getattr(self, key) for key in self.MOTION_KEYS},
             "feature_toggles": self.feature_toggles,
-            "action_mapping": self.action_mapping
+            "action_mapping": self.action_mapping,
+            "devices": self.devices,
         }
         with open(filepath, "w") as f:
             json.dump(data, f, indent=4)
         print(f"[Config] Saved settings to '{filepath}'")
 
-    def load_from_file(self, filepath=CONFIG_FILE_PATH):
+    def validate_config_data(self, data, raw_text=""):
+        """Validate a loaded dict against the current schema.
+
+        Returns (validated, warnings, errors). This method applies nothing:
+        ``validated`` holds coerced values, ``errors`` names each offending key
+        with a location reference. Unknown keys and sections only warn.
+        """
+        validated = {"motion": {}, "toggles": {}, "mapping": {}}
+        warnings = []
+        errors = []
+
+        if not isinstance(data, dict):
+            errors.append(f"top level must be a JSON object, got {self._describe(data)}")
+            return validated, warnings, errors
+
+        for section in data:
+            if section not in self.CONFIG_SECTIONS:
+                ref = self._error_reference(raw_text, section, 0)
+                warnings.append(f"unknown section '{section}' ({ref}) ignored")
+
+        motion = data.get("motion_and_thresholds", {})
+        if not isinstance(motion, dict):
+            errors.append("'motion_and_thresholds' must be a JSON object, "
+                          f"got {self._describe(motion)}")
+        else:
+            for index, (key, val) in enumerate(motion.items()):
+                ref = self._error_reference(raw_text, key, index)
+                if key not in self.MOTION_KEYS:
+                    warnings.append(f"unknown motion key '{key}' ({ref}) ignored")
+                    continue
+                number = self._coerce_number(val)
+                if number is None:
+                    errors.append(f"'motion_and_thresholds.{key}' needs a number, "
+                                  f"got {self._describe(val)} ({ref})")
+                else:
+                    validated["motion"][key] = number
+
+        toggles = data.get("feature_toggles", {})
+        if not isinstance(toggles, dict):
+            errors.append("'feature_toggles' must be a JSON object, "
+                          f"got {self._describe(toggles)}")
+        else:
+            for index, (key, val) in enumerate(toggles.items()):
+                ref = self._error_reference(raw_text, key, index)
+                if key not in self.feature_toggles:
+                    warnings.append(f"unknown feature toggle '{key}' ({ref}) ignored")
+                    continue
+                flag = self._coerce_bool(val)
+                if flag is None:
+                    errors.append(f"'feature_toggles.{key}' needs a boolean, "
+                                  f"got {self._describe(val)} ({ref})")
+                else:
+                    validated["toggles"][key] = flag
+
+        mapping = data.get("action_mapping", {})
+        if not isinstance(mapping, dict):
+            errors.append("'action_mapping' must be a JSON object, "
+                          f"got {self._describe(mapping)}")
+        else:
+            for index, (key, val) in enumerate(mapping.items()):
+                ref = self._error_reference(raw_text, key, index)
+                if key not in self.action_mapping:
+                    warnings.append(f"unknown gesture '{key}' ({ref}) ignored")
+                    continue
+                if not isinstance(val, str):
+                    errors.append(f"'action_mapping.{key}' needs an action name, "
+                                  f"got {self._describe(val)} ({ref})")
+                elif val not in self.AVAILABLE_ACTIONS:
+                    errors.append(f"'action_mapping.{key}' maps to unknown action "
+                                  f"{self._describe(val)} ({ref})")
+                else:
+                    validated["mapping"][key] = val
+
+        if "devices" in data:
+            devices = data["devices"]
+            ref = self._error_reference(raw_text, "devices", 0)
+            if not isinstance(devices, dict):
+                errors.append(f"'devices' must be a JSON object, got {self._describe(devices)} ({ref})")
+            else:
+                validated_devices = {}
+                for index, (alias, entry) in enumerate(devices.items()):
+                    entry_ref = self._error_reference(raw_text, str(alias), index)
+                    if not isinstance(alias, str) or not isinstance(entry, dict):
+                        errors.append(f"'devices' entry {self._describe(alias)} must be a "
+                                      f"named object ({entry_ref})")
+                        continue
+                    validated_devices[alias] = dict(entry)
+                validated["devices"] = validated_devices
+
+        return validated, warnings, errors
+
+    def load_from_file(self, filepath=None):
+        """Load settings all-or-nothing: validate first, apply only when valid."""
+        filepath = filepath or self.config_path
         if not os.path.exists(filepath):
             print(f"[Config] No '{filepath}' found. Using default driver settings.")
-            return
+            return False
 
         try:
             with open(filepath, "r") as f:
-                data = json.load(f)
-
-            motion = data.get("motion_and_thresholds", {})
-            for key, val in motion.items():
-                if hasattr(self, key):
-                    setattr(self, key, float(val))
-
-            toggles = data.get("feature_toggles", {})
-            for key, val in toggles.items():
-                if key in self.feature_toggles:
-                    self.feature_toggles[key] = bool(val)
-
-            mappings = data.get("action_mapping", {})
-            for key, val in mappings.items():
-                if key in self.action_mapping:
-                    self.action_mapping[key] = str(val)
-
-            self.sync_sensitivities()
-            print(f"[Config] Successfully loaded settings from '{filepath}'")
+                raw_text = f.read()
+            data = json.loads(raw_text)
         except Exception as e:
             print(f"[Config Error] Failed loading '{filepath}': {e}")
+            return False
+
+        validated, warnings, errors = self.validate_config_data(data, raw_text)
+        for note in warnings:
+            print(f"[Config Warning] {note}")
+
+        if errors:
+            for err in errors:
+                print(f"[Config Error] Invalid setting in '{filepath}': {err}")
+            print(f"[Config Error] Nothing applied from '{filepath}'. "
+                  "Existing settings stay in place.")
+            return False
+
+        for key, value in validated["motion"].items():
+            setattr(self, key, value)
+        for key, value in validated["toggles"].items():
+            self.feature_toggles[key] = value
+        for key, value in validated["mapping"].items():
+            self.action_mapping[key] = value
+        if "devices" in validated:
+            self.devices = validated["devices"]
+
+        self.sync_sensitivities()
+        print(f"[Config] Successfully loaded settings from '{filepath}'")
+        return True
 config = DriverConfig()
 
 # ==============================================================================
@@ -1103,9 +1242,28 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
 # MASTER DEVICE MANAGEMENT THREAD
 # ==============================================================================
 
+def select_active_device_pairs(paired_devices, prefer_wireless):
+    """Choose the device pairs to activate and the ones to hold back.
+
+    When a wireless and a wired pair are both present, one class wins:
+    wireless when ``prefer_wireless`` is set, wired otherwise. A setup with
+    only one class activates every pair. Returns (active, skipped).
+    """
+    wireless = [pair for pair in paired_devices if pair.get("wireless")]
+    wired = [pair for pair in paired_devices if not pair.get("wireless")]
+
+    if not wireless or not wired:
+        return list(paired_devices), []
+
+    if prefer_wireless:
+        return wireless, wired
+    return wired, wireless
+
+
 class DeviceManagerThread(threading.Thread):
     VENDOR_ID = 0x056A  # Wacom Co., Ltd.
     PRODUCT_IDS = [132, 791, 789, 788]
+    WIRELESS_PRODUCT_STRING = "Wacom Wireless Receiver"
 
     def __init__(self, enabled_event, stop_event, prefer_wireless=False, poll_interval=3.0):
         super().__init__(daemon=True)
@@ -1126,6 +1284,8 @@ class DeviceManagerThread(threading.Thread):
         #   'threads': {'Pen': Thread, 'Touch': Thread}
         # }
         self.active_connections = {}
+        # Dedup for the connection-class skip notice; ids tuple or None.
+        self._skipped_notice = None
 
     def run(self):
         print("[Manager Thread] Started Master Management Thread.")
@@ -1162,7 +1322,7 @@ class DeviceManagerThread(threading.Thread):
 
             if v_id == self.VENDOR_ID and p_id in self.PRODUCT_IDS:
                 interface_num = dev.get('interface_number', -1)
-                wireless = (p_str == 'Wacom Wireless Receiver')
+                wireless = (p_str == self.WIRELESS_PRODUCT_STRING)
                 
                 pen_iface = 1 if wireless else 0
                 touch_iface = 2 if wireless else 1
@@ -1193,6 +1353,7 @@ class DeviceManagerThread(threading.Thread):
                             'id': unique_dev_id,
                             'product_id': pen_dev['product_id'],
                             'product_string': pen_dev['product_string'],
+                            'wireless': pen_dev['product_string'] == self.WIRELESS_PRODUCT_STRING,
                             'pen_device': pen_dev,
                             'touch_device': touch_dev
                         })
@@ -1217,8 +1378,19 @@ class DeviceManagerThread(threading.Thread):
 
             # 2. Update available devices and spawn new interface threads
             available_devices = self.enumerate_wacom_devices()
+            active_devices, skipped_devices = select_active_device_pairs(
+                available_devices, self.prefer_wireless)
 
-            for dev_pair in available_devices:
+            # Announce a held-back connection class once per change, not per poll.
+            skipped_ids = tuple(pair['id'] for pair in skipped_devices)
+            if skipped_ids != self._skipped_notice:
+                self._skipped_notice = skipped_ids
+                held_back = "wired" if self.prefer_wireless else "wireless"
+                for pair in skipped_devices:
+                    print(f"[Manager] Holding back {held_back} device "
+                          f"{pair['product_string']} ({pair['id']})")
+
+            for dev_pair in active_devices:
                 dev_id = dev_pair['id']
 
                 if dev_id not in self.active_connections:
@@ -1271,17 +1443,76 @@ class DeviceManagerThread(threading.Thread):
 # MAIN ENTRY POINT
 # ==============================================================================
 
+def resolve_config_paths(args):
+    """Resolve the --config/--save-as start arguments from a raw argv slice.
+
+    '--config <path>' sets the load path; '--save-as <path>' the save path;
+    '--save-as' omitted means the save path follows '--config'. Neither option
+    present keeps both lanes on CONFIG_FILE_PATH. Accepts '--config=<path>'
+    too, and treats '-config'/'-save-as' as the same options.
+    Returns (config_path, save_path, notes, other_args); ``other_args`` are the
+    tokens left for the flag parser, so a path value never reads as a flag.
+    """
+    config_path = CONFIG_FILE_PATH
+    save_path = None
+    notes = []
+    other_args = []
+
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        name, _, inline_value = arg.partition("=")
+        option = name.lower()
+
+        if option not in ("--config", "-config", "--save-as", "-save-as"):
+            other_args.append(arg)
+            index += 1
+            continue
+
+        value = inline_value
+        if not value and index + 1 < len(args):
+            value = args[index + 1]
+            index += 1
+        if not value:
+            notes.append(f"[Start Parameter] {name} needs a path - ignored")
+            index += 1
+            continue
+
+        if option.endswith("config"):
+            config_path = value
+        else:
+            save_path = value
+        index += 1
+
+    if save_path is None:
+        save_path = config_path
+    return config_path, save_path, notes, other_args
+
+
 def main():
     global DEBUG
+    global config
     prefer_wireless = False
 
-    for arg in sys.argv[1:]:
+    config_path, save_path, path_notes, other_args = resolve_config_paths(sys.argv[1:])
+    for note in path_notes:
+        print(note)
+
+    for arg in other_args:
         if "-DEBUG" in arg.upper():
             DEBUG = True
             print("[Start Parameter] DEBUG active")
         elif "-wireless" in arg:
             prefer_wireless = True
             print("[Start Parameter] Wireless preference active")
+
+    if config_path != CONFIG_FILE_PATH:
+        print(f"[Start Parameter] Config file: '{config_path}'")
+        # Rebuild from defaults so only the named file shapes the settings.
+        config = DriverConfig(config_path)
+    if save_path != config_path:
+        print(f"[Start Parameter] Save file: '{save_path}'")
+    config.save_path = save_path
 
     print("\n=== Initializing Wacom Device Manager Thread ===")
 

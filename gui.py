@@ -468,8 +468,9 @@ class SettingsWindow(tk.Toplevel):
         """Apply first; the file is written only when the apply succeeded."""
         if not self.apply_settings():
             return False
-        self.config.save_to_file("user.cfg")
-        ToastNotification(self, "File Saved", "Configuration saved to user.cfg", timeout_ms=1800)
+        filepath = getattr(self.config, "save_path", "user.cfg")
+        self.config.save_to_file(filepath)
+        ToastNotification(self, "File Saved", f"Configuration saved to {filepath}", timeout_ms=1800)
         return True
 
 
