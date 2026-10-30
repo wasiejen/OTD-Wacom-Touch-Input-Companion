@@ -41,7 +41,7 @@ Specifically designed and tested for the **Wacom Intuos5 / Intuos Pro (PTH-x51)*
   * **2-Finger:** Tap (Right Click), natural horizontal/vertical scrolling, and pinch-to-zoom (Ctrl + Scroll).
   * **3-Finger & 4-Finger:** Tap, directional swipes (Up/Down/Left/Right), and discrete pinch in/out gestures.
   * **5-Finger:** Smooth Alt-Tab window switcher navigation.
-* **System Tray Integration:** Quick access via a dynamic system tray icon (`WTD`) with live color indicators (Green = Active, Red = Paused) and a quick toggle option.
+* **System Tray Integration:** Quick access via a dynamic system tray icon (`WT`) with live color indicators (Green = Active, Red = Paused) and a quick toggle option.
 * **GUI Settings Manager:** Built-in multi-tab configuration menu for live tuning.
 * **Persistent Configuration:** All settings, gesture toggles, threshold timings, and custom action mappings are saved to a local `user.cfg` file.
 
@@ -71,8 +71,8 @@ Everything in the driver is exposed and editable via the GUI:
 
 1. **Clone the repository:**
    ```bash
-   git clone [https://github.com/YOUR_USERNAME/YOUR_REPOSITORY_NAME.git](https://github.com/YOUR_USERNAME/YOUR_REPOSITORY_NAME.git)
-   cd YOUR_REPOSITORY_NAME
+   git clone https://github.com/wasiejen/OTD-Wacom-Touch-Input-Companion.git
+   cd OTD-Wacom-Touch-Input-Companion
    ```
 
 2. **Install dependencies:**
@@ -112,7 +112,7 @@ When you hit **Save to File** in the settings GUI, a `user.cfg` file is automati
 ## 🛠️ Tech Stack & Dependencies
 
 * **`hidapi`**: Low-level USB/HID report reading for Wacom Touch/Pen interfaces.
-* **`pynput`**: High-precision mouse and keyboard event synthesis.
+* **`ctypes` SendInput** (Python stdlib): mouse and keyboard event injection via the Windows API.
 * **`pystray` & `Pillow (PIL)**`: System tray icon rendering and management.
 * **`tkinter`**: Cross-platform graphical user interface.
 
@@ -121,7 +121,3 @@ When you hit **Save to File** in the settings GUI, a `user.cfg` file is automati
 ## License
 
 Distributed under the MIT License. See `LICENSE` for more information.
-
-```
-
-```
