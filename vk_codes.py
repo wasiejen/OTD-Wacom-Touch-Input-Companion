@@ -1,6 +1,6 @@
 '''
-Free-Snap-Tap V1.1.3
-last updated: 241015-1041
+VK code dictionary for the Wacom touch driver key taps.
+Extracted from Free-Snap-Tap V1.1.3; key strings map to VK codes for SendInput.
 '''
 # Dictionary mapping strings and keys to their VK codes
 # just add your own key strings, identify the vk_codes by using the "3. print virtual key codes to identify keys." of the menu
@@ -156,13 +156,7 @@ vk_codes_dict = {
     'browser_search': 170, 
     'browser_favorites': 171,
     'browser_home': 172, 
-    'volume_mute': 173, 
-    'volume_down': 174,
-    'volume_up': 175, 
-    'media_next_track': 176, 
-    'media_prev_track': 177,
-    'media_stop': 178, 
-    'media_play_PAUSED': 179, 
+    # volume/media VK codes live in the "media keys" block above (173-179).
     'launch_mail': 180,
     'launch_media_select': 181, 
     'launch_app1': 182, 

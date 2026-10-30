@@ -188,6 +188,8 @@ class SettingsWindow(tk.Toplevel):
         super().__init__(parent)
         self.state = state_ref
         self.config = config_ref
+        # Shared numeric-entry registry: Motion and Advanced tabs fill this dict.
+        self.entries = {}
 
         self.title("Wacom Touch Driver Settings")
         self.geometry("460x650")
@@ -231,8 +233,6 @@ class SettingsWindow(tk.Toplevel):
         canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
         canvas.configure(yscrollcommand=scrollbar.set)
-
-        self.entries = {}
 
         # Tooltips dictionary for motion & acceleration
         cursor_tooltips = {
@@ -385,7 +385,7 @@ class SettingsWindow(tk.Toplevel):
             "swipe_threshold_x": "Horizontal swipe distance (in Wacom units) required to execute a swipe gesture.",
             "swipe_threshold_y": "Vertical swipe distance (in Wacom units) required to execute a swipe gesture.",
             "axis_dominance_ratio": "Required ratio of primary axis movement vs cross-axis movement to confirm straight swipes.",
-            "pinch_sensitivity": "Multiplier applied to the pinch zoom wiht 2 fingers.",
+            "pinch_sensitivity": "Multiplier applied to the pinch zoom with 2 fingers.",
             "pinch_discrete_threshold": "Spread change distance needed to trigger discrete multi-finger pinch triggers.",
             "scroll_activation_threshold": "Centroid distance (px) required before 2-finger scrolling locks in.",
             "pinch_activation_threshold": "Finger spread change (px) required before pinch zoom locks in.",
