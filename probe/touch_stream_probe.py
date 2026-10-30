@@ -3,14 +3,17 @@ import time
 
 # Wacom Intuos5 / Pro Large parameters
 VENDOR_ID = 0x056A
-PRODUCT_ID = 791
+#PRODUCT_ID = 791 # Wacom Intuos5 / Pro Large parameters
+PRODUCT_ID = 789 # Wacom Intuos5 / Pro Medium parameters
+#PRODUCT_ID = 7?? # Wacom Intuos5 / Pro Small parameters
 TOUCH_INTERFACE = 0  # Standard for Intuos touch data
 
 def probe_raw_touch_stream():
     # 1. Locate the path for Interface 1
     device_path = None
-    #print(hid.enumerate())
+    print(hid.enumerate())
     for dev in hid.enumerate(VENDOR_ID, PRODUCT_ID):
+        print(dev)
         if dev['interface_number'] == TOUCH_INTERFACE:
             device_path = dev['path']
             break
