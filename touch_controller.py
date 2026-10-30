@@ -5,7 +5,6 @@ import threading
 import json
 import os
 import ctypes
-from contextlib import contextmanager
 import sys
 import re
 
@@ -178,31 +177,6 @@ class ActionDispatcher():
             self.send_mouse_click(self.MOUSEEVENTF_HWHEEL, steps_x)
             self.state.scroll_acc_x -= steps_x
             
-    def _send_wheel_event(self, flags, delta):
-        """Direct low-level injector with correct signed DWORD bitmasking."""
-        extra = ctypes.c_ulong(0)
-        
-        # Pack signed 32-bit int safely into DWORD bit-pattern
-        dw_data = ctypes.c_ulong(delta & 0xFFFFFFFF)
-
-        ii = INPUT()
-        ii.type = self.INPUT_MOUSE
-        ii.mi = MOUSEINPUT(0, 0, dw_data, flags, 0, ctypes.pointer(extra))
-        
-        ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
-            
-    def send_ctrl_scroll(self, dx, dy):
-        """Sends Ctrl + Scroll event via ctypes."""
-        ctrl_vk = vk_codes_dict["ctrl"]
-        
-        print(f"dx: {dx}, dy: {dy}")
-        # 1. Press Ctrl down
-        self.send_key(ctrl_vk, release=False)
-        # 2. Inject scroll delta
-        self.send_mouse_scroll(dx, dy)
-        # 3. Release Ctrl
-        self.send_key(ctrl_vk, release=True)
-
     def send_key(self, vk_code, release=False):
         """Sends a key down or key up event using a VK code from vk_codes.py."""
         extra = ctypes.c_ulong(0)
@@ -230,14 +204,6 @@ class ActionDispatcher():
         
         ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
             
-    @contextmanager
-    def hold_key(self, vk_code):
-        self.send_key(vk_code, release=False)
-        try:
-            yield
-        finally:
-            self.send_key(vk_code, release=True)
-
         # # Usage:
         # with hold_key(vk_codes_dict["ctrl"]):
         #     send_mouse_scroll(0, steps)
@@ -583,9 +549,6 @@ config = DriverConfig()
 # ==============================================================================
 # HID HARDWARE CONSTANTS
 # ==============================================================================
-VENDOR_ID = 0x056A  # Wacom Co., Ltd.
-PRODUCT_ID = None   # Auto-detect or integer PID
-
 # Touch slots the report format carries. The per-contact-count start_time table
 # has one extra cell; an over-cap contact count clamps to that last cell.
 MAX_TOUCH_CONTACTS = 10
@@ -626,13 +589,10 @@ class TabletState:
         self.is_left_held = False
         
         # Asymmetric & Multi-Finger Tracking
-        self.f2_start_pos = None
         self.f2_right_click_fired = False
         self.scroll_active = False
-        self.pinch_active = False
-        self.first_time_2finger = True
-        self.first_time_mutlifinger = True
         self.last_2finger_centroid = None
+        # Fractional scroll accumulator, used by send_mouse_scroll.
         self.scroll_acc_x = 0.0
         self.scroll_acc_y = 0.0
         self.was_moved = False
@@ -779,7 +739,6 @@ def process_touch_report(report, state, action_dispatch):
                 state.max_drift = 0.0
                 state.is_dragging_cursor = False    
             elif len(state.active_contacts) == 2:
-                state.f2_start_pos = pos
                 state.f2_right_click_fired = False
                 state.scroll_active = False
 
@@ -817,11 +776,6 @@ def process_touch_report(report, state, action_dispatch):
             state.mf_start_spread = spread
             state.last_pinch_distance = spread
             state.last_alt_tab_x = cx  
-        if num_active > 2:
-            state.first_time_2finger = True
-        if num_active == 2:
-            state.first_time_multifinger = True
-
     # if DEBUG: print(f"Debug: {num_active} fingers detected with Gesture: state: {state.active_gesture}")
 
     if not state.pen_in_proximity:
@@ -936,7 +890,6 @@ def process_touch_report(report, state, action_dispatch):
                 state.last_f1_pos = None
                 state.f1_start_pos = None
                 state.scroll_active = False
-                state.pinch_active = False
                 
             # if state.first_time_mutlifinger:
             #     state.first_time_mutlifinger = False
@@ -1027,16 +980,12 @@ def process_touch_report(report, state, action_dispatch):
             state.f1_start_pos = None
             state.last_f1_pos = None
             
-            state.f2_start_pos = None
             state.is_dragging_cursor = False
             state.drag_candidate = False
             state.f2_right_click_fired = False
             state.scroll_active = False
-            state.pinch_active = False
             state.last_2finger_centroid = None
             state.was_moved = False
-            state.first_time_2finger = True
-            state.first_time_multifinger = True
             state.is_left_held = False
             
             state.active_gesture = None
