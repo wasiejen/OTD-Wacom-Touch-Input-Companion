@@ -293,6 +293,85 @@ def test_unknown_keys_warn_and_still_load(monkeypatch, tmp_path, capsys):
     assert not hasattr(cfg, "not_a_setting")
 
 
+def test_corrupt_json_syntax_keeps_defaults(monkeypatch, tmp_path, capsys):
+    cfg = fresh_config(monkeypatch, tmp_path)
+    path = tmp_path / "user.cfg"
+    path.write_text('{"motion_and_thresholds": {"max_tap_duration": 0.4}"')
+
+    loaded = cfg.load_from_file(str(path))
+    out = capsys.readouterr().out
+
+    assert loaded is False
+    assert cfg.max_tap_duration == 0.25
+    assert cfg.action_mapping["1f_tap"] == "left_click"
+    assert "[Config Error]" in out
+    assert str(path) in out
+
+
+def test_multiple_invalid_keys_each_named(monkeypatch, tmp_path, capsys):
+    cfg = fresh_config(monkeypatch, tmp_path)
+    path = tmp_path / "user.cfg"
+    path.write_text(json.dumps({
+        "motion_and_thresholds": {"max_tap_duration": "abc"},
+        "feature_toggles": {"2f_tap": "maybe"},
+        "action_mapping": {"1f_tap": "not_a_known_action"},
+    }, indent=4))
+
+    loaded = cfg.load_from_file(str(path))
+    out = capsys.readouterr().out
+
+    assert loaded is False
+    assert cfg.max_tap_duration == 0.25
+    assert cfg.feature_toggles["2f_tap"] is False
+    assert cfg.action_mapping["1f_tap"] == "left_click"
+    assert "motion_and_thresholds.max_tap_duration" in out
+    assert "feature_toggles.2f_tap" in out
+    assert "action_mapping.1f_tap" in out
+
+
+def test_invalid_action_in_device_lane_names_lane(monkeypatch, tmp_path, capsys):
+    cfg = fresh_config(monkeypatch, tmp_path)
+    path = tmp_path / "user.cfg"
+    lane = "device_settings_" + "a" * 12
+    path.write_text(json.dumps({
+        "feature_toggles": {"2f_tap": True},
+        lane: {"action_mapping": {"1f_tap": "not_a_known_action"}},
+    }, indent=4))
+
+    loaded = cfg.load_from_file(str(path))
+    out = capsys.readouterr().out
+
+    assert loaded is False
+    assert cfg.feature_toggles["2f_tap"] is False
+    assert cfg.action_mapping["1f_tap"] == "left_click"
+    assert lane in out
+    assert "not_a_known_action" in out
+
+
+def test_identity_lanes_round_trip(monkeypatch, tmp_path):
+    cfg = fresh_config(monkeypatch, tmp_path)
+    cfg.cursor_speed_low = 6.5
+    cfg.action_mapping["1f_tap"] = "right_click"
+    identity = "b" * 12
+    cfg.device_aliases[identity] = "tablet-x"
+    cfg.device_settings[identity] = {
+        "motion_and_thresholds": {"max_tap_duration": 0.42},
+        "action_mapping": {"1f_tap": "undo"},
+    }
+    path = tmp_path / "user.cfg"
+
+    cfg.save_to_file(str(path))
+    fresh = DriverConfig()
+    loaded = fresh.load_from_file(str(path))
+
+    assert loaded is True
+    assert fresh.cursor_speed_low == 6.5
+    assert fresh.action_mapping["1f_tap"] == "right_click"
+    assert fresh.device_aliases[identity] == "tablet-x"
+    assert fresh.device_settings[identity]["motion_and_thresholds"]["max_tap_duration"] == 0.42
+    assert fresh.device_settings[identity]["action_mapping"]["1f_tap"] == "undo"
+
+
 def test_invalid_devices_slot_applies_nothing(monkeypatch, tmp_path, capsys):
     cfg = fresh_config(monkeypatch, tmp_path)
     path = tmp_path / "user.cfg"

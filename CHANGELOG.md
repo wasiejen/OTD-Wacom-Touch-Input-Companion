@@ -4,6 +4,22 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261031-0720:
+
+- config load atomicity and validation (TODO #254): `load_from_file`
+  validates the WHOLE file via `validate_config_data` before applying —
+  an offending key applies nothing, defaults stay intact ("Nothing
+  applied"). Each bad key or action names its section path and file line;
+  `action_mapping` values are checked against `AVAILABLE_ACTIONS` and an
+  invalid action is rejected by name, never applied (no per-gesture
+  runtime warnings). Unknown sections, motion keys, toggles and gestures
+  warn by name and are ignored; the load still succeeds. Device lanes
+  (`device_alias_`/`device_settings_`) validate the same way, errors name
+  the lane. Valid files round-trip with the U64 save side.
+- Device-free tests: corrupt JSON syntax keeps defaults; multiple bad keys
+  each named; invalid action inside a device lane names the lane; alias
+  and settings lanes round-trip.
+
 261031-0530:
 
 - pen absolute extent at rotated orientation (TODO #274): absolute mode
