@@ -4,6 +4,18 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261031-0237:
+- pen support inside the companion (approved packet a,b,c): full 10-byte 0x02 pen
+  report parsing per the documented Intuos-V1 layout (status byte switches bytes
+  6-7: rotation reports carry pressure over, bit-5 tablet reports decode pressure).
+- cursor movement through SendInput: absolute tablet-to-virtual-desktop mapping
+  or relative deltas with a speed setting; pressure = left-button press/release,
+  pen buttons default right+middle click and stay customizable; tilt ignored.
+- new GUI tab "Pen" (speed, absolute/relative toggle, pressure threshold, button
+  mapping); pen settings round-trip through user.cfg.
+- device verification pending: no tablet in CI, maintainer run required.
+
+
 260805-1328:
 - fixed not working touch_paused function.
 - introduced events for 

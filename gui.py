@@ -160,7 +160,8 @@ def parse_numeric_values(values):
     return parsed
 
 
-def apply_settings_to_config(config, numeric_values, accel_toggles, feature_toggles, action_mappings):
+def apply_settings_to_config(config, numeric_values, accel_toggles, feature_toggles,
+                             action_mappings, pen_button_actions=None, pen_absolute_mode=None):
     """Apply a complete settings set to config, or apply nothing at all.
 
     numeric_values are raw entry strings; they are validated before the first
@@ -182,18 +183,29 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
     for feat_key, action in action_mappings.items():
         config.action_mapping[feat_key] = action
 
+    if pen_absolute_mode is not None:
+        config.feature_toggles["pen_absolute_mode"] = pen_absolute_mode
+
+    for pen_key, action in (pen_button_actions or {}).items():
+        config.action_mapping[pen_key] = action
+
 
 class SettingsWindow(tk.Toplevel):
     def __init__(self, parent, state_ref, config_ref):
         super().__init__(parent)
         self.state = state_ref
         self.config = config_ref
-        # Shared numeric-entry registry: Motion and Advanced tabs fill this dict.
-        self.entries = {}
-
         self.title("Wacom Touch Driver Settings")
         self.geometry("460x650")
         self.minsize(460, 480)
+
+        # Shared numeric-entry registry: Motion, Pen and Advanced tabs fill this dict.
+        self.entries = {}
+        # Mapping values as they were when the window opened, keyed by feature.
+        # Initialized here so the Pen tab entries survive the Features tab build.
+        self.saved_actions = {}
+        # Pen button comboboxes, filled by the Pen tab.
+        self.pen_combos = {}
 
         main_container = ttk.Frame(self)
         main_container.pack(fill="both", expand=True, padx=10, pady=10)
@@ -206,12 +218,17 @@ class SettingsWindow(tk.Toplevel):
         notebook.add(self.tab_motion, text="Motion & Acceleration")
         self._build_motion_tab()
 
-        # Tab 2: Combined Features & Actions
+        # Tab 2: Pen
+        self.tab_pen = ttk.Frame(notebook)
+        notebook.add(self.tab_pen, text="Pen")
+        self._build_pen_tab()
+
+        # Tab 3: Combined Features & Actions
         self.tab_features_actions = ttk.Frame(notebook)
         notebook.add(self.tab_features_actions, text="Features & Actions")
         self._build_features_actions_tab()
 
-        # Tab 3: Thresholds & Advanced
+        # Tab 4: Thresholds & Advanced
         self.tab_advanced = ttk.Frame(notebook)
         notebook.add(self.tab_advanced, text="Thresholds & Advanced")
         self._build_advanced_tab()
@@ -322,6 +339,78 @@ class SettingsWindow(tk.Toplevel):
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+    def _build_pen_tab(self):
+        canvas = tk.Canvas(self.tab_pen, borderwidth=0)
+        scrollbar = ttk.Scrollbar(self.tab_pen, orient="vertical", command=canvas.yview)
+        scroll_frame = ttk.Frame(canvas)
+
+        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        pen_tooltips = {
+            "pen_speed": "Relative-mode speed: pixels per millimeter of pen travel. Ignored in absolute mode.",
+            "pen_pressure_threshold": "Pressure units (0..2047) at which the left button is held. Below it the button releases; filters light-contact jitter.",
+        }
+
+        # --- 1. Movement Frame ---
+        movement_frame = ttk.LabelFrame(scroll_frame, text=" Pen Movement Parameters ", padding=10)
+        movement_frame.pack(fill="x", padx=10, pady=8, expand=True)
+
+        self.pen_absolute_var = tk.BooleanVar(value=self.config.feature_toggles.get("pen_absolute_mode", True))
+        chk_pen = ttk.Checkbutton(movement_frame, text="Absolute Movement (Off = Relative Deltas)", variable=self.pen_absolute_var)
+        chk_pen.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
+        ToolTip(chk_pen, "Absolute: pen position maps the tablet range onto the screen. Relative: movement is sent as deltas scaled by the speed entry.")
+
+        pen_fields = [
+            ("Speed (px/mm):", "pen_speed", self.config.pen_speed),
+            ("Pressure Threshold:", "pen_pressure_threshold", self.config.pen_pressure_threshold),
+        ]
+
+        for idx, (label_text, key, initial_val) in enumerate(pen_fields, start=1):
+            lbl = ttk.Label(movement_frame, text=label_text)
+            lbl.grid(row=idx, column=0, sticky="w", pady=4)
+            ent = ttk.Entry(movement_frame, width=12)
+            ent.insert(0, str(initial_val))
+            ent.grid(row=idx, column=1, sticky="e", pady=4)
+            self.entries[key] = ent
+
+            if key in pen_tooltips:
+                ToolTip(lbl, pen_tooltips[key])
+                ToolTip(ent, pen_tooltips[key])
+
+        movement_frame.columnconfigure(1, weight=1)
+
+        # --- 2. Pen Button Mapping Frame ---
+        button_frame = ttk.LabelFrame(scroll_frame, text=" Pen Button Mapping ", padding=10)
+        button_frame.pack(fill="x", padx=10, pady=8, expand=True)
+
+        options = getattr(self.config, "AVAILABLE_ACTIONS", [])
+        button_fields = [
+            ("Pen Button 1:", "pen_button_1",
+             "Press/release action for pen button 1 (status bit 1)."),
+            ("Pen Button 2:", "pen_button_2",
+             "Press/release action for pen button 2 (status bit 2). Mouse-button actions hold while pressed; other actions tap on the press edge."),
+        ]
+
+        for idx, (label_text, key, tip) in enumerate(button_fields, start=1):
+            lbl = ttk.Label(button_frame, text=label_text)
+            lbl.grid(row=idx, column=0, sticky="w", pady=4)
+            current_action = self.config.action_mapping.get(key)
+            combo = ttk.Combobox(button_frame, values=options, state="readonly", width=22)
+            combo.set(action_display_value(current_action, options))
+            combo.grid(row=idx, column=1, sticky="e", pady=4)
+            self.pen_combos[key] = combo
+            self.saved_actions[key] = current_action
+            ToolTip(lbl, tip)
+            ToolTip(combo, tip)
+
+        button_frame.columnconfigure(1, weight=1)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
     def _build_features_actions_tab(self):
         canvas = tk.Canvas(self.tab_features_actions, borderwidth=0)
         scrollbar = ttk.Scrollbar(self.tab_features_actions, orient="vertical", command=canvas.yview)
@@ -335,12 +424,13 @@ class SettingsWindow(tk.Toplevel):
 
         self.feature_vars = {}
         self.action_combos = {}
-        # Mapping values as they were when the window opened, keyed by feature.
-        self.saved_actions = {}
+        # self.saved_actions is initialized in __init__ so the Pen tab entries
+        # built earlier are not wiped here.
         options = getattr(self.config, "AVAILABLE_ACTIONS", [])
 
-        # Filter out cursor_acceleration & scroll_acceleration since they are in Motion tab
-        excluded_features = {"cursor_acceleration", "scroll_acceleration"}
+        # Filter out cursor_acceleration & scroll_acceleration since they are in Motion tab,
+        # and pen_absolute_mode since it is in the Pen tab
+        excluded_features = {"cursor_acceleration", "scroll_acceleration", "pen_absolute_mode"}
 
         for feature_key, enabled in self.config.feature_toggles.items():
             if feature_key in excluded_features:
@@ -452,10 +542,23 @@ class SettingsWindow(tk.Toplevel):
                 )
                 for feat_key, combo in self.action_combos.items()
             }
+            pen_combos = getattr(self, "pen_combos", {})
+            pen_button_actions = {
+                pen_key: resolve_action_mapping(
+                    combo.get(),
+                    saved_actions.get(pen_key, self.config.action_mapping.get(pen_key)),
+                    options,
+                )
+                for pen_key, combo in pen_combos.items()
+            }
+            pen_absolute_var = getattr(self, "pen_absolute_var", None)
+            pen_absolute_mode = pen_absolute_var.get() if pen_absolute_var is not None else None
 
             # 2. Validate everything, then apply all-or-nothing
             apply_settings_to_config(
-                self.config, numeric_values, accel_toggles, feature_toggles, action_mappings
+                self.config, numeric_values, accel_toggles, feature_toggles, action_mappings,
+                pen_button_actions=pen_button_actions,
+                pen_absolute_mode=pen_absolute_mode,
             )
         except ValueError as e:
             messagebox.showerror("Invalid Input", f"Please enter valid numeric values.\nDetails: {e}")

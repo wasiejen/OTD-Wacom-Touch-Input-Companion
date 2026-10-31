@@ -2,7 +2,7 @@
 
 A lightweight Python driver companion for **OpenTabletDriver (OTD)** that unlocks touch input and multi-touch gesture support on Wacom Intuos Pro tablets. 
 
-While OpenTabletDriver excels at handling pen input, touch support on certain older Wacom devices requires specialized parsing. This background driver runs alongside OTD to capture HID touch reports and map them to custom mouse cursor movements, multi-finger gestures, continuous scrolling, and Windows productivity shortcuts.
+Touch support on certain older Wacom devices requires specialized parsing. This driver captures HID touch reports and maps them to custom mouse cursor movements, multi-finger gestures, continuous scrolling, and Windows productivity shortcuts. Pen input is handled natively as well (cursor movement, pressure clicks, pen button clicks), replacing the external OpenTabletDriver dependency.
 
 ---
 
@@ -35,6 +35,7 @@ Specifically designed and tested for the **Wacom Intuos5 / Intuos Pro (PTH-x51)*
 ## Key Features
 
 * **Palm Rejection:** Automatically disables touch input instantly whenever the pen enters proximity/hover range above the tablet surface.
+* **Pen Pointer Support:** Built-in pen input without an external driver: cursor movement (absolute tablet-to-screen mapping or relative deltas with speed setting), pen tip pressure behaves like a left mouse button press/release, and the two pen buttons default to right-click and middle-click (customizable). Touch stays suppressed while the pen is active.
 * **Accelerated Cursor Motion:** Smooth 1-finger tracking with piecewise linear acceleration and configurable deadzones.
 * **Rich Multi-Finger Gestures:**
   * **1-Finger:** Tap, press-and-hold drag, and double-tap drag.
@@ -52,8 +53,9 @@ Specifically designed and tested for the **Wacom Intuos5 / Intuos Pro (PTH-x51)*
 Everything in the driver is exposed and editable via the GUI:
 
 1. **Motion & Speed:** Fine-tune base cursor sensitivity, acceleration curves (`speed_low`, `speed_high`), deadzone thresholds, and natural scroll speeds.
-2. **Features & Actions:** Individual check-box toggles for every single gesture type, paired with dropdown selectors to map gestures to standard actions (e.g., Task View, Show Desktop, Alt-Tab, Desktop Switch, Window Maximize/Minimize).
-3. **Thresholds & Advanced:** Adjust physical motion tolerances, tap duration limits, press-and-hold timing, swipe distance limits, and pinch activation limits.
+2. **Pen:** Pen movement speed (px/mm for relative deltas), absolute-vs-relative movement toggle, pressure threshold for the left-button hold, and dropdown mapping of the two pen buttons to actions.
+3. **Features & Actions:** Individual check-box toggles for every single gesture type, paired with dropdown selectors to map gestures to standard actions (e.g., Task View, Show Desktop, Alt-Tab, Desktop Switch, Window Maximize/Minimize).
+4. **Thresholds & Advanced:** Adjust physical motion tolerances, tap duration limits, press-and-hold timing, swipe distance limits, and pinch activation limits.
 
 ---
 
@@ -65,7 +67,7 @@ Everything in the driver is exposed and editable via the GUI:
    * Download the latest version from [python.org](https://www.python.org/downloads/).
    * **Important (Windows):** Check the box **"Add python.exe to PATH"** during installation.
 
-2. **OpenTabletDriver**: Make sure [OpenTabletDriver](https://opentabletdriver.net/) is installed and configured for your pen input.
+2. **OpenTabletDriver (optional):** Pen input is now handled by this companion itself, so OpenTabletDriver is not required for pen use. Install [OpenTabletDriver](https://opentabletdriver.net/) only if you need pen pressure/tilt features beyond pointer control - do not run both pointer paths at once.
 
 ### Installation
 
