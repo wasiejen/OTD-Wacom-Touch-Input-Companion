@@ -410,6 +410,23 @@ def resolve_device_alias(product_id, wireless, bindings=None):
     return None
 
 
+def snapshot_device_sections(config, section_names=DEVICE_SECTION_KEYS):
+    """Snapshot the named sections of a live config instance as plain dicts.
+
+    Only DEVICE_SECTION_KEYS are readable; the result is what a device entry
+    or the '--save-as <alias>' lane stores.
+    """
+    sections = {}
+    for name in section_names:
+        if name == "motion_and_thresholds":
+            sections[name] = {key: getattr(config, key) for key in config.MOTION_KEYS}
+        elif name == "feature_toggles":
+            sections[name] = dict(config.feature_toggles)
+        elif name == "action_mapping":
+            sections[name] = dict(config.action_mapping)
+    return sections
+
+
 # Device identity lane (U87): one interface's identity key is a hash over its
 # full interface path plus its serial string. Interfaces never match exactly
 # (#248 ruling), so a bare interface index is never an identity key.
@@ -969,6 +986,25 @@ class DriverConfig:
             if cleaned:
                 bindings[alias] = cleaned
         return bindings
+
+    def device_entry_records(self):
+        """Stored device entries as (alias, identity key) pairs, sorted by alias.
+
+        A device_alias_<hash> lane names one identity; a devices-map alias
+        without an identity lane pairs with None.
+        """
+        records = {}
+        for identity, alias in self.device_aliases.items():
+            if isinstance(alias, str) and alias:
+                records[alias] = identity
+        for alias in self.devices:
+            records.setdefault(alias, None)
+        return sorted(records.items())
+
+    @staticmethod
+    def format_device_entry(alias, identity):
+        """One '--list' line: '<alias>\t<identity key>' with '-' for no key."""
+        return f"{alias}\t{identity or '-'}"
 
     def fork_for_device(self, alias=None, identity=None):
         """Build one independent config instance for a connection.
@@ -2247,12 +2283,173 @@ def resolve_config_paths(args):
     return config_path, save_path, notes, other_args
 
 
+# CLI device lanes (U88 Part C): config-file maintenance without the driver.
+# '--list', '--restore-with <name>' and '--save-as <alias>' run against the
+# loaded config and exit; the manager thread and the GUI stay untouched.
+
+def looks_like_path(value):
+    """True when a '--save-as' value names a file instead of a device alias.
+
+    A value with a path separator or a file extension keeps the Part A
+    save-path lane; any other value names a device alias.
+    """
+    return "/" in value or "\\" in value or bool(os.path.splitext(value)[1])
+
+
+def resolve_cli_lanes(args):
+    """Pull the device-lane start arguments out of a raw argv slice.
+
+    '--list' takes no value; '--restore-with <name>' names one stored device
+    and '--save-as <alias>' stores the current settings under a new alias.
+    A '--save-as' value that looks like a path keeps the Part A save-path
+    lane: the option and its value pass through into ``path_args`` untouched.
+    Accepts the '=' form and the '-restore-with' spelling. Returns
+    (list_devices, restore_with, save_as_alias, notes, path_args);
+    ``path_args`` keeps every token the path and flag parsers should still see.
+    """
+    list_devices = False
+    restore_with = None
+    save_as_alias = None
+    notes = []
+    path_args = []
+
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        name, _, inline_value = arg.partition("=")
+        option = name.lower()
+
+        if option in ("--list", "-list"):
+            list_devices = True
+            index += 1
+            continue
+
+        if option in ("--restore-with", "-restore-with"):
+            value = inline_value
+            if not value and index + 1 < len(args):
+                value = args[index + 1]
+                index += 1
+            if not value:
+                notes.append(f"[Start Parameter] {name} needs a device name - ignored")
+                index += 1
+                continue
+            restore_with = value
+            index += 1
+            continue
+
+        if option in ("--save-as", "-save-as"):
+            value = inline_value
+            paired = not value and index + 1 < len(args)
+            if paired:
+                value = args[index + 1]
+            if value and not looks_like_path(value):
+                save_as_alias = value
+                index += 2 if paired else 1
+                continue
+            path_args.append(arg)
+            index += 1
+            continue
+
+        path_args.append(arg)
+        index += 1
+
+    return list_devices, restore_with, save_as_alias, notes, path_args
+
+
+def find_device_entry(config, name):
+    """Locate one stored device entry by alias or identity key.
+
+    Order: identity key, the identity lane of a stored alias name, then the
+    devices map. Returns (lane, key, entry); the entry can be empty when the
+    name is known but carries no saved sections. None when nothing is stored.
+    """
+    if isinstance(config.device_settings.get(name), dict):
+        return "identity", name, config.device_settings[name]
+    for identity, stored_alias in config.device_aliases.items():
+        if stored_alias != name:
+            continue
+        entry = config.device_settings.get(identity)
+        return "identity", identity, entry if isinstance(entry, dict) else {}
+    if isinstance(config.devices.get(name), dict):
+        return "alias", name, config.devices[name]
+    return None
+
+
+def cli_list_devices(config):
+    """Print the stored device entries (alias + identity key) and return them."""
+    records = config.device_entry_records()
+    print(f"[Config] Stored devices ({len(records)}):")
+    for alias, identity in records:
+        print(config.format_device_entry(alias, identity))
+    return records
+
+
+def cli_restore_with(config, name):
+    """Load one device's saved values, then re-save the live values (option B).
+
+    The entry validates all-or-nothing before it is applied; a rejected entry
+    prints its errors and leaves the current settings untouched. On success
+    the live snapshot replaces the stored entry, so the file mirrors the
+    live state. Returns True when values were applied and re-saved.
+    """
+    found = find_device_entry(config, name)
+    if found is None:
+        print(f"[Config Error] No saved device '{name}'. Nothing applied.")
+        return False
+
+    lane, key, entry = found
+    sections = {section: value for section, value in entry.items()
+                if section in DEVICE_SECTION_KEYS}
+    validated, warnings, errors = config.validate_config_data(sections, "")
+    for note in warnings:
+        print(f"[Config Warning] {lane} '{key}': {note}")
+    if errors:
+        for err in errors:
+            print(f"[Config Error] Invalid {lane} entry '{key}': {err}")
+        print(f"[Config] Restore of '{name}' aborted; current settings stay in place.")
+        return False
+
+    for attr, value in validated["motion"].items():
+        setattr(config, attr, value)
+    for attr, value in validated["toggles"].items():
+        config.feature_toggles[attr] = value
+    for attr, value in validated["mapping"].items():
+        config.action_mapping[attr] = value
+    config.sync_sensitivities()
+
+    snapshot = snapshot_device_sections(config)
+    if lane == "identity":
+        config.set_device_identity_settings(key, snapshot)
+    else:
+        config.set_device_entry(key, snapshot)
+    config.save_to_file()
+    print(f"[Config] Restored '{name}'; current live values re-saved as its state.")
+    return True
+
+
+def cli_save_as(config, alias):
+    """Store the current settings under a new device alias and save the file.
+
+    An existing alias with the same name is overwritten; the bindings and
+    entries of other devices stay untouched.
+    """
+    config.set_device_entry(alias, snapshot_device_sections(config))
+    config.save_to_file()
+    print(f"[Config] Current settings saved under alias '{alias}'.")
+    return True
+
+
 def main():
     global DEBUG
     global config
     prefer_wireless = False
 
-    config_path, save_path, path_notes, other_args = resolve_config_paths(sys.argv[1:])
+    list_devices, restore_with, save_as_alias, lane_notes, path_args = \
+        resolve_cli_lanes(sys.argv[1:])
+    for note in lane_notes:
+        print(note)
+
+    config_path, save_path, path_notes, other_args = resolve_config_paths(path_args)
     for note in path_notes:
         print(note)
 
@@ -2271,6 +2468,20 @@ def main():
     if save_path != config_path:
         print(f"[Start Parameter] Save file: '{save_path}'")
     config.save_path = save_path
+
+    # CLI maintenance lanes run against the loaded file and exit: the manager
+    # thread and the GUI stay unstarted.
+    if list_devices:
+        cli_list_devices(config)
+        return 0
+
+    if restore_with or save_as_alias:
+        applied = True
+        if restore_with:
+            applied = cli_restore_with(config, restore_with)
+        if save_as_alias:
+            cli_save_as(config, save_as_alias)
+        return 0 if applied else 1
 
     print("\n=== Initializing Wacom Device Manager Thread ===")
 
@@ -2324,5 +2535,7 @@ def main():
         stop_event.set()
         print("\n=== Wacom Touch Driver successfully stopped ===")
 
+    return 0
+
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

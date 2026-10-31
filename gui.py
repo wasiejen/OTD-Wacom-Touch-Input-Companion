@@ -6,7 +6,11 @@ from PIL import Image, ImageDraw, ImageFont
 import pystray
 from pystray import MenuItem as item
 
-from touch_controller import ORIENTATION_MAX_DEGREES, rotate_point
+from touch_controller import (
+    ORIENTATION_MAX_DEGREES,
+    rotate_point,
+    snapshot_device_sections,
+)
 
 
 class ToolTip:
@@ -134,15 +138,7 @@ DEVICE_TRANSFER_SECTIONS = ("motion_and_thresholds", "feature_toggles", "action_
 
 def collect_config_sections(config, section_names):
     """Snapshot the named sections of a live config instance as plain dicts."""
-    sections = {}
-    for name in section_names:
-        if name == "motion_and_thresholds":
-            sections[name] = {key: getattr(config, key) for key in config.MOTION_KEYS}
-        elif name == "feature_toggles":
-            sections[name] = dict(config.feature_toggles)
-        elif name == "action_mapping":
-            sections[name] = dict(config.action_mapping)
-    return sections
+    return snapshot_device_sections(config, section_names)
 
 
 def device_display_name(conn):
