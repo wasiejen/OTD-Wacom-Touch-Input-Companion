@@ -41,7 +41,7 @@ class FakeWindow:
     """Duck-typed SettingsWindow widget surface used by apply/save."""
 
     def __init__(self, config, entries, accel=(True, True), features=None, actions=None,
-                 pen_absolute=None, pen_buttons=None):
+                 pen_absolute=None, pen_buttons=None, buttons=None, button_toggles=None):
         self.config = config
         self.entries = {key: FakeEntry(value) for key, value in entries.items()}
         self.cursor_accel_var = FakeVar(accel[0])
@@ -52,6 +52,10 @@ class FakeWindow:
             self.pen_absolute_var = FakeVar(pen_absolute)
         if pen_buttons is not None:
             self.pen_combos = {key: FakeEntry(value) for key, value in pen_buttons.items()}
+        if buttons is not None:
+            self.button_combos = {key: FakeEntry(value) for key, value in buttons.items()}
+        if button_toggles is not None:
+            self.button_vars = {key: FakeVar(value) for key, value in button_toggles.items()}
         # Bind the real SettingsWindow.apply_settings body onto this surface.
         self.apply_settings = types.MethodType(gui.SettingsWindow.apply_settings, self)
 
@@ -215,4 +219,51 @@ def test_apply_pen_invalid_number_leaves_config_untouched(window_surface):
     assert applied is False
     assert config.pen_speed == 8.0
     assert config.feature_toggles["pen_absolute_mode"] is True
+    assert box.errors
+
+
+def test_apply_button_settings_updates_config(window_surface):
+    config, box = window_surface
+    win = make_window(
+        config,
+        {"dial_step_threshold": "6.0"},
+        buttons={"btn1_press": "task_view", "dial_cw": "next"},
+        button_toggles={"btn1_press": False, "central_press": True},
+    )
+
+    applied = types.MethodType(gui.SettingsWindow.apply_settings, win)()
+
+    assert applied is True
+    assert config.dial_step_threshold == 6.0
+    assert config.action_mapping["btn1_press"] == "task_view"
+    assert config.action_mapping["dial_cw"] == "next"
+    assert config.feature_toggles["btn1_press"] is False
+    assert config.feature_toggles["central_press"] is True
+
+
+def test_save_writes_button_settings(window_surface, tmp_path):
+    config, box = window_surface
+    win = make_window(config, {}, buttons={"btn5_press": "undo", "dial_ccw": "prev"},
+                      button_toggles={"btn5_press": True})
+
+    saved = types.MethodType(gui.SettingsWindow.save_to_file, win)()
+
+    assert saved is True
+    data = json.loads((tmp_path / "user.cfg").read_text())
+    assert data["action_mapping"]["btn5_press"] == "undo"
+    assert data["action_mapping"]["dial_ccw"] == "prev"
+    assert data["feature_toggles"]["btn5_press"] is True
+    assert "dial_step_threshold" in data["motion_and_thresholds"]
+
+
+def test_apply_button_invalid_number_leaves_config_untouched(window_surface):
+    config, box = window_surface
+    win = make_window(config, {"dial_step_threshold": "abc"},
+                      buttons={"btn1_press": "task_view"})
+
+    applied = types.MethodType(gui.SettingsWindow.apply_settings, win)()
+
+    assert applied is False
+    assert config.dial_step_threshold == 4.0
+    assert config.action_mapping["btn1_press"] == "undo"
     assert box.errors

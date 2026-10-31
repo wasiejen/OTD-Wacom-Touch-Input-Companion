@@ -127,6 +127,11 @@ class ToastNotification(tk.Toplevel):
 INVALID_ACTION_PREFIX = "! invalid: "
 
 
+# Touch button and dial controls (U71): one toggle plus one mapping per control.
+BUTTON_CONTROL_KEYS = tuple(f"btn{n}_press" for n in range(1, 9)) + (
+    "central_press", "dial_cw", "dial_ccw")
+
+
 def action_display_value(action, options):
     """Combo display text: the saved action, marked when it is not a valid option."""
     if action in options:
@@ -161,7 +166,8 @@ def parse_numeric_values(values):
 
 
 def apply_settings_to_config(config, numeric_values, accel_toggles, feature_toggles,
-                             action_mappings, pen_button_actions=None, pen_absolute_mode=None):
+                             action_mappings, pen_button_actions=None, pen_absolute_mode=None,
+                             button_actions=None, button_toggles=None):
     """Apply a complete settings set to config, or apply nothing at all.
 
     numeric_values are raw entry strings; they are validated before the first
@@ -189,6 +195,12 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
     for pen_key, action in (pen_button_actions or {}).items():
         config.action_mapping[pen_key] = action
 
+    for key, enabled in (button_toggles or {}).items():
+        config.feature_toggles[key] = enabled
+
+    for key, action in (button_actions or {}).items():
+        config.action_mapping[key] = action
+
 
 class SettingsWindow(tk.Toplevel):
     def __init__(self, parent, state_ref, config_ref):
@@ -206,6 +218,9 @@ class SettingsWindow(tk.Toplevel):
         self.saved_actions = {}
         # Pen button comboboxes, filled by the Pen tab.
         self.pen_combos = {}
+        # Button/dial toggles and comboboxes (U71), filled by the Buttons tab.
+        self.button_vars = {}
+        self.button_combos = {}
 
         main_container = ttk.Frame(self)
         main_container.pack(fill="both", expand=True, padx=10, pady=10)
@@ -223,12 +238,17 @@ class SettingsWindow(tk.Toplevel):
         notebook.add(self.tab_pen, text="Pen")
         self._build_pen_tab()
 
-        # Tab 3: Combined Features & Actions
+        # Tab 3: Touch Buttons & Rotary Dial
+        self.tab_buttons = ttk.Frame(notebook)
+        notebook.add(self.tab_buttons, text="Buttons")
+        self._build_buttons_tab()
+
+        # Tab 4: Combined Features & Actions
         self.tab_features_actions = ttk.Frame(notebook)
         notebook.add(self.tab_features_actions, text="Features & Actions")
         self._build_features_actions_tab()
 
-        # Tab 4: Thresholds & Advanced
+        # Tab 5: Thresholds & Advanced
         self.tab_advanced = ttk.Frame(notebook)
         notebook.add(self.tab_advanced, text="Thresholds & Advanced")
         self._build_advanced_tab()
@@ -411,6 +431,88 @@ class SettingsWindow(tk.Toplevel):
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+    def _build_buttons_tab(self):
+        canvas = tk.Canvas(self.tab_buttons, borderwidth=0)
+        scrollbar = ttk.Scrollbar(self.tab_buttons, orient="vertical", command=canvas.yview)
+        scroll_frame = ttk.Frame(canvas)
+
+        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        button_tooltips = {
+            "btn1_press": "Action on the press edge of express key 1 (byte 4 bitmask bit 0). "
+                          "Mouse-button actions hold while pressed; other actions tap once.",
+            "central_press": "Action on the press edge of the central button (byte 3 bit 0).",
+            "dial_cw": "Action per clockwise step of the rotary touch dial. Steps accumulate "
+                       "from the reported dial angle; a decreasing angle is clockwise.",
+            "dial_ccw": "Action per counter-clockwise step of the rotary touch dial "
+                        "(increasing angle).",
+        }
+
+        # --- 1. Dial Parameters Frame ---
+        dial_frame = ttk.LabelFrame(scroll_frame, text=" Rotary Dial Parameters ", padding=10)
+        dial_frame.pack(fill="x", padx=10, pady=8, expand=True)
+
+        dial_fields = [
+            ("Step Threshold (angle units):", "dial_step_threshold", self.config.dial_step_threshold),
+        ]
+        dial_tooltips = {
+            "dial_step_threshold": "Dial angle units traversed before one CW/CCW step action fires.",
+        }
+
+        for idx, (label_text, key, initial_val) in enumerate(dial_fields, start=1):
+            lbl = ttk.Label(dial_frame, text=label_text)
+            lbl.grid(row=idx, column=0, sticky="w", pady=4)
+            ent = ttk.Entry(dial_frame, width=12)
+            ent.insert(0, str(initial_val))
+            ent.grid(row=idx, column=1, sticky="e", pady=4)
+            self.entries[key] = ent
+
+            if key in dial_tooltips:
+                ToolTip(lbl, dial_tooltips[key])
+                ToolTip(ent, dial_tooltips[key])
+
+        dial_frame.columnconfigure(1, weight=1)
+
+        # --- 2. Button Mapping Frame ---
+        mapping_frame = ttk.LabelFrame(scroll_frame, text=" Touch Button & Dial Mapping ", padding=10)
+        mapping_frame.pack(fill="x", padx=10, pady=8, expand=True)
+
+        options = getattr(self.config, "AVAILABLE_ACTIONS", [])
+        control_fields = [(f"Button {n}:", f"btn{n}_press") for n in range(1, 9)] + [
+            ("Central Button:", "central_press"),
+            ("Dial Clockwise:", "dial_cw"),
+            ("Dial Counter-Clockwise:", "dial_ccw"),
+        ]
+
+        for idx, (label_text, key) in enumerate(control_fields, start=1):
+            lbl = ttk.Label(mapping_frame, text=label_text)
+            lbl.grid(row=idx, column=0, sticky="w", pady=4)
+
+            var = tk.BooleanVar(value=self.config.feature_toggles.get(key, True))
+            chk = ttk.Checkbutton(mapping_frame, text="on", variable=var)
+            chk.grid(row=idx, column=1, sticky="w", pady=4)
+            self.button_vars[key] = var
+
+            current_action = self.config.action_mapping.get(key)
+            combo = ttk.Combobox(mapping_frame, values=options, state="readonly", width=22)
+            combo.set(action_display_value(current_action, options))
+            combo.grid(row=idx, column=2, sticky="e", pady=4)
+            self.button_combos[key] = combo
+            self.saved_actions[key] = current_action
+
+            tip = button_tooltips.get(key, "Action for this touch control; toggle enables the control.")
+            ToolTip(lbl, tip)
+            ToolTip(chk, tip)
+            ToolTip(combo, tip)
+
+        mapping_frame.columnconfigure(2, weight=1)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
     def _build_features_actions_tab(self):
         canvas = tk.Canvas(self.tab_features_actions, borderwidth=0)
         scrollbar = ttk.Scrollbar(self.tab_features_actions, orient="vertical", command=canvas.yview)
@@ -429,8 +531,10 @@ class SettingsWindow(tk.Toplevel):
         options = getattr(self.config, "AVAILABLE_ACTIONS", [])
 
         # Filter out cursor_acceleration & scroll_acceleration since they are in Motion tab,
-        # and pen_absolute_mode since it is in the Pen tab
-        excluded_features = {"cursor_acceleration", "scroll_acceleration", "pen_absolute_mode"}
+        # pen_absolute_mode since it is in the Pen tab, and the button/dial controls
+        # since they are in the Buttons tab.
+        excluded_features = ({"cursor_acceleration", "scroll_acceleration", "pen_absolute_mode"}
+                             | set(BUTTON_CONTROL_KEYS))
 
         for feature_key, enabled in self.config.feature_toggles.items():
             if feature_key in excluded_features:
@@ -553,12 +657,25 @@ class SettingsWindow(tk.Toplevel):
             }
             pen_absolute_var = getattr(self, "pen_absolute_var", None)
             pen_absolute_mode = pen_absolute_var.get() if pen_absolute_var is not None else None
+            button_combos = getattr(self, "button_combos", {})
+            button_actions = {
+                key: resolve_action_mapping(
+                    combo.get(),
+                    saved_actions.get(key, self.config.action_mapping.get(key)),
+                    options,
+                )
+                for key, combo in button_combos.items()
+            }
+            button_vars = getattr(self, "button_vars", {})
+            button_toggles = {key: var.get() for key, var in button_vars.items()}
 
             # 2. Validate everything, then apply all-or-nothing
             apply_settings_to_config(
                 self.config, numeric_values, accel_toggles, feature_toggles, action_mappings,
                 pen_button_actions=pen_button_actions,
                 pen_absolute_mode=pen_absolute_mode,
+                button_actions=button_actions,
+                button_toggles=button_toggles,
             )
         except ValueError as e:
             messagebox.showerror("Invalid Input", f"Please enter valid numeric values.\nDetails: {e}")
