@@ -109,6 +109,28 @@ On the Release Page there is now an "OTD_Wacom_Touch_Driver_%VERSION%_win64.exe"
 
 When you hit **Save to File** in the settings GUI, a `user.cfg` file is automatically created or updated in the application directory. On startup, the driver automatically loads your saved configuration from this file.
 
+### Command line options
+
+Start the driver with `python touch_controller.py [options]`:
+
+| Option | Effect |
+|---|---|
+| `-DEBUG` | print raw touch reports on the console |
+| `-wireless` | prefer the wireless interface when a tablet exposes both |
+| `--config <path>` | load and save `<path>` instead of `user.cfg` |
+| `--save-as <path>` | save to `<path>` while loading from `--config` |
+| `--list` | print every stored device entry (alias + identity key) and exit |
+| `--restore-with <name>` | apply one device's saved values, then re-save the live values |
+| `--save-as <alias>` | write the current settings under a new device alias and exit |
+
+`--list`, `--restore-with` and `--save-as <alias>` are maintenance lanes: they run
+against the config file and exit without starting the driver or the GUI. A
+`--save-as` value that looks like a file path (a `/` or `\` separator or a file
+extension) keeps the save-file lane; any other value names a device alias.
+`--restore-with` takes a device alias or its 12-character identity key; the
+named device's saved values become the live values, and that device's entry is
+then rewritten with the live state.
+
 ---
 
 ## 🛠️ Tech Stack & Dependencies

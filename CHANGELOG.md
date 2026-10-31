@@ -4,6 +4,17 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261031-0413:
+- config CLI lanes (approved packet Part C): `--list` prints every stored device
+  entry (alias plus identity key) and exits — no driver, no GUI.
+  `--restore-with <name>` applies one device's saved values (alias or identity
+  key), then re-saves the live values under that key: option B, the file entry
+  mirrors the live state after a restore. `--save-as <alias>` writes the
+  current settings under a new device alias and exits.
+- A `--save-as` value with a path separator or a file extension keeps the
+  Part A save-file lane; any other value names a device alias. Without a lane
+  flag the driver starts exactly as before.
+
 261031-0406:
 - device identity (approved packet parts a, b, e): one interface's identity key
   is a 12-hex sha1 over its full HID interface path plus its serial string,
