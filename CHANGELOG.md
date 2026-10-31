@@ -4,6 +4,17 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261031-0315:
+- device orientation rotation (approved packet a,b,c,d): `orientation_degrees`
+  (0..359, 1° steps) rotates touch contacts and pen points about the tablet
+  center through one shared sin/cos transform before the gesture/cursor path;
+  0° is an exact passthrough and leaves all semantics untouched.
+- Motion tab: direct numeric entry, presets 0/90/180/270, and a Tk-drawn
+  tablet pictogram (central round + dial ring, keys 1-4 above, 5-8 mirrored
+  below) that rotates with the angle; value round-trips through user.cfg.
+- pen tilt ignored fully per ruling; pen absolute-mode screen area mapping at
+  90°/270° covers less than the full desktop (tracked as follow-up).
+
 261031-0237:
 - pen support inside the companion (approved packet a,b,c): full 10-byte 0x02 pen
   report parsing per the documented Intuos-V1 layout (status byte switches bytes
