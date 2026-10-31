@@ -8,6 +8,7 @@ import ctypes
 import sys
 import re
 import copy
+import hashlib
 
 from vk_codes import vk_codes_dict  # Import vk_code dictionary
 
@@ -409,6 +410,29 @@ def resolve_device_alias(product_id, wireless, bindings=None):
     return None
 
 
+# Device identity lane (U87): one interface's identity key is a hash over its
+# full interface path plus its serial string. Interfaces never match exactly
+# (#248 ruling), so a bare interface index is never an identity key.
+DEVICE_ALIAS_PREFIX = "device_alias_"
+DEVICE_SETTINGS_PREFIX = "device_settings_"
+DEVICE_IDENTITY_HASH_LENGTH = 12
+
+
+def device_identity_hash(path, serial_number=""):
+    """Identity key of one interface: 12-hex hash over interface path + serial.
+
+    ``path`` is the hidapi path (bytes or str); the serial string participates
+    even when empty, so the same path with a different serial stays distinct.
+    """
+    if isinstance(path, (bytes, bytearray)):
+        path_text = path.decode("utf-8", errors="ignore")
+    else:
+        path_text = str(path)
+    serial_text = serial_number or ""
+    key = f"{path_text}|{serial_text}".encode("utf-8")
+    return hashlib.sha1(key).hexdigest()[:DEVICE_IDENTITY_HASH_LENGTH]
+
+
 class DriverConfig:
     # Keys saved under "motion_and_thresholds", in file order. Load validation
     # accepts exactly these keys.
@@ -462,6 +486,15 @@ class DriverConfig:
         return None
 
     @staticmethod
+    def _device_lane_key(section):
+        """Return the identity-lane prefix when a top-level key is one, else None."""
+        if section.startswith(DEVICE_ALIAS_PREFIX):
+            return DEVICE_ALIAS_PREFIX
+        if section.startswith(DEVICE_SETTINGS_PREFIX):
+            return DEVICE_SETTINGS_PREFIX
+        return None
+
+    @staticmethod
     def _error_reference(raw_text, key, item_index):
         """Point at the offending entry: its file line when it has one,
         otherwise its item index inside the section."""
@@ -477,6 +510,10 @@ class DriverConfig:
         self.save_path = self.config_path
         # Reserved per-device map (c): identity rules are pending upstream research.
         self.devices = {}
+        # Identity lanes (U87): user alias names and per-device settings,
+        # each keyed by the device identity hash of its interface.
+        self.device_aliases = {}
+        self.device_settings = {}
 
         # Motion Parameters
         
@@ -723,6 +760,11 @@ class DriverConfig:
             "action_mapping": self.action_mapping,
             "devices": self.devices,
         }
+        # Identity lanes (U87): flat keys per device, next to the sections.
+        for identity, alias in self.device_aliases.items():
+            data[f"{DEVICE_ALIAS_PREFIX}{identity}"] = alias
+        for identity, sections in self.device_settings.items():
+            data[f"{DEVICE_SETTINGS_PREFIX}{identity}"] = sections
         with open(filepath, "w") as f:
             json.dump(data, f, indent=4)
         print(f"[Config] Saved settings to '{filepath}'")
@@ -743,7 +785,7 @@ class DriverConfig:
             return validated, warnings, errors
 
         for section in data:
-            if section not in self.CONFIG_SECTIONS:
+            if section not in self.CONFIG_SECTIONS and self._device_lane_key(section) is None:
                 ref = self._error_reference(raw_text, section, 0)
                 warnings.append(f"unknown section '{section}' ({ref}) ignored")
 
@@ -826,6 +868,44 @@ class DriverConfig:
                     validated_devices[alias] = dict(entry)
                 validated["devices"] = validated_devices
 
+        # Identity lanes (U87): device_alias_<hash> carries the user name,
+        # device_settings_<hash> carries the per-device sections.
+        aliases = {}
+        settings = {}
+        lane_seen = False
+        for index, (key, value) in enumerate(data.items()):
+            lane = self._device_lane_key(key)
+            if lane is None:
+                continue
+            lane_seen = True
+            ref = self._error_reference(raw_text, key, index)
+            identity = key[len(lane):]
+            if lane == DEVICE_ALIAS_PREFIX:
+                if not isinstance(value, str):
+                    errors.append(f"'{key}' needs an alias name, "
+                                  f"got {self._describe(value)} ({ref})")
+                else:
+                    aliases[identity] = value
+            else:
+                if not isinstance(value, dict):
+                    errors.append(f"'{key}' needs a settings object, "
+                                  f"got {self._describe(value)} ({ref})")
+                    continue
+                entry = {name: value[name] for name in DEVICE_SECTION_KEYS
+                         if name in value}
+                validated_entry, entry_warnings, entry_errors = \
+                    self.validate_config_data(entry, raw_text)
+                for note in entry_warnings:
+                    warnings.append(f"'{key}': {note}")
+                if entry_errors:
+                    for err in entry_errors:
+                        errors.append(f"'{key}': {err}")
+                    continue
+                settings[identity] = entry
+        if lane_seen:
+            validated["aliases"] = aliases
+            validated["settings"] = settings
+
         return validated, warnings, errors
 
     def load_from_file(self, filepath=None):
@@ -862,6 +942,10 @@ class DriverConfig:
             self.action_mapping[key] = value
         if "devices" in validated:
             self.devices = validated["devices"]
+        if "aliases" in validated:
+            self.device_aliases = validated["aliases"]
+        if "settings" in validated:
+            self.device_settings = validated["settings"]
 
         self.sync_sensitivities()
         print(f"[Config] Successfully loaded settings from '{filepath}'")
@@ -886,37 +970,46 @@ class DriverConfig:
                 bindings[alias] = cleaned
         return bindings
 
-    def fork_for_device(self, alias=None):
+    def fork_for_device(self, alias=None, identity=None):
         """Build one independent config instance for a connection.
 
         The fork carries this config's values; a present devices[alias]
-        entry overlays its sections all-or-nothing. An invalid entry prints
-        its errors and keeps the global values. None overlays nothing.
+        entry overlays its sections all-or-nothing. A present
+        device_settings[identity] entry (U87) overlays last, so per-device
+        values win over alias values; global values stay the fallback.
+        An invalid entry prints its errors and keeps the previous values.
+        None overlays nothing.
         """
         clone = copy.copy(self)
         clone.sensitivities = {name: list(accel)
                                for name, accel in self.sensitivities.items()}
         clone.feature_toggles = dict(self.feature_toggles)
         clone.action_mapping = dict(self.action_mapping)
+        clone.device_aliases = dict(self.device_aliases)
+        clone.device_settings = dict(self.device_settings)
 
-        if alias is not None and alias in self.devices:
-            entry = {key: value for key, value in self.devices[alias].items()
-                     if key in DEVICE_SECTION_KEYS}
-            validated, warnings, errors = self.validate_config_data(entry, "")
+        overlays = (("devices", alias, self.devices.get(alias)),
+                    ("identity", identity, self.device_settings.get(identity)))
+        for lane, key, entry in overlays:
+            if key is None or entry is None:
+                continue
+            sections = {name: value for name, value in entry.items()
+                        if name in DEVICE_SECTION_KEYS}
+            validated, warnings, errors = self.validate_config_data(sections, "")
             for note in warnings:
-                print(f"[Config Warning] devices '{alias}': {note}")
+                print(f"[Config Warning] {lane} '{key}': {note}")
             if errors:
                 for err in errors:
-                    print(f"[Config Error] Invalid devices entry '{alias}': {err}")
-                print(f"[Config Error] Overlay for '{alias}' not applied; "
-                      "global settings stay.")
-            else:
-                for key, value in validated["motion"].items():
-                    setattr(clone, key, value)
-                for key, value in validated["toggles"].items():
-                    clone.feature_toggles[key] = value
-                for key, value in validated["mapping"].items():
-                    clone.action_mapping[key] = value
+                    print(f"[Config Error] Invalid {lane} entry '{key}': {err}")
+                print(f"[Config Error] Overlay for '{key}' not applied; "
+                      "previous settings stay.")
+                continue
+            for attr, value in validated["motion"].items():
+                setattr(clone, attr, value)
+            for attr, value in validated["toggles"].items():
+                clone.feature_toggles[attr] = value
+            for attr, value in validated["mapping"].items():
+                clone.action_mapping[attr] = value
 
         clone.sync_sensitivities()
         return clone
@@ -933,6 +1026,24 @@ class DriverConfig:
         if bindings is not None:
             entry["bindings"] = list(bindings)
         self.devices[alias] = entry
+
+    def alias_for_identity(self, identity):
+        """The user alias stored for one device identity; None when unset."""
+        if identity is None:
+            return None
+        alias = self.device_aliases.get(identity)
+        return alias if isinstance(alias, str) and alias else None
+
+    def set_device_alias(self, identity, alias):
+        """Store the display name of one device identity (U87 part a)."""
+        self.device_aliases[identity] = alias
+
+    def set_device_identity_settings(self, identity, sections):
+        """Store the current per-device settings under its identity key (U87 e)."""
+        entry = dict(self.device_settings.get(identity, {}))
+        for name, value in sections.items():
+            entry[name] = value
+        self.device_settings[identity] = entry
 
 
 config = DriverConfig()
@@ -1991,10 +2102,18 @@ class DeviceManagerThread(threading.Thread):
                 dev_id = dev_pair['id']
 
                 if dev_id not in self.active_connections:
-                    alias = resolve_device_alias(
-                        dev_pair['product_id'], dev_pair['wireless'],
-                        self.base_config.device_bindings())
-                    conn_config = self.base_config.fork_for_device(alias)
+                    identity = device_identity_hash(
+                        dev_pair['pen_device'].get('path'),
+                        dev_pair['pen_device'].get('serial_number', ''))
+                    # A stored user alias for this identity wins over the
+                    # model-class rule (U87 a); the identity key is never the
+                    # bare interface index.
+                    alias = self.base_config.alias_for_identity(identity)
+                    if alias is None:
+                        alias = resolve_device_alias(
+                            dev_pair['product_id'], dev_pair['wireless'],
+                            self.base_config.device_bindings())
+                    conn_config = self.base_config.fork_for_device(alias, identity)
                     print(f"\n[Manager] New Device Detected! Initializing: {dev_pair['product_string']} "
                           f"(settings alias: {alias or 'none - global sections only'})")
                     
@@ -2023,6 +2142,8 @@ class DeviceManagerThread(threading.Thread):
                     }
 
                     self.active_connections[dev_id] = {
+                        'id': dev_id,
+                        'identity': identity,
                         'product_id': dev_pair['product_id'],
                         'product_string': dev_pair['product_string'],
                         'alias': alias,
@@ -2065,6 +2186,15 @@ class DeviceManagerThread(threading.Thread):
             if self.active_connections:
                 return next(iter(self.active_connections.values()))
             return None
+
+    def list_connections(self):
+        """The live connection dicts (U87 a): one entry per active device.
+
+        The GUI feeds its focused-device combo from this list; the entries
+        are the live dicts, so a GUI alias assign reaches the running device.
+        """
+        with self.lock:
+            return list(self.active_connections.values())
 
 
 # ==============================================================================
@@ -2163,7 +2293,7 @@ def main():
         state = conn['state']
         action_dispatch = conn['action']
         gui_config = conn['config']
-        device_info = {"connection": conn, "base_config": config}
+        device_info = {"connection": conn, "base_config": config, "manager": manager}
     else:
         state = TabletState()  # Fallback empty state for GUI
         gui_config = config
