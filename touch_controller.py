@@ -113,6 +113,8 @@ class ActionDispatcher():
         # Pen-held inputs: pressure left-hold and the two pen buttons.
         self.pen_pressure_held = False
         self.pen_button_held = {}
+        # Tablet button-held inputs (U71): slots 1..8 express keys, 9 central.
+        self.button_held = {}
 
         # The Dispatch Table
         self.ACTION_DISPATCH = {
@@ -259,6 +261,29 @@ class ActionDispatcher():
             self.send_mouse_click(self.PEN_BUTTON_FLAGS[action_name][1])
 
     # ==============================================================================
+    # TOUCH BUTTON HELPERS (U71)
+    # ==============================================================================
+
+    def press_tablet_button(self, slot, action_name):
+        """Press edge of a tablet button (slots 1..8, 9 = central).
+
+        Mouse-button actions hold on the press edge and release on the release
+        edge, like the pen buttons; any other mapped action taps once here.
+        """
+        flags = self.PEN_BUTTON_FLAGS.get(action_name)
+        if flags:
+            self.send_mouse_click(flags[0])
+            self.button_held[slot] = action_name
+        elif action_name is not None:
+            self.execute_mapped_action(action_name)
+
+    def release_tablet_button(self, slot):
+        """Release edge of a tablet button; only held mouse buttons send a UP."""
+        action_name = self.button_held.pop(slot, None)
+        if action_name:
+            self.send_mouse_click(self.PEN_BUTTON_FLAGS[action_name][1])
+
+    # ==============================================================================
     # HELPER FUNCTIONS - INPUT
     # ==============================================================================  
 
@@ -301,6 +326,11 @@ class ActionDispatcher():
             self.send_mouse_click(self.PEN_BUTTON_FLAGS[action_name][1])
             released.append(f"pen_button_{slot}")
         self.pen_button_held.clear()
+
+        for slot, action_name in list(self.button_held.items()):
+            self.send_mouse_click(self.PEN_BUTTON_FLAGS[action_name][1])
+            released.append(f"button_{slot}")
+        self.button_held.clear()
 
         if released:
             print(f"[Safety] Released held input on thread exit: {released}")
@@ -361,6 +391,7 @@ class DriverConfig:
         "scroll_deadzone", "scroll_min_sens", "scroll_max_sens",
         "scroll_speed_low", "scroll_speed_high",
         "pen_speed", "pen_pressure_threshold",
+        "dial_step_threshold",
     )
 
     # Sections the saved file may hold. "devices" is the reserved slot (c):
@@ -444,6 +475,10 @@ class DriverConfig:
         # The pressure threshold avoids light-contact flapping (units 0..2047).
         self.pen_speed = 8.0
         self.pen_pressure_threshold = 40.0
+
+        # Rotary dial (U71): dial angle units traversed before one CW/CCW step
+        # action fires. Recorded sweeps step 1..5 units per packet.
+        self.dial_step_threshold = 4.0
         
         # Gesture Thresholds
         self.max_tap_duration = 0.250       # Seconds
@@ -506,6 +541,18 @@ class DriverConfig:
             "5f_pinch_out" : False,
             # Pen movement mode: True = absolute screen mapping, False = relative deltas.
             "pen_absolute_mode" : True,
+            # Touch buttons and rotary dial (U71): one toggle per control.
+            "btn1_press" : True,
+            "btn2_press" : True,
+            "btn3_press" : True,
+            "btn4_press" : True,
+            "btn5_press" : True,
+            "btn6_press" : True,
+            "btn7_press" : True,
+            "btn8_press" : True,
+            "central_press" : True,
+            "dial_cw" : True,
+            "dial_ccw" : True,
             #"0f" : True,
         }
         
@@ -582,6 +629,21 @@ class DriverConfig:
             # Pen buttons (U70): status bits 1 and 2; press/release like a click.
             "pen_button_1": "right_click",
             "pen_button_2": "middle_click",
+
+            # Touch buttons and rotary dial (U71). Button defaults are placeholder
+            # actions; the Buttons tab remaps every control. Mouse-button actions
+            # hold while pressed, other actions tap on the press edge.
+            "btn1_press": "undo",
+            "btn2_press": "redo",
+            "btn3_press": "task_view",
+            "btn4_press": "show_desktop",
+            "btn5_press": "next",
+            "btn6_press": "prev",
+            "btn7_press": "left_click",
+            "btn8_press": "right_click",
+            "central_press": "middle_click",
+            "dial_cw": "next",
+            "dial_ccw": "prev",
             
             #"0f" : "left_hold_release",
         }
@@ -815,6 +877,28 @@ def decode_pen_pressure(report):
     """Intuos-V1 pressure: 11 bits from bytes 6-7 plus the status bit 0 LSB."""
     return (report[6] << 3) | ((report[7] & 0xC0) >> 5) | (report[1] & 1)
 
+# Button/dial report (10-byte id 0x03, U71): layout recorded in
+# maintainer/draft/WTD_pen_support_probe_data.md lines 10-212 (Intuos Pro
+# Medium, product 789). Byte 1 carries the constant presence flag 0x80 in every
+# recorded row. Byte 3 carries the central button, byte 4 the press bitmask and
+# byte 5 the touch-contact mask; both masks are one bit per express key, so
+# buttons 1+2 pressed report 0x03 and buttons 2+3 report 0x06.
+BUTTON_REPORT_ID = 0x03
+BUTTON_REPORT_LENGTH = 10
+BUTTON_STATUS_PRESENT = 0x80   # byte 1 presence flag; other shapes are unknown
+BUTTON_CENTRAL_MASK = 0x01     # byte 3 bit 0: central button pressed
+BUTTON_PRESS_MASKS = tuple(1 << n for n in range(8))   # byte 4 bits 0..7: buttons 1..8 pressed
+BUTTON_TOUCH_MASKS = tuple(1 << n for n in range(8))   # byte 5 bits 0..7: buttons 1..8 in contact
+CENTRAL_BUTTON_SLOT = 9        # dispatcher slot id held for the central button
+
+# Dial: byte 2 marks a finger in the rotary field with the top bit and carries
+# the angle in the low 7 bits. Recorded sweeps span 0x00..0x46 per revolution,
+# so the wrap uses that step count. A decreasing angle is clockwise, an
+# increasing one counter-clockwise.
+DIAL_ANGLE_ACTIVE = 0x80
+DIAL_ANGLE_MASK = 0x7F
+DIAL_ANGLE_RANGE = 0x47
+
 # ==============================================================================
 # STATE TRACKER
 # ==============================================================================
@@ -873,6 +957,13 @@ class TabletState:
         self.pen_buttons = (False, False)
         self.pen_cursor_acc_x = 0.0
         self.pen_cursor_acc_y = 0.0
+
+        # Touch button/dial tracking (U71): last-seen byte 4 press bitmask,
+        # central-button press state, dial origin angle and step accumulator.
+        self.button_press_mask = 0
+        self.central_pressed = False
+        self.dial_last_angle = None
+        self.dial_acc = 0.0
         
         self.last_num_active = 0
         
@@ -1049,6 +1140,97 @@ def process_pen_report(report, state, action_dispatch, config, pen_specs):
 
     update_pen_cursor(state, ad, config, pen_specs, x, y)
     update_pen_pressure_button(state, ad, config)
+
+def decode_button_report(report):
+    """Split the 10-byte 0x03 button/dial report into its column values.
+
+    Returns None for a short packet or a shape byte 1 does not mark. The touch
+    contact mask (byte 5) is returned but never gates a press: contact alone
+    carries no button press.
+    """
+    if not report or report[0] != BUTTON_REPORT_ID or len(report) < BUTTON_REPORT_LENGTH:
+        return None
+    if not (report[1] & BUTTON_STATUS_PRESENT):
+        return None
+    return {
+        "press": report[4],
+        "touch": report[5],
+        "central": bool(report[3] & BUTTON_CENTRAL_MASK),
+        "dial": report[2],
+    }
+
+def dial_angle_delta(angle, last_angle):
+    """Signed dial angle delta, wrapped at the recorded revolution span.
+
+    Positive means counter-clockwise (increasing angle), negative means
+    clockwise. The recorded sweeps wrap 0x00 <-> 0x46, so a delta further than
+    half the span is the short way round the ring.
+    """
+    half = DIAL_ANGLE_RANGE // 2
+    delta = angle - last_angle
+    if delta > half:
+        delta -= DIAL_ANGLE_RANGE
+    elif delta < -half:
+        delta += DIAL_ANGLE_RANGE
+    return delta
+
+def process_button_report(report, state, action_dispatch, config):
+    """Touch buttons and the rotary dial from the 10-byte 0x03 report (U71).
+
+    Byte 4 is a press bitmask (bit n = button n+1, so buttons 1+2 = 0x03);
+    byte 3 bit 0 is the central button. Press and release edges drive the
+    mapping table like the pen buttons. Byte 2 carries the dial angle while a
+    finger is in the rotary field; deltas accumulate into CW/CCW step actions,
+    mirroring the alt-tab step family. Touch contact (byte 5) fires nothing.
+    """
+    parsed = decode_button_report(report)
+    if parsed is None:
+        return
+
+    ad = action_dispatch
+    press_mask = parsed["press"]
+
+    for slot in range(1, 9):
+        bit = BUTTON_PRESS_MASKS[slot - 1]
+        pressed = bool(press_mask & bit)
+        if pressed == bool(state.button_press_mask & bit):
+            continue
+        key = f"btn{slot}_press"
+        if pressed and config.feature_toggles.get(key, False):
+            ad.press_tablet_button(slot, config.action_mapping.get(key))
+        elif not pressed:
+            ad.release_tablet_button(slot)
+    state.button_press_mask = press_mask
+
+    central = parsed["central"]
+    if central != state.central_pressed:
+        key = "central_press"
+        if central and config.feature_toggles.get(key, False):
+            ad.press_tablet_button(CENTRAL_BUTTON_SLOT, config.action_mapping.get(key))
+        elif not central:
+            ad.release_tablet_button(CENTRAL_BUTTON_SLOT)
+        state.central_pressed = central
+
+    raw_angle = parsed["dial"]
+    if raw_angle & DIAL_ANGLE_ACTIVE:
+        angle = raw_angle & DIAL_ANGLE_MASK
+        if state.dial_last_angle is None:
+            # First packet after a lift: origin only, no step.
+            state.dial_last_angle = angle
+        else:
+            state.dial_acc += dial_angle_delta(angle, state.dial_last_angle)
+            threshold = config.dial_step_threshold
+            while threshold > 0 and abs(state.dial_acc) >= threshold:
+                clockwise = state.dial_acc < 0
+                key = "dial_cw" if clockwise else "dial_ccw"
+                if config.feature_toggles.get(key, False):
+                    ad.execute_mapped_action(config.action_mapping.get(key))
+                state.dial_acc += threshold if clockwise else -threshold
+        state.dial_last_angle = angle
+    else:
+        # Finger lifted from the rotary field: drop origin and partial step.
+        state.dial_last_angle = None
+        state.dial_acc = 0.0
 
 def parse_sub_block(block):
     if len(block) < 5:
@@ -1383,7 +1565,7 @@ def process_touch_report(report, state, action_dispatch):
 
 def run_interface(interface_type, device_info, state, action_dispatch, touch_enabled_event, stop_event, idle_poll=IDLE_POLL_SECONDS):
     """
-    Simplified worker thread for either 'Pen' or 'Touch' input.
+    Simplified worker thread for 'Pen', 'Touch' or the optional 'Buttons' input.
     Exits as soon as an OSError/Exception is thrown or stop_event is set or touch_enabled_event not set.
     Reads wait for reports at device cadence: a timed read is used when the HID
     binding offers read_timeout, otherwise non-blocking reads with an idle
@@ -1424,6 +1606,8 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
                 read_size = 66
             elif interface_type == "Pen":
                 read_size = PEN_REPORT_LENGTH
+            elif interface_type == "Buttons":
+                read_size = BUTTON_REPORT_LENGTH
             else:
                 read_size = 0
 
@@ -1441,6 +1625,8 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
                 elif interface_type == "Pen":
                     parse_pen_packet(report, state)
                     process_pen_report(report, state, action_dispatch, config, pen_specs)
+                elif interface_type == "Buttons":
+                    process_button_report(report, state, action_dispatch, config)
                 # A report arrived: sample again immediately, no idle sleep.
                 idle_backoff = IDLE_BACKOFF_MIN_SECONDS
             elif timed_read is not None:
@@ -1511,8 +1697,9 @@ class DeviceManagerThread(threading.Thread):
         #   'product_string': str,
         #   'state': TabletState,
         #   'action': ActionDispatcher,
-        #   'threads': {'Pen': Thread, 'Touch': Thread}
+        #   'threads': {'Pen': Thread, 'Touch': Thread, 'Buttons': Thread}
         # }
+        # The 'Buttons' entry exists only when the device offers a third interface.
         self.active_connections = {}
         # Dedup for the connection-class skip notice; ids tuple or None.
         self._skipped_notice = None
@@ -1544,6 +1731,10 @@ class DeviceManagerThread(threading.Thread):
         # Store lists of interfaces per parent ID to support multiple identical tablets
         found_pen = {}    # parent_id -> list of pen dev dicts
         found_touch = {}  # parent_id -> list of touch dev dicts
+        # Optional third interface carrying the 0x03 button/dial reports (U71).
+        # Which interface number that is stays unrecorded until the maintainer's
+        # interactive probe answers it, so any extra interface is offered as one.
+        found_buttons = {}
 
         for dev in hid.enumerate():
             v_id = dev.get('vendor_id')
@@ -1563,6 +1754,8 @@ class DeviceManagerThread(threading.Thread):
                     found_pen.setdefault(parent_id, []).append(dev)
                 elif interface_num == touch_iface:
                     found_touch.setdefault(parent_id, []).append(dev)
+                else:
+                    found_buttons.setdefault(parent_id, []).append(dev)
 
         paired_devices = []
 
@@ -1570,11 +1763,13 @@ class DeviceManagerThread(threading.Thread):
         for parent_id, pen_list in found_pen.items():
             if parent_id in found_touch:
                 touch_list = found_touch[parent_id]
+                buttons_list = found_buttons.get(parent_id, [])
                 
                 # Pair corresponding interface instances (handles duplicate devices gracefully)
                 for idx, pen_dev in enumerate(pen_list):
                     if idx < len(touch_list):
                         touch_dev = touch_list[idx]
+                        buttons_dev = buttons_list[idx] if idx < len(buttons_list) else None
                         
                         # Create a truly unique device key using interface paths
                         unique_dev_id = f"{parent_id}_instance_{idx}"
@@ -1585,7 +1780,8 @@ class DeviceManagerThread(threading.Thread):
                             'product_string': pen_dev['product_string'],
                             'wireless': pen_dev['product_string'] == self.WIRELESS_PRODUCT_STRING,
                             'pen_device': pen_dev,
-                            'touch_device': touch_dev
+                            'touch_device': touch_dev,
+                            'buttons_device': buttons_dev
                         })
 
         return paired_devices
@@ -1597,9 +1793,11 @@ class DeviceManagerThread(threading.Thread):
             for dev_id, conn in self.active_connections.items():
                 pen_alive = conn['threads']['Pen'].is_alive()
                 touch_alive = conn['threads']['Touch'].is_alive()
+                buttons = conn['threads'].get('Buttons')
+                buttons_alive = buttons.is_alive() if buttons is not None else True
 
-                # If either thread died (e.g. from OSError or paused), clean up state
-                if not pen_alive or not touch_alive:
+                # If any thread died (e.g. from OSError or paused), clean up state
+                if not pen_alive or not touch_alive or not buttons_alive:
                     print(f"[Manager] Device disconnected/stopped: {conn['product_string']} ({dev_id})")
                     dead_keys.append(dev_id)
 
@@ -1632,6 +1830,7 @@ class DeviceManagerThread(threading.Thread):
 
                     pen_dev = dev_pair['pen_device']
                     touch_dev = dev_pair['touch_device']
+                    buttons_dev = dev_pair.get('buttons_device')
 
                     t_pen = threading.Thread(
                         target=run_interface,
@@ -1644,21 +1843,37 @@ class DeviceManagerThread(threading.Thread):
                         daemon=True
                     )
 
+                    threads = {
+                        'Pen': t_pen,
+                        'Touch': t_touch
+                    }
+
                     self.active_connections[dev_id] = {
                         'product_id': dev_pair['product_id'],
                         'product_string': dev_pair['product_string'],
                         'state': t_state,
                         'action': a_dispatch,
-                        'threads': {
-                            'Pen': t_pen,
-                            'Touch': t_touch
-                        }
+                        'threads': threads
                     }
 
                     t_pen.start()
                     t_touch.start()
                     print(f"[Manager] Spawned Pen (Interface: {pen_dev.get('interface_number')}) "
                           f"& Touch (Interface: {touch_dev.get('interface_number')}) threads for {dev_id}")
+
+                    if buttons_dev is not None:
+                        # Third interface next to Pen/Touch (U71): 0x03 button/dial
+                        # reports. Absent interface means the pair stays as before.
+                        t_buttons = threading.Thread(
+                            target=run_interface,
+                            args=("Buttons", buttons_dev, t_state, a_dispatch,
+                                  self.touch_enabled_event, self.stop_event),
+                            daemon=True
+                        )
+                        threads['Buttons'] = t_buttons
+                        t_buttons.start()
+                        print(f"[Manager] Spawned Buttons thread "
+                              f"(Interface: {buttons_dev.get('interface_number')}) for {dev_id}")
 
     def get_primary_state_and_action(self):
         """Helper to pass active state and dispatcher references to the GUI."""
