@@ -4,6 +4,18 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261031-0530:
+
+- pen absolute extent at rotated orientation (TODO #274): absolute mode
+  scaled rotated coordinates with the fixed digitizer `max_x`/`max_y`, so a
+  non-square tablet (PTH-651 44704x27940) swapped extents at 90/270 and the
+  pen cursor covered only the inner desktop band.
+- Absolute mode now maps the ROTATED digitizer bounding box (new
+  `rotated_pen_extents`) onto the full virtual desktop; whole-quadrant
+  cos/sin artifacts are snapped so box corners land exactly on full extent.
+  0° behavior is byte-identical; relative mode and touch are unchanged.
+- Device-free projection test pins the 90/270 corner mapping.
+
 261031-0413:
 - config CLI lanes (approved packet Part C): `--list` prints every stored device
   entry (alias plus identity key) and exits — no driver, no GUI.

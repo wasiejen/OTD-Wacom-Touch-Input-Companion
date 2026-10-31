@@ -187,9 +187,39 @@ def test_pen_absolute_point_rotates_around_digitizer_center(config, state,
     process_pen_report(build_pen_report(0x20, x=29322, y=13970),
                        state, dispatcher, config, SPECS)
     # An east point rotates clockwise onto the tablet's south half:
-    # (22352, 20940) device units -> the virtual desktop mapping.
+    # (22352, 20940) device units -> the aspect-aware virtual desktop mapping.
+    # The rotated box (x 8382..36322, y -8382..36322) spans the full desktop.
     assert state.pen_position == pytest.approx((22352.0, 20940.0))
-    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 32767, 49116)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 32767, 42985)
+
+
+def test_pen_absolute_rotated_extents_reach_full_desktop(config, state,
+                                                         dispatcher, stub_send_input):
+    """Device-free projection pin (#274): the rotated digitizer box maps to
+    the full desktop at 90/270, corners exact."""
+    config.orientation_degrees = 90
+    # NW tablet corner turns clockwise onto the desktop east edge.
+    process_pen_report(build_pen_report(0x20, x=0, y=0),
+                       state, dispatcher, config, SPECS)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 0)
+    # SE corner lands on the desktop south-west corner.
+    process_pen_report(build_pen_report(0x20, x=44704, y=27940),
+                       state, dispatcher, config, SPECS)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 0, 65535)
+
+    config.orientation_degrees = 270
+    # NE corner turns counter-clockwise onto the desktop north-west corner.
+    process_pen_report(build_pen_report(0x20, x=44704, y=0),
+                       state, dispatcher, config, SPECS)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 0, 0)
+
+
+def test_pen_absolute_zero_orientation_mapping_is_unchanged(config, state,
+                                                            dispatcher, stub_send_input):
+    """0° absolute mapping stays byte-identical to the fixed max_x/max_y scale."""
+    process_pen_report(build_pen_report(0x20, x=22352, y=13970),
+                       state, dispatcher, config, SPECS)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 32767, 32767)
 
 
 def test_pen_relative_delta_rotates_direction(config, state, dispatcher,

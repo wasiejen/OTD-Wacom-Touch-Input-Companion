@@ -1202,6 +1202,35 @@ def apply_orientation(point, cfg, center):
     return rotate_point(point[0], point[1], cfg.orientation_degrees,
                         center[0], center[1])
 
+def rotated_pen_extents(pen_specs, degrees):
+    """Bounding box of the digitizer rectangle after the orientation rotation.
+
+    The rotation about the tablet center swaps the extents of a non-square
+    tablet at 90/270, so absolute mode must map THIS box (not the fixed
+    max_x/max_y) onto the desktop, else the pen cursor covers only the inner
+    band. Whole-quadrant cos/sin artifacts are snapped to exact 0/1 so the
+    box edges land exactly on full extent. Returns (left, top, width, height);
+    0° returns the untouched device rectangle.
+    """
+    if degrees == 0:
+        return (0, 0, pen_specs["max_x"], pen_specs["max_y"])
+    rad = math.radians(degrees)
+    cos_a = abs(math.cos(rad))
+    sin_a = abs(math.sin(rad))
+    if cos_a > 1 - 1e-9:
+        cos_a = 1.0
+    elif cos_a < 1e-9:
+        cos_a = 0.0
+    if sin_a > 1 - 1e-9:
+        sin_a = 1.0
+    elif sin_a < 1e-9:
+        sin_a = 0.0
+    width = pen_specs["max_x"] * cos_a + pen_specs["max_y"] * sin_a
+    height = pen_specs["max_x"] * sin_a + pen_specs["max_y"] * cos_a
+    cx = pen_specs["max_x"] / 2
+    cy = pen_specs["max_y"] / 2
+    return (cx - width / 2, cy - height / 2, width, height)
+
 # ==============================================================================
 # STATE TRACKER
 # ==============================================================================
@@ -1360,9 +1389,15 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y):
     absolute = config.feature_toggles.get("pen_absolute_mode", True)
 
     if absolute:
-        nx = min(max(int(x * PEN_VIRTUAL_RESOLUTION / pen_specs["max_x"]), 0),
+        # Aspect-aware mapping: the orientation transform already rotated the
+        # coordinate, so scale it against the ROTATED bounding box. The 1e-9
+        # tolerance absorbs the rotation's float artifacts at the box edges
+        # without shifting any integer device coordinate's truncated result.
+        left, top, extent_w, extent_h = rotated_pen_extents(
+            pen_specs, config.orientation_degrees)
+        nx = min(max(int((x - left) * PEN_VIRTUAL_RESOLUTION / extent_w + 1e-9), 0),
                  PEN_VIRTUAL_RESOLUTION)
-        ny = min(max(int(y * PEN_VIRTUAL_RESOLUTION / pen_specs["max_y"]), 0),
+        ny = min(max(int((y - top) * PEN_VIRTUAL_RESOLUTION / extent_h + 1e-9), 0),
                  PEN_VIRTUAL_RESOLUTION)
         state.pen_position = (x, y)
         ad.send_pen_absolute_move(nx, ny)
