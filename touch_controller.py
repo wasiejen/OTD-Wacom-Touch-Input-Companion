@@ -7,6 +7,7 @@ import os
 import ctypes
 import sys
 import re
+import copy
 
 from vk_codes import vk_codes_dict  # Import vk_code dictionary
 
@@ -375,6 +376,36 @@ class ActionDispatcher():
 # ==============================================================================
 # CONFIGURATION CLASS
 # ==============================================================================
+# Settings alias rule (U72 §4): model-class from the wired product_id.
+# Two same-model tablets collapse to one alias. The wireless receiver
+# (132 / 0x0084) cannot resolve its paired tablet from enumeration; it
+# resolves through the manual binding map below, else the placeholder.
+# 788 (0x0314, small) is listed upstream but never observed: unverified.
+MODEL_CLASS_ALIASES = {788: "wacom-intuos5-s", 789: "wacom-intuos5-m", 791: "wacom-intuos5-l"}
+WIRELESS_DEFAULT_ALIAS = "wireless"
+# Sections a devices entry may carry. "bindings" is the manual override key
+# (GUI tags the receiver twin once; stored per alias, U72 §4 fallback layer).
+DEVICE_SECTION_KEYS = ("motion_and_thresholds", "feature_toggles", "action_mapping")
+
+
+def resolve_device_alias(product_id, wireless, bindings=None):
+    """Resolve the settings alias for one connection per the U72 §4 rule.
+
+    Order: wired model-class table (authoritative) → manual binding map
+    (the receiver-twin override) → wireless placeholder alias. Unknown
+    devices resolve to None: global sections stay the only settings source.
+    """
+    alias = MODEL_CLASS_ALIASES.get(product_id)
+    if alias is not None:
+        return alias
+    for bound_alias, bound_ids in (bindings or {}).items():
+        if product_id in bound_ids:
+            return bound_alias
+    if wireless:
+        return WIRELESS_DEFAULT_ALIAS
+    return None
+
+
 class DriverConfig:
     # Keys saved under "motion_and_thresholds", in file order. Load validation
     # accepts exactly these keys.
@@ -817,6 +848,75 @@ class DriverConfig:
         self.sync_sensitivities()
         print(f"[Config] Successfully loaded settings from '{filepath}'")
         return True
+
+    def device_bindings(self):
+        """Manual alias bindings: {alias: product ids} from the devices map.
+
+        Invalid or missing "bindings" keys are skipped; alias resolution
+        then falls through to the wireless placeholder as before.
+        """
+        bindings = {}
+        for alias, entry in self.devices.items():
+            if not isinstance(entry, dict):
+                continue
+            product_ids = entry.get("bindings")
+            if not isinstance(product_ids, list):
+                continue
+            cleaned = [pid for pid in product_ids
+                       if isinstance(pid, int) and not isinstance(pid, bool)]
+            if cleaned:
+                bindings[alias] = cleaned
+        return bindings
+
+    def fork_for_device(self, alias=None):
+        """Build one independent config instance for a connection.
+
+        The fork carries this config's values; a present devices[alias]
+        entry overlays its sections all-or-nothing. An invalid entry prints
+        its errors and keeps the global values. None overlays nothing.
+        """
+        clone = copy.copy(self)
+        clone.sensitivities = {name: list(accel)
+                               for name, accel in self.sensitivities.items()}
+        clone.feature_toggles = dict(self.feature_toggles)
+        clone.action_mapping = dict(self.action_mapping)
+
+        if alias is not None and alias in self.devices:
+            entry = {key: value for key, value in self.devices[alias].items()
+                     if key in DEVICE_SECTION_KEYS}
+            validated, warnings, errors = self.validate_config_data(entry, "")
+            for note in warnings:
+                print(f"[Config Warning] devices '{alias}': {note}")
+            if errors:
+                for err in errors:
+                    print(f"[Config Error] Invalid devices entry '{alias}': {err}")
+                print(f"[Config Error] Overlay for '{alias}' not applied; "
+                      "global settings stay.")
+            else:
+                for key, value in validated["motion"].items():
+                    setattr(clone, key, value)
+                for key, value in validated["toggles"].items():
+                    clone.feature_toggles[key] = value
+                for key, value in validated["mapping"].items():
+                    clone.action_mapping[key] = value
+
+        clone.sync_sensitivities()
+        return clone
+
+    def set_device_entry(self, alias, sections, bindings=None):
+        """Store one devices entry: named sections plus optional bindings.
+
+        Entry keys not covered here stay untouched, so bindings survive a
+        settings save and vice versa.
+        """
+        entry = dict(self.devices.get(alias, {}))
+        for name, value in sections.items():
+            entry[name] = value
+        if bindings is not None:
+            entry["bindings"] = list(bindings)
+        self.devices[alias] = entry
+
+
 config = DriverConfig()
 
 # ==============================================================================
