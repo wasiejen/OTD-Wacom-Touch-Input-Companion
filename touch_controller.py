@@ -2097,19 +2097,30 @@ def main():
     # Wait for the manager to attempt the initial connection
     time.sleep(1.0)
 
-    # Fetch active state reference for GUI bindings (if available)
-    state, action_dispatch = manager.get_primary_state_and_action()
-    if not state:
+    # Fetch active connection references for GUI bindings (if available)
+    conn = manager.get_primary_connection()
+    if conn:
+        state = conn['state']
+        action_dispatch = conn['action']
+        gui_config = conn['config']
+        device_info = {"connection": conn, "base_config": config}
+    else:
         state = TabletState()  # Fallback empty state for GUI
+        gui_config = config
+        action_dispatch = None
+        device_info = None
 
     if action_dispatch:
-        config.set_available_actions(list(action_dispatch.ACTION_DISPATCH.keys()))
+        actions = list(action_dispatch.ACTION_DISPATCH.keys())
+        config.set_available_actions(actions)
+        gui_config.set_available_actions(actions)
 
     print("\n=== Wacom Touch Driver Running ===")
 
     try:
         from gui import launch_gui
-        launch_gui(state, config, touch_enabled_event, stop_event)
+        launch_gui(state, gui_config, touch_enabled_event, stop_event,
+                   device_info=device_info)
     except SystemExit:
         pass
     except ImportError:

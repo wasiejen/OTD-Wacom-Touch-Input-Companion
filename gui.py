@@ -126,6 +126,22 @@ class ToastNotification(tk.Toplevel):
 
 INVALID_ACTION_PREFIX = "! invalid: "
 
+# Sections a focused device transfers to another alias (U73 d).
+DEVICE_TRANSFER_SECTIONS = ("motion_and_thresholds", "feature_toggles", "action_mapping")
+
+
+def collect_config_sections(config, section_names):
+    """Snapshot the named sections of a live config instance as plain dicts."""
+    sections = {}
+    for name in section_names:
+        if name == "motion_and_thresholds":
+            sections[name] = {key: getattr(config, key) for key in config.MOTION_KEYS}
+        elif name == "feature_toggles":
+            sections[name] = dict(config.feature_toggles)
+        elif name == "action_mapping":
+            sections[name] = dict(config.action_mapping)
+    return sections
+
 
 # Touch button and dial controls (U71): one toggle plus one mapping per control.
 BUTTON_CONTROL_KEYS = tuple(f"btn{n}_press" for n in range(1, 9)) + (
@@ -203,10 +219,13 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
 
 
 class SettingsWindow(tk.Toplevel):
-    def __init__(self, parent, state_ref, config_ref):
+    def __init__(self, parent, state_ref, config_ref, device_info=None):
         super().__init__(parent)
         self.state = state_ref
         self.config = config_ref
+        # {"connection": conn dict, "base_config": global config} when a live
+        # device is focused; None keeps the window on plain global settings.
+        self.device_info = device_info
         self.title("Wacom Touch Driver Settings")
         self.geometry("460x650")
         self.minsize(460, 480)
@@ -224,6 +243,10 @@ class SettingsWindow(tk.Toplevel):
 
         main_container = ttk.Frame(self)
         main_container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Focused-device controls (U73): alias assignment and subset copy.
+        if device_info is not None:
+            self._build_device_bar(main_container)
 
         notebook = ttk.Notebook(main_container)
         notebook.pack(fill="both", expand=True)
@@ -260,6 +283,90 @@ class SettingsWindow(tk.Toplevel):
         ttk.Button(btn_frame, text="Close", command=self.destroy).pack(side="right", padx=(5, 0))
         ttk.Button(btn_frame, text="Save to File", command=self.save_to_file).pack(side="right", padx=5)
         ttk.Button(btn_frame, text="Apply Live", command=self.apply_settings).pack(side="right")
+
+    def _build_device_bar(self, container):
+        conn = self.device_info["connection"]
+        base = self.device_info["base_config"]
+        frame = ttk.LabelFrame(container, text=" Focused Device ", padding=8)
+        frame.pack(fill="x", pady=(0, 6))
+
+        alias = conn.get("alias")
+        self.device_label = ttk.Label(
+            frame, text=f"{conn['product_string']} — alias: {alias or 'none'}")
+        self.device_label.grid(row=0, column=0, columnspan=4, sticky="w")
+
+        ttk.Label(frame, text="Alias:").grid(row=1, column=0, sticky="w")
+        self.alias_entry = ttk.Entry(frame, width=16)
+        self.alias_entry.insert(0, alias or "")
+        self.alias_entry.grid(row=1, column=1, sticky="w", padx=(4, 0))
+        btn = ttk.Button(frame, text="Assign alias", command=self.assign_alias)
+        btn.grid(row=1, column=2, padx=(6, 0))
+        ToolTip(btn, "Bind this device to a settings alias; saves under it. "
+                     "Tags the wireless receiver twin manually (it never resolves by itself).")
+
+        ttk.Label(frame, text="Copy settings to:").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        self.copy_alias_combo = ttk.Combobox(frame, values=sorted(base.devices), width=16)
+        self.copy_alias_combo.grid(row=2, column=1, sticky="w", padx=(4, 0))
+        self.copy_section_vars = {
+            name: tk.BooleanVar(value=True) for name in DEVICE_TRANSFER_SECTIONS}
+        section_labels = {
+            "motion_and_thresholds": "Motion",
+            "feature_toggles": "Toggles",
+            "action_mapping": "Mapping",
+        }
+        for idx, (name, var) in enumerate(self.copy_section_vars.items(), start=2):
+            chk = ttk.Checkbutton(frame, text=section_labels[name], variable=var)
+            chk.grid(row=idx, column=2, sticky="w")
+        copy_btn = ttk.Button(frame, text="Copy to alias", command=self.copy_settings_to_alias)
+        copy_btn.grid(row=2, column=3, sticky="e")
+        ToolTip(copy_btn, "Copies the selected sections of this device's settings into "
+                          "the chosen alias; takes effect on that device's next connection.")
+        frame.columnconfigure(3, weight=1)
+
+    def assign_alias(self):
+        """Bind the focused device to a settings alias (manual override, U72 §4)."""
+        alias = self.alias_entry.get().strip()
+        if not alias:
+            messagebox.showerror("Invalid Alias", "Enter an alias name before assigning it.")
+            return False
+        conn = self.device_info["connection"]
+        base = self.device_info["base_config"]
+        conn["alias"] = alias
+        # The binding lets this product id resolve to the alias on the next
+        # connection; the receiver twin is never auto-aliased.
+        base.set_device_entry(alias, {}, bindings=[conn["product_id"]])
+        self.device_label.configure(
+            text=f"{conn['product_string']} — alias: {alias}")
+        ToastNotification(self, "Alias Assigned",
+                          f"Device bound to alias '{alias}'. Save to persist.",
+                          timeout_ms=1800)
+        return True
+
+    def copy_settings_to_alias(self):
+        """Transfer a selectable subset of the focused device's settings.
+
+        Writes the subset under the target alias; applies to that device on
+        its next connection.
+        """
+        if not self.apply_settings():
+            return False
+        target = self.copy_alias_combo.get().strip()
+        if not target:
+            messagebox.showerror("Invalid Target", "Pick the alias to copy settings into.")
+            return False
+        selected = [name for name, var in self.copy_section_vars.items() if var.get()]
+        if not selected:
+            messagebox.showerror("Nothing Selected", "Select at least one section to copy.")
+            return False
+        conn = self.device_info["connection"]
+        base = self.device_info["base_config"]
+        entry = dict(base.devices.get(target, {}))
+        entry.update(collect_config_sections(conn["config"], selected))
+        base.devices[target] = entry
+        ToastNotification(self, "Settings Copied",
+                          f"Copied {len(selected)} section(s) to '{target}'. Save to persist.",
+                          timeout_ms=1800)
+        return True
 
     def _build_motion_tab(self):
         canvas = tk.Canvas(self.tab_motion, borderwidth=0)
@@ -685,20 +792,42 @@ class SettingsWindow(tk.Toplevel):
         return True
 
     def save_to_file(self):
-        """Apply first; the file is written only when the apply succeeded."""
+        """Apply first; the file is written only when the apply succeeded.
+
+        With a focused device the device settings are written into its
+        devices entry under its alias; the global sections stay untouched.
+        """
         if not self.apply_settings():
             return False
-        filepath = getattr(self.config, "save_path", "user.cfg")
-        self.config.save_to_file(filepath)
+
+        device_info = getattr(self, "device_info", None)
+        if device_info is not None:
+            conn = device_info["connection"]
+            base = device_info["base_config"]
+            alias = conn.get("alias")
+            if alias is None:
+                messagebox.showerror(
+                    "No Device Alias",
+                    "Assign an alias before saving per-device settings.")
+                return False
+            base.set_device_entry(alias, collect_config_sections(
+                conn["config"], DEVICE_TRANSFER_SECTIONS))
+            filepath = getattr(base, "save_path", "user.cfg")
+            base.save_to_file(filepath)
+        else:
+            filepath = getattr(self.config, "save_path", "user.cfg")
+            self.config.save_to_file(filepath)
+
         ToastNotification(self, "File Saved", f"Configuration saved to {filepath}", timeout_ms=1800)
         return True
 
 
 class DriverTrayApp:
-    def __init__(self, root, state_ref, config_ref, enabled_event_ref, stop_event_ref):
+    def __init__(self, root, state_ref, config_ref, enabled_event_ref, stop_event_ref, device_info=None):
         self.root = root
         self.state = state_ref
         self.config = config_ref
+        self.device_info = device_info
         self.touch_enabled_event = enabled_event_ref
         self.stop_event = stop_event_ref
         self.icon = None
@@ -731,7 +860,7 @@ class DriverTrayApp:
         if self.settings_window is not None and self.settings_window.winfo_exists():
             self.settings_window.lift()
             return
-        self.settings_window = SettingsWindow(self.root, self.state, self.config)
+        self.settings_window = SettingsWindow(self.root, self.state, self.config, self.device_info)
 
     def quit_driver(self, icon=None, item=None):
         print("[Tray] Exiting Wacom Touch Driver...")
@@ -762,11 +891,12 @@ class DriverTrayApp:
         self.icon.run()
 
 
-def launch_gui(state_ref, config_ref, pause_event_ref, stop_event_ref):
+def launch_gui(state_ref, config_ref, pause_event_ref, stop_event_ref, device_info=None):
     root = tk.Tk()
     root.withdraw()
 
-    app = DriverTrayApp(root, state_ref, config_ref, pause_event_ref, stop_event_ref)
+    app = DriverTrayApp(root, state_ref, config_ref, pause_event_ref, stop_event_ref,
+                        device_info=device_info)
     tray_thread = threading.Thread(target=app.run_tray, daemon=True)
     tray_thread.start()
 

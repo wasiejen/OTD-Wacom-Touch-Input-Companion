@@ -5,7 +5,9 @@ Device-free: tmp files only, no real device, no GUI window.
 
 import json
 import threading
+import types
 
+import gui
 import pytest
 
 from touch_controller import (
@@ -315,4 +317,190 @@ def test_manager_binds_wireless_twin_via_manual_override(monkeypatch, tmp_path, 
     assert conn["alias"] == "wacom-intuos5-m"
     assert conn["config"].cursor_speed_low == 7.0
 
-    stop.set()
+    stop.set()
+
+
+# --- GUI device bar on a duck-typed surface (U73 c/d) -----------------------
+
+class FakeEntry:
+    def __init__(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+
+class FakeVar:
+    def __init__(self, value):
+        self.value = value
+
+    def get(self):
+        return self.value
+
+
+class FakeMessageBox:
+    def __init__(self):
+        self.errors = []
+
+    def showerror(self, title, message):
+        self.errors.append((title, message))
+
+
+class FakeLabel:
+    def __init__(self, text):
+        self.text = text
+
+    def configure(self, **kwargs):
+        self.text = kwargs.get("text")
+
+
+class FakeDeviceWindow:
+    """Duck-typed SettingsWindow device surface; no Tk window, no device."""
+
+    def __init__(self, base, conn, alias="", target="", sections=None):
+        self.config = conn["config"]
+        self.device_info = {"connection": conn, "base_config": base}
+        self.entries = {}
+        self.cursor_accel_var = FakeVar(True)
+        self.scroll_accel_var = FakeVar(True)
+        self.feature_vars = {}
+        self.action_combos = {}
+        self.alias_entry = FakeEntry(alias)
+        self.copy_alias_combo = FakeEntry(target)
+        self.copy_section_vars = {
+            name: FakeVar(value)
+            for name, value in (sections or {}).items()}
+        self.device_label = FakeLabel(conn["product_string"])
+        self.apply_settings = types.MethodType(gui.SettingsWindow.apply_settings, self)
+        self.save_to_file = types.MethodType(gui.SettingsWindow.save_to_file, self)
+        self.assign_alias = types.MethodType(gui.SettingsWindow.assign_alias, self)
+        self.copy_settings_to_alias = types.MethodType(
+            gui.SettingsWindow.copy_settings_to_alias, self)
+
+
+@pytest.fixture
+def device_surface(monkeypatch, tmp_path):
+    """Base config plus one focused wired connection fork in tmp cwd."""
+    monkeypatch.chdir(tmp_path)
+    box = FakeMessageBox()
+    monkeypatch.setattr(gui, "messagebox", box)
+    monkeypatch.setattr(gui, "ToastNotification", lambda *args, **kwargs: None)
+    base = DriverConfig()
+    base.devices = {"wacom-intuos5-m": {
+        "motion_and_thresholds": {"cursor_speed_low": 7.0},
+    }}
+    conn = {
+        "product_id": 789,
+        "product_string": "Wacom Intuos5 touch M",
+        "alias": "wacom-intuos5-m",
+        "config": base.fork_for_device("wacom-intuos5-m"),
+    }
+    return base, conn, box
+
+
+def test_save_writes_device_settings_under_alias(device_surface, tmp_path):
+    base, conn, box = device_surface
+    win = FakeDeviceWindow(base, conn)
+    win.entries = {"cursor_speed_low": FakeEntry("9.5")}
+
+    saved = win.save_to_file()
+
+    assert saved is True
+    data = json.loads((tmp_path / "user.cfg").read_text())
+    assert data["devices"]["wacom-intuos5-m"]["motion_and_thresholds"]["cursor_speed_low"] == 9.5
+    # Global sections stay as the base config holds them.
+    assert data["motion_and_thresholds"]["cursor_speed_low"] == 5.0
+    assert conn["config"].cursor_speed_low == 9.5
+
+
+def test_save_without_alias_asks_for_one(device_surface, tmp_path):
+    base, conn, box = device_surface
+    conn["alias"] = None
+    win = FakeDeviceWindow(base, conn)
+
+    saved = win.save_to_file()
+
+    assert saved is False
+    assert box.errors and box.errors[0][0] == "No Device Alias"
+    assert not (tmp_path / "user.cfg").exists()
+
+
+def test_assign_alias_binds_connection(device_surface):
+    base, conn, box = device_surface
+    win = FakeDeviceWindow(base, conn, alias="wacom-intuos5-m")
+
+    assert win.assign_alias() is True
+    assert conn["alias"] == "wacom-intuos5-m"
+    assert base.devices["wacom-intuos5-m"]["bindings"] == [789]
+    assert "alias: wacom-intuos5-m" in win.device_label.text
+
+
+def test_assign_alias_rejects_empty(device_surface):
+    base, conn, box = device_surface
+    win = FakeDeviceWindow(base, conn, alias="  ")
+
+    assert win.assign_alias() is False
+    assert box.errors and box.errors[0][0] == "Invalid Alias"
+
+
+def test_copy_subset_to_other_alias(device_surface):
+    base, conn, box = device_surface
+    conn["config"].feature_toggles["2f_tap"] = True
+    conn["config"].action_mapping["1f_tap"] = "undo"
+    win = FakeDeviceWindow(
+        base, conn, target="wacom-intuos5-l",
+        sections={"motion_and_thresholds": True,
+                  "feature_toggles": True,
+                  "action_mapping": False})
+
+    assert win.copy_settings_to_alias() is True
+    entry = base.devices["wacom-intuos5-l"]
+    assert entry["motion_and_thresholds"]["cursor_speed_low"] == 7.0
+    assert entry["feature_toggles"]["2f_tap"] is True
+    assert "action_mapping" not in entry
+
+
+def test_copy_requires_target_or_section(device_surface):
+    base, conn, box = device_surface
+    win = FakeDeviceWindow(base, conn, target="",
+                           sections={"motion_and_thresholds": True})
+    assert win.copy_settings_to_alias() is False
+    assert box.errors and box.errors[0][0] == "Invalid Target"
+
+    win2 = FakeDeviceWindow(base, conn, target="x",
+                            sections={"motion_and_thresholds": False})
+    assert win2.copy_settings_to_alias() is False
+    assert box.errors[-1][0] == "Nothing Selected"
+
+
+def test_copy_survives_save_reload_and_resolution(device_surface, tmp_path):
+    """A copied subset resolves for the target alias on the next reload."""
+    base, conn, box = device_surface
+    win = FakeDeviceWindow(base, conn, target="wireless",
+                           sections={"motion_and_thresholds": True})
+
+    assert win.copy_settings_to_alias() is True
+    base.set_device_entry("wireless", {}, bindings=[132])
+    base.save_to_file()
+
+    fresh = DriverConfig()
+    assert fresh.load_from_file(str(tmp_path / "user.cfg")) is True
+    assert fresh.device_bindings() == {"wireless": [132]}
+    alias = resolve_device_alias(132, True, fresh.device_bindings())
+    assert alias == "wireless"
+    fork = fresh.fork_for_device(alias)
+    assert fork.cursor_speed_low == 7.0
+
+
+def test_collect_config_sections_snapshots_named_sections(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    cfg = DriverConfig()
+    cfg.cursor_speed_low = 6.5
+    cfg.feature_toggles["2f_tap"] = True
+
+    sections = gui.collect_config_sections(
+        cfg, ("motion_and_thresholds", "feature_toggles"))
+
+    assert sections["motion_and_thresholds"]["cursor_speed_low"] == 6.5
+    assert "action_mapping" not in sections
+    assert sections["feature_toggles"]["2f_tap"] is True
