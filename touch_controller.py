@@ -425,7 +425,7 @@ class DriverConfig:
         "scroll_deadzone", "scroll_min_sens", "scroll_max_sens",
         "scroll_speed_low", "scroll_speed_high",
         "pen_speed", "pen_pressure_threshold",
-        "dial_step_threshold",
+        "dial_step_threshold", "orientation_degrees",
     )
 
     # Sections the saved file may hold. "devices" is the reserved slot (c):
@@ -513,6 +513,11 @@ class DriverConfig:
         # Rotary dial (U71): dial angle units traversed before one CW/CCW step
         # action fires. Recorded sweeps step 1..5 units per packet.
         self.dial_step_threshold = 4.0
+
+        # Device orientation (U74): whole degrees 0..359. Rotates touch and
+        # pen coordinates around the tablet center before the gesture/cursor
+        # path; positive degrees turn the input clockwise on screen.
+        self.orientation_degrees = 0
         
         # Gesture Thresholds
         self.max_tap_duration = 0.250       # Seconds
@@ -756,6 +761,16 @@ class DriverConfig:
                 if number is None:
                     errors.append(f"'motion_and_thresholds.{key}' needs a number, "
                                   f"got {self._describe(val)} ({ref})")
+                elif key == "orientation_degrees":
+                    # U74: the transform rotates in 1° steps; fractions and
+                    # angles above the range are rejected, the whole number
+                    # is stored as an int.
+                    if not number.is_integer() or not 0 <= number <= ORIENTATION_MAX_DEGREES:
+                        errors.append(f"'motion_and_thresholds.{key}' needs a whole "
+                                      f"degree 0..{ORIENTATION_MAX_DEGREES}, "
+                                      f"got {self._describe(val)} ({ref})")
+                    else:
+                        validated["motion"][key] = int(number)
                 else:
                     validated["motion"][key] = number
 
@@ -1003,6 +1018,44 @@ DIAL_ANGLE_MASK = 0x7F
 DIAL_ANGLE_RANGE = 0x47
 
 # ==============================================================================
+# DEVICE ORIENTATION (U74) — shared rotation for touch and pen coordinates
+# ==============================================================================
+# Touch sub-blocks decode to 0..4095 (parse_sub_block), so the touch rotation
+# center is that square's middle. The pen rotation center is the digitizer
+# center from the per-model ranges (PEN_SPECS_BY_PRODUCT / PTH-651).
+TOUCH_COORD_MAX = 4095
+TOUCH_ROTATION_CENTER = (TOUCH_COORD_MAX / 2, TOUCH_COORD_MAX / 2)
+ORIENTATION_MIN_DEGREES = 0
+ORIENTATION_MAX_DEGREES = 359
+
+def rotate_point(x, y, degrees, center_x, center_y):
+    """Rotate a device coordinate about the center by whole degrees.
+
+    One sin/cos matrix shared by both input paths; 1° precision, no quadrant
+    quantization. Tablet coordinates have y pointing down, so a positive
+    angle turns clockwise on screen. 0° is the identity passthrough and
+    returns the input coordinates unchanged.
+    """
+    if degrees == 0:
+        return (x, y)
+    rad = math.radians(degrees)
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    dx = x - center_x
+    dy = y - center_y
+    return (center_x + cos_a * dx - sin_a * dy,
+            center_y + sin_a * dx + cos_a * dy)
+
+def pen_rotation_center(pen_specs):
+    """Pen rotation center: the tablet center from the per-model ranges."""
+    return (pen_specs["max_x"] / 2, pen_specs["max_y"] / 2)
+
+def apply_orientation(point, cfg, center):
+    """Shared orientation transform: raw device coordinate in, rotated point out."""
+    return rotate_point(point[0], point[1], cfg.orientation_degrees,
+                        center[0], center[1])
+
+# ==============================================================================
 # STATE TRACKER
 # ==============================================================================
 class TabletState:
@@ -1224,6 +1277,9 @@ def process_pen_report(report, state, action_dispatch, config, pen_specs):
         return
 
     x, y = decode_pen_position(report)
+    # Orientation (U74): same shared transform as the touch contacts, about
+    # the digitizer center from the per-model ranges. Tilt stays ignored.
+    x, y = apply_orientation((x, y), config, pen_rotation_center(pen_specs))
     if is_rotation:
         # Bytes 6-7 carry rotation, not pressure; values carry over.
         new_buttons = state.pen_buttons
@@ -1370,6 +1426,10 @@ def process_touch_report(report, state, action_dispatch, cfg=None):
             if status == 0:
                 state.active_contacts.clear()
             continue
+
+        # Orientation (U74): rotate every contact through the shared path
+        # before the gesture/cursor processing sees it.
+        pos = apply_orientation(pos, cfg, TOUCH_ROTATION_CENTER)
 
         if status == STATUS_TOUCH_DOWN:
             state.active_contacts[slot_id] = pos
