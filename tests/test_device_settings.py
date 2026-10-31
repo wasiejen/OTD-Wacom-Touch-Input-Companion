@@ -4,15 +4,22 @@ Device-free: tmp files only, no real device, no GUI window.
 """
 
 import json
+import threading
 
 import pytest
 
 from touch_controller import (
+    ActionDispatcher,
+    DeviceManagerThread,
     DriverConfig,
     MODEL_CLASS_ALIASES,
+    TabletState,
     WIRELESS_DEFAULT_ALIAS,
     resolve_device_alias,
+    run_interface,
 )
+
+from conftest import ExplodingDevice
 
 
 def fresh_config(monkeypatch, tmp_path):
@@ -178,3 +185,134 @@ def test_device_bindings_skips_invalid_entries(monkeypatch, tmp_path):
     }
 
     assert cfg.device_bindings() == {"bound-alias": [132]}
+# --- per-connection runtime isolation (U73 c) ---------------------------------
+
+def touch_down_block(slot, x, y):
+    return [slot, 0xC0, (x >> 4) & 0xFF, (y >> 4) & 0xFF, ((x & 0xF) << 4) | (y & 0xF), 0, 0, 0]
+
+
+def release_block(slot):
+    return [slot, 0x20, 0, 0, 0, 0, 0, 0]
+
+
+def touch_report(blocks):
+    return [0x02, len(blocks)] + [b for block in blocks for b in block]
+
+
+def wired_pair_devices(product_id):
+    vendor = DeviceManagerThread.VENDOR_ID
+    paths = [b"ACM&W73&0&MI_00", b"ACM&W73&0&MI_01"]
+    return [
+        {"vendor_id": vendor, "product_id": product_id,
+         "product_string": "Wacom Intuos5 touch M", "interface_number": 0,
+         "path": paths[0]},
+        {"vendor_id": vendor, "product_id": product_id,
+         "product_string": "Wacom Intuos5 touch M", "interface_number": 1,
+         "path": paths[1]},
+    ]
+
+
+def test_dispatcher_uses_connection_config(monkeypatch, tmp_path, stub_send_input):
+    monkeypatch.chdir(tmp_path)
+    base = DriverConfig()
+    base.devices = {"wacom-intuos5-m": {
+        "feature_toggles": {"2f_tap": True},
+        "action_mapping": {"2f_tap": "middle_click"},
+    }}
+    fork = base.fork_for_device("wacom-intuos5-m")
+    dispatcher = ActionDispatcher(TabletState(), fork)
+
+    dispatcher.dispatch_gesture_event("2f_tap")
+
+    flags = [event[1] for event in stub_send_input]
+    assert ActionDispatcher.MOUSEEVENTF_MIDDLEDOWN in flags
+    assert ActionDispatcher.MOUSEEVENTF_MIDDLEUP in flags
+
+
+def test_dispatcher_without_cfg_falls_back_to_module_config(monkeypatch, tmp_path, stub_send_input):
+    """2f_tap is off by default, so a plain dispatcher fires nothing."""
+    monkeypatch.chdir(tmp_path)
+    import touch_controller
+    monkeypatch.setattr(touch_controller, "config", DriverConfig())
+    dispatcher = ActionDispatcher(TabletState())
+
+    dispatcher.dispatch_gesture_event("2f_tap")
+
+    assert stub_send_input == []
+
+
+def test_touch_thread_runs_connection_fork(monkeypatch, tmp_path, fake_hid, stub_send_input):
+    """1f_tap fires with the fork's mapping, not the module config's action."""
+    monkeypatch.chdir(tmp_path)
+    base = DriverConfig()
+    base.devices = {"wacom-intuos5-m": {"action_mapping": {"1f_tap": "middle_click"}}}
+    fork = base.fork_for_device("wacom-intuos5-m")
+
+    reports = [touch_report([touch_down_block(1, 100, 200)]),
+               touch_report([release_block(1)])]
+    fake_hid._queue.append(ExplodingDevice(reports))
+    state = TabletState()
+    dispatcher = ActionDispatcher(state, fork)
+    enabled = threading.Event()
+    enabled.set()
+
+    run_interface("Touch", {"interface_number": 1, "path": b"x"},
+                  state, dispatcher, enabled, threading.Event())
+
+    flags = [event[1] for event in stub_send_input]
+    assert ActionDispatcher.MOUSEEVENTF_MIDDLEDOWN in flags
+
+
+def test_manager_connection_isolates_config(monkeypatch, tmp_path, fake_hid):
+    monkeypatch.chdir(tmp_path)
+    fake_hid.enumerate = lambda: wired_pair_devices(789)
+    base = DriverConfig()
+    base.devices = {"wacom-intuos5-m": {
+        "motion_and_thresholds": {"cursor_speed_low": 7.0},
+    }}
+    stop = threading.Event()
+    manager = DeviceManagerThread(threading.Event(), stop,
+                                  poll_interval=0.1, base_config=base)
+
+    manager.manage_connections()
+    conn = manager.get_primary_connection()
+
+    assert conn["alias"] == "wacom-intuos5-m"
+    assert conn["config"] is not base
+    assert conn["config"].cursor_speed_low == 7.0
+    assert base.cursor_speed_low == 5.0
+    assert conn["action"].config is conn["config"]
+
+    stop.set()
+    for thread in conn["threads"].values():
+        thread.join(2)
+
+
+def test_manager_binds_wireless_twin_via_manual_override(monkeypatch, tmp_path, fake_hid):
+    """The receiver twin resolves to the alias its bindings point at."""
+    monkeypatch.chdir(tmp_path)
+    vendor = DeviceManagerThread.VENDOR_ID
+    fake_hid.enumerate = lambda: [
+        {"vendor_id": vendor, "product_id": 132,
+         "product_string": "Wacom Wireless Receiver", "interface_number": 1,
+         "path": b"ACM&R73&0&MI_01"},
+        {"vendor_id": vendor, "product_id": 132,
+         "product_string": "Wacom Wireless Receiver", "interface_number": 2,
+         "path": b"ACM&R73&0&MI_02"},
+    ]
+    base = DriverConfig()
+    base.devices = {"wacom-intuos5-m": {
+        "bindings": [132],
+        "motion_and_thresholds": {"cursor_speed_low": 7.0},
+    }}
+    stop = threading.Event()
+    manager = DeviceManagerThread(threading.Event(), stop,
+                                  poll_interval=0.1, base_config=base)
+
+    manager.manage_connections()
+    conn = manager.get_primary_connection()
+
+    assert conn["alias"] == "wacom-intuos5-m"
+    assert conn["config"].cursor_speed_low == 7.0
+
+    stop.set()

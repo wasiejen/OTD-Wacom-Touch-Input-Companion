@@ -106,8 +106,10 @@ class ActionDispatcher():
         "middle_click": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
     }
 
-    def __init__(self, state):
+    def __init__(self, state, cfg=None):
         self.state = state
+        # Per-connection config instance (U73); None keeps the module config.
+        self.config = cfg
         # Inputs this dispatcher currently holds; released on thread exit.
         self.held_keys = set()
         self.left_held = False
@@ -362,8 +364,9 @@ class ActionDispatcher():
             print(f"[Warning] Unknown action name: {action_name}")
 
     def dispatch_gesture_event(self, event_type):
-        if config.feature_toggles.get(event_type, False):
-            mapping = config.action_mapping.get(event_type, None)
+        cfg = self.config if self.config is not None else config
+        if cfg.feature_toggles.get(event_type, False):
+            mapping = cfg.action_mapping.get(event_type, None)
             if callable(mapping):
                 action_name = mapping(self.state)
             else:
@@ -1346,8 +1349,9 @@ def parse_sub_block(block):
     y = (block[3] << 4) | (block[4] & 0x0F)
     return (slot_id, status, (x, y))
 
-def process_touch_report(report, state, action_dispatch):
+def process_touch_report(report, state, action_dispatch, cfg=None):
     ad = action_dispatch
+    cfg = config if cfg is None else cfg
     
     current_time = time.time()   
 
@@ -1375,7 +1379,7 @@ def process_touch_report(report, state, action_dispatch):
                 state.session_start_time = current_time
                 if DEBUG: print(f"Debug: new session triggered")
                 time_since_last_tap = current_time - state.last_f1_tap_time
-                state.drag_candidate = (time_since_last_tap <= config.double_tap_timeout)
+                state.drag_candidate = (time_since_last_tap <= cfg.double_tap_timeout)
             if len(state.active_contacts) == 1:
                 state.peak_contact_count = 1
                 state.f1_start_pos = pos
@@ -1392,7 +1396,7 @@ def process_touch_report(report, state, action_dispatch):
         elif status in STATUS_RELEASE_TERMINAL:
             state.active_contacts.pop(slot_id, None)
             state.start_time[clamped_contact_index(len(state.active_contacts))] = current_time
-            if state.max_drift > config.tap_max_movement:
+            if state.max_drift > cfg.tap_max_movement:
                 state.was_moved = True
 
     num_active = len(state.active_contacts)
@@ -1452,7 +1456,7 @@ def process_touch_report(report, state, action_dispatch):
                         raw_dy = pos[1] - state.last_f1_pos[1]
                         
                         if raw_dx != 0 or raw_dy != 0:
-                            scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(raw_dx, raw_dy, config,"cursor_acceleration")
+                            scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(raw_dx, raw_dy, cfg,"cursor_acceleration")
     
                             state.cursor_acc_x += scaled_dx
                             state.cursor_acc_y += scaled_dy
@@ -1465,10 +1469,10 @@ def process_touch_report(report, state, action_dispatch):
                                 state.cursor_acc_x -= move_x
                                 state.cursor_acc_y -= move_y
 
-                    if (current_time - state.last_f1_tap_time) < config.double_tap_timeout and state.max_drift <= config.tap_max_movement:
+                    if (current_time - state.last_f1_tap_time) < cfg.double_tap_timeout and state.max_drift <= cfg.tap_max_movement:
                         state.is_dragging_cursor = True
                         
-                        if (config.feature_toggles.get("1f_double_tap", False) 
+                        if (cfg.feature_toggles.get("1f_double_tap", False) 
                                 and state.drag_candidate 
                                 and not state.is_left_held
                             ):
@@ -1490,24 +1494,24 @@ def process_touch_report(report, state, action_dispatch):
             hold_duration = current_time - state.start_time[contact_index]
 
             if state.active_gesture is None:
-                if abs(delta_spread_total) >= config.pinch_activation_threshold:
+                if abs(delta_spread_total) >= cfg.pinch_activation_threshold:
                     state.active_gesture = "2f_pinch"
                     ad.press_key("ctrl")
                     state.scroll_active = True
-                elif dist_centroid >= config.scroll_activation_threshold:
+                elif dist_centroid >= cfg.scroll_activation_threshold:
                     state.active_gesture = "2f_scroll"
                     state.scroll_active = True
 
-            if state.active_gesture == "2f_scroll" and config.feature_toggles.get("2f_scroll", False):
+            if state.active_gesture == "2f_scroll" and cfg.feature_toggles.get("2f_scroll", False):
                 if isinstance(state.last_2finger_centroid, tuple):
                     dx = cx - state.last_2finger_centroid[0]
                     dy = cy - state.last_2finger_centroid[1]
                     # print(f"dx,dy: {dx,dy}")    
 
-                    scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(dx, dy, config, "scroll_acceleration")
+                    scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(dx, dy, cfg, "scroll_acceleration")
                     
-                    step_x = scaled_dx * -config.scroll_sensitivity_x
-                    step_y = scaled_dy * config.scroll_sensitivity_y
+                    step_x = scaled_dx * -cfg.scroll_sensitivity_x
+                    step_y = scaled_dy * cfg.scroll_sensitivity_y
                     
                     if step_x != 0 or step_y != 0:
                         # print(f"step_x,step_y: {step_x,step_y}")  
@@ -1515,13 +1519,13 @@ def process_touch_report(report, state, action_dispatch):
 
                 state.last_2finger_centroid = (cx, cy)
 
-            elif state.active_gesture == "2f_pinch" and config.feature_toggles.get("2f_pinch", False):
+            elif state.active_gesture == "2f_pinch" and cfg.feature_toggles.get("2f_pinch", False):
                 delta_pinch = spread - state.last_pinch_distance
-                ad.send_mouse_scroll(0, delta_pinch * config.pinch_sensitivity)
+                ad.send_mouse_scroll(0, delta_pinch * cfg.pinch_sensitivity)
                 state.last_pinch_distance += delta_pinch 
                 
-                # if abs(delta_pinch) >= config.pinch_continuous_sensitivity:
-                #     steps = delta_pinch / config.pinch_continuous_sensitivity
+                # if abs(delta_pinch) >= cfg.pinch_continuous_sensitivity:
+                #     steps = delta_pinch / cfg.pinch_continuous_sensitivity
                 #     if steps != 0:
                 #         send_ctrl_scroll(0, steps)
                 #         state.last_pinch_distance += delta_pinch     
@@ -1546,8 +1550,8 @@ def process_touch_report(report, state, action_dispatch):
             dist_centroid = math.hypot(dx_total, dy_total)
             delta_spread_total = spread - state.mf_start_spread
                 
-            if state.active_gesture is None and state.session_duration <= config.max_gesture_touch_session_duration:
-                if num_active >= 5 and config.feature_toggles.get("5f_alt_tab", False):
+            if state.active_gesture is None and state.session_duration <= cfg.max_gesture_touch_session_duration:
+                if num_active >= 5 and cfg.feature_toggles.get("5f_alt_tab", False):
                     state.active_gesture = "5f_alt_tab"
                     state.alt_tab_active = True
                     state.last_alt_tab_x = cx
@@ -1556,22 +1560,22 @@ def process_touch_report(report, state, action_dispatch):
                 else:
                     prefix = f"{num_active}f_"
                     
-                    if abs(delta_spread_total) >= config.pinch_discrete_threshold:
+                    if abs(delta_spread_total) >= cfg.pinch_discrete_threshold:
                         gesture_name = prefix + ("pinch_out" if delta_spread_total > 0 else "pinch_in")
                         ad.dispatch_gesture_event(gesture_name)
 
-                    elif abs(dx_total) >= config.swipe_threshold_x and abs(dx_total) > config.axis_dominance_ratio * abs(dy_total):
+                    elif abs(dx_total) >= cfg.swipe_threshold_x and abs(dx_total) > cfg.axis_dominance_ratio * abs(dy_total):
                         gesture_name = prefix + ("swipe_right" if dx_total > 0 else "swipe_left")
                         ad.dispatch_gesture_event(gesture_name)
 
-                    elif abs(dy_total) >= config.swipe_threshold_y and abs(dy_total) > config.axis_dominance_ratio * abs(dx_total):
+                    elif abs(dy_total) >= cfg.swipe_threshold_y and abs(dy_total) > cfg.axis_dominance_ratio * abs(dx_total):
                         gesture_name = prefix + ("swipe_down" if dy_total > 0 else "swipe_up")
                         ad.dispatch_gesture_event(gesture_name)
                         
             elif state.active_gesture == "5f_alt_tab" and num_active >= 5:
                 dx_step = cx - state.last_alt_tab_x
-                if abs(dx_step) >= config.alt_tab_step_threshold:
-                    if state.f5_counter >= 1 / config.alt_tab_step_sensitivity: # to slow down the windows selection change
+                if abs(dx_step) >= cfg.alt_tab_step_threshold:
+                    if state.f5_counter >= 1 / cfg.alt_tab_step_sensitivity: # to slow down the windows selection change
                         state.f5_counter = 0
                         if dx_step > 0:
                             ad.execute_mapped_action("ctrl_alt_tab_next")
@@ -1595,8 +1599,8 @@ def process_touch_report(report, state, action_dispatch):
 
             elif state.session_start_time is not None and state.active_gesture is None:
 
-                #if DEBUG: print(f"session_duration: {session_duration}, config.max_tap_duratio: {config.max_tap_duration}, sd<max_dur: {session_duration <= config.max_tap_duration}")
-                if state.session_duration <= config.max_tap_duration and not state.scroll_active:
+                #if DEBUG: print(f"session_duration: {session_duration}, cfg.max_tap_duratio: {cfg.max_tap_duration}, sd<max_dur: {session_duration <= cfg.max_tap_duration}")
+                if state.session_duration <= cfg.max_tap_duration and not state.scroll_active:
                     if state.peak_contact_count == 1:
                         if not state.was_moved or not state.is_dragging_cursor:
                             ad.dispatch_gesture_event("1f_tap")
@@ -1638,20 +1642,20 @@ def process_touch_report(report, state, action_dispatch):
         
         
         # --- PRESS HANDLING ---
-        if state.active_gesture is None and hold_duration >= config.press_hold_duration and not state.was_moved:
+        if state.active_gesture is None and hold_duration >= cfg.press_hold_duration and not state.was_moved:
             # hold_duration = current_time - state.start_time[num_active]
-            if num_active == 1 and config.feature_toggles.get("1f_press", False):
+            if num_active == 1 and cfg.feature_toggles.get("1f_press", False):
                 if (not state.is_left_held 
-                        and state.max_drift <= config.tap_max_movement
+                        and state.max_drift <= cfg.tap_max_movement
                         and not state.scroll_active
                         ):
                     ad.dispatch_gesture_event("1f_press")
                     if DEBUG: print("[Gesture] 1F Press & Hold Drag Initiated")
                     
-            elif num_active >= 2 and config.feature_toggles.get(f"{num_active}f_press", False):    
-                if (hold_duration >= config.press_hold_duration 
-                        and dist_centroid <= config.tap_max_movement
-                        and abs(delta_spread_total) <= config.pinch_discrete_threshold
+            elif num_active >= 2 and cfg.feature_toggles.get(f"{num_active}f_press", False):    
+                if (hold_duration >= cfg.press_hold_duration 
+                        and dist_centroid <= cfg.tap_max_movement
+                        and abs(delta_spread_total) <= cfg.pinch_discrete_threshold
                         ):
                     if DEBUG: print(f"[Gesture] Press hold for {num_active} Fingers triggered")
                     gesture_name = f"{num_active}f_press"
@@ -1663,7 +1667,7 @@ def process_touch_report(report, state, action_dispatch):
 # SIMPLIFIED INTERFACE WORKER THREAD
 # ==============================================================================
 
-def run_interface(interface_type, device_info, state, action_dispatch, touch_enabled_event, stop_event, idle_poll=IDLE_POLL_SECONDS):
+def run_interface(interface_type, device_info, state, action_dispatch, touch_enabled_event, stop_event, idle_poll=IDLE_POLL_SECONDS, cfg=None):
     """
     Simplified worker thread for 'Pen', 'Touch' or the optional 'Buttons' input.
     Exits as soon as an OSError/Exception is thrown or stop_event is set or touch_enabled_event not set.
@@ -1675,6 +1679,7 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
     interface_num = device_info.get('interface_number', -1)
     path = device_info.get('path')
     header = f"[{interface_type} Thread | Interface: {interface_num}]"
+    cfg = config if cfg is None else cfg
 
     dev = hid.device()
 
@@ -1721,12 +1726,12 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
 
             if report:
                 if interface_type == "Touch":
-                    process_touch_report(report, state, action_dispatch)
+                    process_touch_report(report, state, action_dispatch, cfg)
                 elif interface_type == "Pen":
                     parse_pen_packet(report, state)
-                    process_pen_report(report, state, action_dispatch, config, pen_specs)
+                    process_pen_report(report, state, action_dispatch, cfg, pen_specs)
                 elif interface_type == "Buttons":
-                    process_button_report(report, state, action_dispatch, config)
+                    process_button_report(report, state, action_dispatch, cfg)
                 # A report arrived: sample again immediately, no idle sleep.
                 idle_backoff = IDLE_BACKOFF_MIN_SECONDS
             elif timed_read is not None:
@@ -1781,13 +1786,15 @@ class DeviceManagerThread(threading.Thread):
     PRODUCT_IDS = [132, 791, 789, 788]
     WIRELESS_PRODUCT_STRING = "Wacom Wireless Receiver"
 
-    def __init__(self, enabled_event, stop_event, prefer_wireless=False, poll_interval=3.0):
+    def __init__(self, enabled_event, stop_event, prefer_wireless=False, poll_interval=3.0, base_config=None):
         super().__init__(daemon=True)
         self.touch_enabled_event = enabled_event
         self.stop_event = stop_event
         self.prefer_wireless = prefer_wireless
         self.poll_interval = poll_interval
         self.lock = threading.Lock()
+        # Global settings source; connections fork their own instance from it.
+        self.base_config = base_config if base_config is not None else config
         
         # State tracking: path -> info dict
         # Structure per connected pair: 
@@ -1795,6 +1802,8 @@ class DeviceManagerThread(threading.Thread):
         #   'device_path': str (key),
         #   'product_id': int,
         #   'product_string': str,
+        #   'alias': str or None (settings alias, U73),
+        #   'config': DriverConfig (per-connection fork),
         #   'state': TabletState,
         #   'action': ActionDispatcher,
         #   'threads': {'Pen': Thread, 'Touch': Thread, 'Buttons': Thread}
@@ -1922,11 +1931,16 @@ class DeviceManagerThread(threading.Thread):
                 dev_id = dev_pair['id']
 
                 if dev_id not in self.active_connections:
-                    print(f"\n[Manager] New Device Detected! Initializing: {dev_pair['product_string']}")
+                    alias = resolve_device_alias(
+                        dev_pair['product_id'], dev_pair['wireless'],
+                        self.base_config.device_bindings())
+                    conn_config = self.base_config.fork_for_device(alias)
+                    print(f"\n[Manager] New Device Detected! Initializing: {dev_pair['product_string']} "
+                          f"(settings alias: {alias or 'none - global sections only'})")
                     
                     # Create unique state & dispatcher context per device
                     t_state = TabletState()
-                    a_dispatch = ActionDispatcher(t_state)
+                    a_dispatch = ActionDispatcher(t_state, conn_config)
 
                     pen_dev = dev_pair['pen_device']
                     touch_dev = dev_pair['touch_device']
@@ -1951,6 +1965,8 @@ class DeviceManagerThread(threading.Thread):
                     self.active_connections[dev_id] = {
                         'product_id': dev_pair['product_id'],
                         'product_string': dev_pair['product_string'],
+                        'alias': alias,
+                        'config': conn_config,
                         'state': t_state,
                         'action': a_dispatch,
                         'threads': threads
@@ -1982,6 +1998,13 @@ class DeviceManagerThread(threading.Thread):
                 first_conn = next(iter(self.active_connections.values()))
                 return first_conn['state'], first_conn['action']
             return None, None
+
+    def get_primary_connection(self):
+        """The first active connection dict, alias and config included (U73)."""
+        with self.lock:
+            if self.active_connections:
+                return next(iter(self.active_connections.values()))
+            return None
 
 
 # ==============================================================================
@@ -2067,7 +2090,8 @@ def main():
     stop_event = threading.Event()
     
     # Initialize and start the master management thread
-    manager = DeviceManagerThread(touch_enabled_event, stop_event, prefer_wireless=prefer_wireless, poll_interval=5.0)
+    manager = DeviceManagerThread(touch_enabled_event, stop_event, prefer_wireless=prefer_wireless,
+                                  poll_interval=5.0, base_config=config)
     manager.start()
 
     # Wait for the manager to attempt the initial connection
