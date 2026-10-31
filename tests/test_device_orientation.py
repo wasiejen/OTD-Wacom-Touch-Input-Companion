@@ -213,3 +213,71 @@ def test_pen_zero_orientation_state_is_unchanged(config, state, dispatcher,
     process_pen_report(build_pen_report(0x20, x=1000, y=2000),
                        state, dispatcher, config, SPECS)
     assert state.pen_position == (1000, 2000)
+
+
+# --- GUI entry + widget geometry (device-free, no Tk window) ------------------
+
+import gui
+from gui import ORIENTATION_PRESETS, tablet_pictogram_layout, parse_orientation_degrees
+
+
+def test_orientation_presets_are_the_quadrants():
+    assert ORIENTATION_PRESETS == (0, 90, 180, 270)
+
+
+@pytest.mark.parametrize("raw,expected", [
+    ("0", 0), ("90", 90), ("359", 359), ("137", 137),
+    ("90.5", None), ("360", None), ("-1", None), ("", None), ("abc", None),
+])
+def test_parse_orientation_degrees(raw, expected):
+    assert parse_orientation_degrees(raw) == expected
+
+
+def test_pictogram_numbering_top_to_bottom_at_zero():
+    layout = tablet_pictogram_layout(0)
+    assert [n for n, _, _ in layout["buttons"]] == list(range(1, 9))
+    by_number = {n: (x, y) for n, x, y in layout["buttons"]}
+    # 1-4 above the central round, 5-8 mirrored below; 4 and 5 adjacent to it.
+    assert by_number[1][1] < by_number[4][1] < 0 < by_number[5][1] < by_number[8][1]
+    assert by_number[5][1] == pytest.approx(-by_number[4][1])
+    assert by_number[8][1] == pytest.approx(-by_number[1][1])
+    assert layout["center"] == pytest.approx((0, 0))
+    # All controls stay inside the tablet rectangle.
+    half_h = layout["rect"][2][1]
+    assert all(abs(y) <= half_h for _, _, y in layout["buttons"])
+
+
+def test_pictogram_buttons_rotate_with_the_angle():
+    zero = {n: (x, y) for n, x, y in tablet_pictogram_layout(0)["buttons"]}
+    quarter = {n: (x, y) for n, x, y in tablet_pictogram_layout(90)["buttons"]}
+    assert len(quarter) == 8
+    for number in range(1, 9):
+        x, y = zero[number]
+        assert quarter[number] == pytest.approx(rotate_point(x, y, 90, 0, 0))
+
+
+def test_pictogram_rect_and_dial_rotate():
+    zero = tablet_pictogram_layout(0)
+    rotated = tablet_pictogram_layout(90)
+    for corner, rotated_corner in zip(zero["rect"], rotated["rect"]):
+        assert rotated_corner == pytest.approx(rotate_point(*corner, 90, 0, 0))
+    assert rotated["dial_radius"] == zero["dial_radius"]
+
+
+def test_apply_settings_stores_whole_degrees(config):
+    gui.apply_settings_to_config(
+        config, {"orientation_degrees": "45"},
+        {"cursor_acceleration": False, "scroll_acceleration": False}, {}, {})
+    assert config.orientation_degrees == 45
+    assert isinstance(config.orientation_degrees, int)
+
+
+def test_apply_settings_rejects_bad_orientation(config):
+    accel = {"cursor_acceleration": False, "scroll_acceleration": False}
+    with pytest.raises(ValueError):
+        gui.apply_settings_to_config(
+            config, {"orientation_degrees": "360"}, accel, {}, {})
+    with pytest.raises(ValueError):
+        gui.apply_settings_to_config(
+            config, {"orientation_degrees": "90.5"}, accel, {}, {})
+    assert config.orientation_degrees == 0

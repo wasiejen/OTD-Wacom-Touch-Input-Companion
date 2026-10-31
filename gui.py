@@ -6,6 +6,8 @@ from PIL import Image, ImageDraw, ImageFont
 import pystray
 from pystray import MenuItem as item
 
+from touch_controller import ORIENTATION_MAX_DEGREES, rotate_point
+
 
 class ToolTip:
     """Hover tooltip for Tkinter widgets with robust cleanup on leave, click, scroll, and window move."""
@@ -181,6 +183,115 @@ def parse_numeric_values(values):
     return parsed
 
 
+# Device orientation (U74 c): direct numeric entry in 1° steps plus presets.
+ORIENTATION_PRESETS = (0, 90, 180, 270)
+# Generalized tablet aspect for the pictogram (PTH-651 digitizer, mm).
+PICTOGRAM_WIDTH = 223.52
+PICTOGRAM_HEIGHT = 139.7
+
+
+def parse_orientation_degrees(raw):
+    """Whole degrees 0..359 from an entry string; None when invalid."""
+    try:
+        degrees = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if degrees != int(degrees) or not 0 <= degrees <= ORIENTATION_MAX_DEGREES:
+        return None
+    return int(degrees)
+
+
+def tablet_pictogram_layout(degrees, width=PICTOGRAM_WIDTH, height=PICTOGRAM_HEIGHT):
+    """Rotated tablet pictogram geometry, centered at the origin (U74 d).
+
+    Unrotated layout: tablet rectangle spanning +-width/2 x +-height/2; the
+    central round on the middle axis with the dial ring around it; express
+    keys 1-4 above and 5-8 mirrored below, numbered top-to-bottom. Every
+    point rotates clockwise by degrees with the same matrix the input
+    transform uses, so widget and cursor mapping stay consistent.
+    """
+    half_w, half_h = width / 2, height / 2
+    dial_radius = half_h * 0.32
+    button_radius = half_h * 0.08
+    inner_offset = half_h * 0.42
+    step = half_h * 0.19
+    column_x = -half_w * 0.5
+
+    offsets = {
+        1: -inner_offset - 3 * step, 2: -inner_offset - 2 * step,
+        3: -inner_offset - step, 4: -inner_offset,
+        5: inner_offset, 6: inner_offset + step,
+        7: inner_offset + 2 * step, 8: inner_offset + 3 * step,
+    }
+
+    def rotated(x, y):
+        if degrees == 0:
+            return (x, y)
+        return rotate_point(x, y, degrees, 0, 0)
+
+    corners = [(-half_w, -half_h), (half_w, -half_h),
+               (half_w, half_h), (-half_w, half_h)]
+    buttons = [(number, *rotated(column_x, offset))
+               for number, offset in offsets.items()]
+    return {
+        "rect": [rotated(x, y) for x, y in corners],
+        "center": rotated(0, 0),
+        "dial_radius": dial_radius,
+        "button_radius": button_radius,
+        "buttons": buttons,
+    }
+
+
+class OrientationWidget(tk.Canvas):
+    """Orientation pictogram (U74 d): a generalized tablet drawn in Tk, no image
+    file. Rectangle, central round with dial ring, express keys numbered
+    1-4 above and 5-8 mirrored below; the drawing rotates clockwise with the
+    orientation angle so the button mapping stays visible.
+    """
+    CANVAS_WIDTH = 220
+    CANVAS_HEIGHT = 150
+    SCALE = 0.82
+
+    def __init__(self, parent, degrees=0, **kwargs):
+        super().__init__(parent, width=self.CANVAS_WIDTH, height=self.CANVAS_HEIGHT,
+                         background="#2b2b2b", highlightthickness=1,
+                         highlightbackground="#666", **kwargs)
+        self.draw_degrees(degrees)
+
+    def _canvas_point(self, x, y):
+        scale = self.CANVAS_HEIGHT / PICTOGRAM_HEIGHT * self.SCALE
+        return (self.CANVAS_WIDTH / 2 + x * scale,
+                self.CANVAS_HEIGHT / 2 + y * scale)
+
+    def draw_degrees(self, degrees):
+        """Redraw the pictogram at the given angle."""
+        layout = tablet_pictogram_layout(degrees)
+        scale = self.CANVAS_HEIGHT / PICTOGRAM_HEIGHT * self.SCALE
+        self.delete("all")
+
+        self.create_polygon(*[p for corner in layout["rect"]
+                              for p in self._canvas_point(*corner)],
+                            fill="#3a3a3a", outline="#8a8a8a")
+
+        cx, cy = self._canvas_point(*layout["center"])
+        dial = layout["dial_radius"] * scale
+        self.create_oval(cx - dial, cy - dial, cx + dial, cy + dial,
+                         outline="#6a9fd8")
+        central = layout["button_radius"] * 1.2 * scale
+        self.create_oval(cx - central, cy - central, cx + central, cy + central,
+                         fill="#2e5a86", outline="#6a9fd8")
+        self.create_text(cx, cy, text="central", fill="#e0e0e0",
+                         font=("Segoe UI", 7))
+
+        button = layout["button_radius"] * scale
+        for number, x, y in layout["buttons"]:
+            bx, by = self._canvas_point(x, y)
+            self.create_oval(bx - button, by - button, bx + button, by + button,
+                             fill="#575757", outline="#9a9a9a")
+            self.create_text(bx, by, text=str(number), fill="#e6e6e6",
+                             font=("Segoe UI", 8))
+
+
 def apply_settings_to_config(config, numeric_values, accel_toggles, feature_toggles,
                              action_mappings, pen_button_actions=None, pen_absolute_mode=None,
                              button_actions=None, button_toggles=None):
@@ -190,6 +301,15 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
     mutation, so one bad entry cannot leave config half-applied.
     """
     parsed = parse_numeric_values(numeric_values)
+
+    if "orientation_degrees" in parsed:
+        # U74: the entry feeds the 1° rotation matrix; whole degrees only.
+        degrees = parse_orientation_degrees(numeric_values["orientation_degrees"])
+        if degrees is None:
+            raise ValueError(f"Field 'orientation_degrees' needs a whole degree "
+                             f"0..{ORIENTATION_MAX_DEGREES}: "
+                             f"{numeric_values['orientation_degrees']!r}")
+        parsed["orientation_degrees"] = degrees
 
     for key, val in parsed.items():
         setattr(config, key, val)
@@ -378,6 +498,35 @@ class SettingsWindow(tk.Toplevel):
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
         canvas.configure(yscrollcommand=scrollbar.set)
 
+        # --- 0. Device Orientation Frame (U74 c/d) ---
+        orient_frame = ttk.LabelFrame(scroll_frame, text=" Device Orientation ", padding=10)
+        orient_frame.pack(fill="x", padx=10, pady=8, expand=True)
+
+        orient_lbl = ttk.Label(orient_frame, text="Rotation (degrees, 1° steps):")
+        orient_lbl.grid(row=0, column=0, sticky="w", pady=4)
+        orient_ent = ttk.Entry(orient_frame, width=8)
+        orient_ent.insert(0, str(self.config.orientation_degrees))
+        orient_ent.grid(row=0, column=1, sticky="w", padx=(4, 0))
+        self.entries["orientation_degrees"] = orient_ent
+        orient_ent.bind("<KeyRelease>", self._on_orientation_entry)
+        orient_tip = ("Rotates the interpretation of touch and pen input clockwise "
+                      "by this angle around the tablet center. 0 leaves input unchanged.")
+        ToolTip(orient_lbl, orient_tip)
+        ToolTip(orient_ent, orient_tip)
+
+        preset_frame = ttk.Frame(orient_frame)
+        preset_frame.grid(row=0, column=2, columnspan=2, sticky="e", padx=(8, 0))
+        for preset in ORIENTATION_PRESETS:
+            preset_btn = ttk.Button(preset_frame, text=f"{preset}°", width=4,
+                                    command=lambda angle=preset: self._set_orientation(angle))
+            preset_btn.pack(side="left", padx=(3, 0))
+            ToolTip(preset_btn, f"Set the orientation preset {preset} degrees.")
+
+        self.orientation_widget = OrientationWidget(
+            orient_frame, degrees=self.config.orientation_degrees)
+        self.orientation_widget.grid(row=1, column=0, columnspan=4, pady=(6, 0))
+        orient_frame.columnconfigure(1, weight=1)
+
         # Tooltips dictionary for motion & acceleration
         cursor_tooltips = {
             "cursor_deadzone": "Minimum pixel delta per packet required before cursor moves. Filters out sensor noise/jitter.",
@@ -465,6 +614,19 @@ class SettingsWindow(tk.Toplevel):
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+
+    def _on_orientation_entry(self, event=None):
+        """Live-redraw the pictogram while typing a valid angle."""
+        degrees = parse_orientation_degrees(self.entries["orientation_degrees"].get())
+        if degrees is not None:
+            self.orientation_widget.draw_degrees(degrees)
+
+    def _set_orientation(self, degrees):
+        """Preset button: write the angle into the entry and redraw the widget."""
+        entry = self.entries["orientation_degrees"]
+        entry.delete(0, "end")
+        entry.insert(0, str(degrees))
+        self.orientation_widget.draw_degrees(degrees)
 
     def _build_pen_tab(self):
         canvas = tk.Canvas(self.tab_pen, borderwidth=0)
