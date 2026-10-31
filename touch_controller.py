@@ -97,11 +97,22 @@ class ActionDispatcher():
     KEYEVENTF_KEYDOWN = 0x0000
     KEYEVENTF_KEYUP = 0x0002  
     
+    # Pen button mapping actions: press/release flag pairs (U70).
+    # Any other mapped action runs as a tap on the press edge.
+    PEN_BUTTON_FLAGS = {
+        "left_click": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+        "right_click": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+        "middle_click": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+    }
+
     def __init__(self, state):
         self.state = state
         # Inputs this dispatcher currently holds; released on thread exit.
         self.held_keys = set()
         self.left_held = False
+        # Pen-held inputs: pressure left-hold and the two pen buttons.
+        self.pen_pressure_held = False
+        self.pen_button_held = {}
 
         # The Dispatch Table
         self.ACTION_DISPATCH = {
@@ -207,7 +218,46 @@ class ActionDispatcher():
         # # Usage:
         # with hold_key(vk_codes_dict["ctrl"]):
         #     send_mouse_scroll(0, steps)
-        
+
+    # ==============================================================================
+    # PEN INPUT HELPERS (U70)
+    # ==============================================================================
+
+    def send_pen_absolute_move(self, nx, ny):
+        """Absolute pointer move in the 0..65535 virtual-desktop space."""
+        extra = ctypes.c_ulong(0)
+        ii = INPUT()
+        ii.type = self.INPUT_MOUSE
+        ii.mi = MOUSEINPUT(int(nx), int(ny), 0,
+                           self.MOUSEEVENTF_MOVE | self.MOUSEEVENTF_ABSOLUTE | self.MOUSEEVENTF_VIRTUALDESK,
+                           0, ctypes.pointer(extra))
+        ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
+
+    def press_pen_pressure(self):
+        """Pressure above threshold holds the left button like a mouse click."""
+        self.send_mouse_click(self.MOUSEEVENTF_LEFTDOWN)
+        self.pen_pressure_held = True
+
+    def release_pen_pressure(self):
+        if self.pen_pressure_held:
+            self.send_mouse_click(self.MOUSEEVENTF_LEFTUP)
+            self.pen_pressure_held = False
+
+    def press_pen_button(self, slot, action_name):
+        """Press edge of a pen button; mapped mouse buttons hold, others tap."""
+        flags = self.PEN_BUTTON_FLAGS.get(action_name)
+        if flags:
+            self.send_mouse_click(flags[0])
+            self.pen_button_held[slot] = action_name
+        elif action_name is not None:
+            self.execute_mapped_action(action_name)
+
+    def release_pen_button(self, slot):
+        """Release edge of a pen button; only held mouse buttons send a UP."""
+        action_name = self.pen_button_held.pop(slot, None)
+        if action_name:
+            self.send_mouse_click(self.PEN_BUTTON_FLAGS[action_name][1])
+
     # ==============================================================================
     # HELPER FUNCTIONS - INPUT
     # ==============================================================================  
@@ -242,6 +292,15 @@ class ActionDispatcher():
             self.left_held = False
             self.state.is_left_held = False
             released.append("left_button")
+
+        if self.pen_pressure_held:
+            self.release_pen_pressure()
+            released.append("pen_pressure")
+
+        for slot, action_name in list(self.pen_button_held.items()):
+            self.send_mouse_click(self.PEN_BUTTON_FLAGS[action_name][1])
+            released.append(f"pen_button_{slot}")
+        self.pen_button_held.clear()
 
         if released:
             print(f"[Safety] Released held input on thread exit: {released}")
@@ -301,6 +360,7 @@ class DriverConfig:
         "cursor_max_sens", "cursor_speed_low", "cursor_speed_high",
         "scroll_deadzone", "scroll_min_sens", "scroll_max_sens",
         "scroll_speed_low", "scroll_speed_high",
+        "pen_speed", "pen_pressure_threshold",
     )
 
     # Sections the saved file may hold. "devices" is the reserved slot (c):
@@ -379,6 +439,12 @@ class DriverConfig:
         self.scroll_activation_threshold = 30.0  # Centroid distance in px before scrolling locks in
         self.pinch_activation_threshold = 40.0   # Spread change in px before pinching locks in
         
+        # Pen Movement (U70): speed is pixels per millimeter of pen travel in
+        # relative mode; absolute mode maps the digitizer to the screen 1:1.
+        # The pressure threshold avoids light-contact flapping (units 0..2047).
+        self.pen_speed = 8.0
+        self.pen_pressure_threshold = 40.0
+        
         # Gesture Thresholds
         self.max_tap_duration = 0.250       # Seconds
         self.double_tap_timeout = 0.250     # Seconds for 1F drag
@@ -438,6 +504,8 @@ class DriverConfig:
             "5f_swipe_down" : False,
             "5f_pinch_in" : False,
             "5f_pinch_out" : False,
+            # Pen movement mode: True = absolute screen mapping, False = relative deltas.
+            "pen_absolute_mode" : True,
             #"0f" : True,
         }
         
@@ -510,6 +578,10 @@ class DriverConfig:
             "5f_swipe_right": "next",  
             "5f_pinch_in": "window_minimize",
             "5f_pinch_out": "window_maximize",
+            
+            # Pen buttons (U70): status bits 1 and 2; press/release like a click.
+            "pen_button_1": "right_click",
+            "pen_button_2": "middle_click",
             
             #"0f" : "left_hold_release",
         }
@@ -701,6 +773,48 @@ STATUS_TOUCH_DOWN = 0xC0
 STATUS_RELEASE_TERMINAL = {0x20}
 STATUS_ACTIVE_CONTACTS = {0x80, 0x90, 0x88, 0x98}
 
+# Pen report (10-byte id 0x02): upstream Intuos-V1 field layout, documented
+# in agent/research/2026-10-31_u68-otd-pen-layout.md (Wacom PTH-651).
+PEN_REPORT_ID = 0x02
+PEN_REPORT_LENGTH = 10
+PEN_MAX_PRESSURE = 2047
+# Status bits are LSB-first (upstream ByteExtensions.IsBitSet semantics).
+PEN_STATUS_COORDS = 0x20        # bit 5: report carries coordinates (tablet report)
+PEN_STATUS_OUT_OF_RANGE = 0x80  # status byte 0x80: pen left the digitizer range
+PEN_TOOL_REPORT_STATUS = 0xC2   # tool report: bytes 2-3 carry serial, no coordinates
+PEN_ROTATION_FLAG = 0x0A        # bits 1 and 3 together: rotation report
+PEN_BUTTON_1_MASK = 0x02        # status bit 1: pen button 1
+PEN_BUTTON_2_MASK = 0x04        # status bit 2: pen button 2
+# Absolute moves use the 0..65535 virtual-desktop space (upstream
+# WindowsAbsolutePointer projection).
+PEN_VIRTUAL_RESOLUTION = 65535
+
+# Digitizer ranges per product id, from upstream Wacom/PTH-651.json. Other
+# Intuos Pro models need their own entries (PTH-450/451, PTH-850/851).
+PEN_SPECS_BY_PRODUCT = {
+    789: {"max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7},
+}
+PEN_SPECS_DEFAULT = PEN_SPECS_BY_PRODUCT[789]
+
+def pen_specs_for_product(product_id):
+    """Digitizer ranges for the pen device; unknown ids fall back to defaults."""
+    specs = PEN_SPECS_BY_PRODUCT.get(product_id)
+    if specs is None:
+        print(f"[Pen] No digitizer ranges for product {product_id}; "
+              "using Intuos Pro Medium defaults (PTH-651)")
+        return PEN_SPECS_DEFAULT
+    return specs
+
+def decode_pen_position(report):
+    """Intuos-V1 X/Y: big-endian halves in bytes 2-5 plus the low bits of byte 9."""
+    x = (report[3] | report[2] << 8) << 1 | ((report[9] >> 1) & 1)
+    y = (report[5] | report[4] << 8) << 1 | (report[9] & 1)
+    return x, y
+
+def decode_pen_pressure(report):
+    """Intuos-V1 pressure: 11 bits from bytes 6-7 plus the status bit 0 LSB."""
+    return (report[6] << 3) | ((report[7] & 0xC0) >> 5) | (report[1] & 1)
+
 # ==============================================================================
 # STATE TRACKER
 # ==============================================================================
@@ -752,6 +866,13 @@ class TabletState:
         
         self.cursor_acc_x = 0.0
         self.cursor_acc_y = 0.0
+        
+        # Pen input tracking (U70): last decoded tablet-report values.
+        self.pen_position = None
+        self.pen_pressure = 0
+        self.pen_buttons = (False, False)
+        self.pen_cursor_acc_x = 0.0
+        self.pen_cursor_acc_y = 0.0
         
         self.last_num_active = 0
         
@@ -808,6 +929,7 @@ def calculate_piecewise_accelerated_delta(dx, dy, config, feature_toggle):
 # PARSING & TOUCH PROCESSING
 # ==============================================================================
 def parse_pen_packet(report, state):
+    """Proximity gate: marks pen presence so touch stays suppressed."""
     if not report or report[0] != 0x02:
         return
     pen_status = report[1]
@@ -826,6 +948,107 @@ def parse_pen_packet(report, state):
             #reset_tablet_state(full=True)
             
             print("[Palm Rejection] Pen left hover area -> Touch Enabled")
+
+def release_pen_inputs(state, action_dispatch):
+    """Release every held pen input and reset the relative origin."""
+    ad = action_dispatch
+    ad.release_pen_pressure()
+    for slot in list(ad.pen_button_held):
+        ad.release_pen_button(slot)
+    state.pen_position = None
+    state.pen_pressure = 0
+    state.pen_buttons = (False, False)
+
+def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y):
+    """Move the pointer: absolute maps the digitizer to the virtual desktop,
+    relative sends scaled deltas with a fractional accumulator."""
+    ad = action_dispatch
+    absolute = config.feature_toggles.get("pen_absolute_mode", True)
+
+    if absolute:
+        nx = min(max(int(x * PEN_VIRTUAL_RESOLUTION / pen_specs["max_x"]), 0),
+                 PEN_VIRTUAL_RESOLUTION)
+        ny = min(max(int(y * PEN_VIRTUAL_RESOLUTION / pen_specs["max_y"]), 0),
+                 PEN_VIRTUAL_RESOLUTION)
+        state.pen_position = (x, y)
+        ad.send_pen_absolute_move(nx, ny)
+        return
+
+    if state.pen_position is None:
+        # First report after an origin reset: start point, no delta.
+        state.pen_position = (x, y)
+        return
+
+    last_x, last_y = state.pen_position
+    dx_mm = (x - last_x) * pen_specs["width_mm"] / pen_specs["max_x"]
+    dy_mm = (y - last_y) * pen_specs["height_mm"] / pen_specs["max_y"]
+    state.pen_position = (x, y)
+
+    state.pen_cursor_acc_x += dx_mm * config.pen_speed
+    state.pen_cursor_acc_y += dy_mm * config.pen_speed
+    move_x = int(state.pen_cursor_acc_x)
+    move_y = int(state.pen_cursor_acc_y)
+    if move_x != 0 or move_y != 0:
+        ad.send_real_mouse_move(move_x, move_y)
+        state.pen_cursor_acc_x -= move_x
+        state.pen_cursor_acc_y -= move_y
+
+def update_pen_pressure_button(state, action_dispatch, config):
+    """Pressure drives the left button: held at or above threshold, else released."""
+    ad = action_dispatch
+    pressed = state.pen_pressure >= config.pen_pressure_threshold
+    if pressed and not ad.pen_pressure_held:
+        ad.press_pen_pressure()
+    elif not pressed and ad.pen_pressure_held:
+        ad.release_pen_pressure()
+
+def process_pen_report(report, state, action_dispatch, config, pen_specs):
+    """Full pen input from the 10-byte 0x02 report (U70).
+
+    The status byte switches the meaning of bytes 6-7: bits 1 and 3 mark a
+    rotation report (pressure, tilt and buttons carry over from the previous
+    report), bit 5 marks a tablet report (pressure valid). Tilt and hover are
+    ignored per the approved ruling; pressure acts as left-click state.
+    """
+    if not report or report[0] != PEN_REPORT_ID or len(report) < PEN_REPORT_LENGTH:
+        return
+
+    status = report[1]
+    ad = action_dispatch
+
+    if status == PEN_STATUS_OUT_OF_RANGE:
+        # Upstream resets the pointer origin and drops the follow-up report.
+        release_pen_inputs(state, ad)
+        return
+
+    if status == PEN_TOOL_REPORT_STATUS:
+        return
+
+    is_rotation = (status & PEN_ROTATION_FLAG) == PEN_ROTATION_FLAG
+    if not is_rotation and (status & PEN_STATUS_COORDS) == 0:
+        # No coordinates in this report (tool/unknown variant): skip.
+        return
+
+    x, y = decode_pen_position(report)
+    if is_rotation:
+        # Bytes 6-7 carry rotation, not pressure; values carry over.
+        new_buttons = state.pen_buttons
+    else:
+        state.pen_pressure = decode_pen_pressure(report)
+        new_buttons = ((status & PEN_BUTTON_1_MASK) != 0,
+                       (status & PEN_BUTTON_2_MASK) != 0)
+
+    for slot, current in ((1, new_buttons[0]), (2, new_buttons[1])):
+        if current != state.pen_buttons[slot - 1]:
+            action_name = config.action_mapping.get(f"pen_button_{slot}")
+            if current:
+                ad.press_pen_button(slot, action_name)
+            else:
+                ad.release_pen_button(slot)
+    state.pen_buttons = new_buttons
+
+    update_pen_cursor(state, ad, config, pen_specs, x, y)
+    update_pen_pressure_button(state, ad, config)
 
 def parse_sub_block(block):
     if len(block) < 5:
@@ -1178,6 +1401,12 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
         dev.set_nonblocking(True)
         print(f"{header} Started successfully.")
 
+        pen_specs = None
+        if interface_type == "Pen":
+            pen_specs = pen_specs_for_product(device_info.get("product_id"))
+            print(f"{header} Init report not sent: upstream sends FeatureInitReport "
+                  "'02 08' at device open; requirement unknown (pen data reads without it).")
+
         # Timed reads exist only on some HID bindings; the Windows hidapi wheel
         # exposes plain read() only, so the non-blocking fallback backs off from
         # IDLE_BACKOFF_MIN_SECONDS up to the poll tick and resets on every report.
@@ -1194,7 +1423,7 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
             if interface_type == "Touch":
                 read_size = 66
             elif interface_type == "Pen":
-                read_size = 2
+                read_size = PEN_REPORT_LENGTH
             else:
                 read_size = 0
 
@@ -1211,6 +1440,7 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
                     process_touch_report(report, state, action_dispatch)
                 elif interface_type == "Pen":
                     parse_pen_packet(report, state)
+                    process_pen_report(report, state, action_dispatch, config, pen_specs)
                 # A report arrived: sample again immediately, no idle sleep.
                 idle_backoff = IDLE_BACKOFF_MIN_SECONDS
             elif timed_read is not None:
