@@ -68,6 +68,8 @@ def usage_hint(usage_page, usage):
 
 def parent_instance(path):
     """Strip the interface suffix so one tablet groups its interfaces."""
+    if isinstance(path, bytes):
+        path = path.decode("utf-8", "replace")
     return re.sub(r'(?i)&?mi_[\da-f]+', '', path)
 
 
@@ -98,10 +100,10 @@ def probe_path(path, max_reports=MAX_REPORTS, timeout=READ_TIMEOUT):
                 time.sleep(READ_INTERVAL)
         # Feature request: reads a device report, never changes device state.
         try:
-            dev.get_input_report(0x02)
-            input_report = "get_input_report(0x02): ok"
+            dev.get_input_report(0x02, 64)
+            input_report = "get_input_report(0x02, 64): ok"
         except (OSError, ValueError) as e:
-            input_report = f"get_input_report(0x02): unsupported ({e})"
+            input_report = f"get_input_report(0x02, 64): unsupported ({e})"
     except OSError as e:
         error = f"read failed: {e}"
         input_report = "readable reports: unknown"
