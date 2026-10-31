@@ -145,6 +145,14 @@ def collect_config_sections(config, section_names):
     return sections
 
 
+def device_display_name(conn):
+    """Device-bar label: the user alias when set, else the interface name (U87 a)."""
+    alias = conn.get("alias")
+    if alias:
+        return alias
+    return conn.get("product_string") or "unknown device"
+
+
 # Touch button and dial controls (U71): one toggle plus one mapping per control.
 BUTTON_CONTROL_KEYS = tuple(f"btn{n}_press" for n in range(1, 9)) + (
     "central_press", "dial_cw", "dial_ccw")
@@ -410,23 +418,32 @@ class SettingsWindow(tk.Toplevel):
         frame = ttk.LabelFrame(container, text=" Focused Device ", padding=8)
         frame.pack(fill="x", pady=(0, 6))
 
-        alias = conn.get("alias")
-        self.device_label = ttk.Label(
-            frame, text=f"{conn['product_string']} — alias: {alias or 'none'}")
-        self.device_label.grid(row=0, column=0, columnspan=4, sticky="w")
+        # Live device list (U87 a): the combo feeds on the running connections.
+        ttk.Label(frame, text="Device:").grid(row=0, column=0, sticky="w")
+        self.devices_combo = ttk.Combobox(frame, width=18, state="readonly")
+        self.devices_combo.grid(row=0, column=1, sticky="w", padx=(4, 0))
+        self.devices_combo.bind("<<ComboboxSelected>>", self._on_device_selected)
+        refresh_btn = ttk.Button(frame, text="Refresh", width=8,
+                                 command=self._refresh_device_combo)
+        refresh_btn.grid(row=0, column=2, padx=(6, 0))
+        ToolTip(refresh_btn, "Re-read the live device list from the running driver.")
 
-        ttk.Label(frame, text="Alias:").grid(row=1, column=0, sticky="w")
+        self.device_label = ttk.Label(frame, text=device_display_name(conn))
+        self.device_label.grid(row=1, column=0, columnspan=4, sticky="w")
+
+        ttk.Label(frame, text="Alias:").grid(row=2, column=0, sticky="w")
         self.alias_entry = ttk.Entry(frame, width=16)
-        self.alias_entry.insert(0, alias or "")
-        self.alias_entry.grid(row=1, column=1, sticky="w", padx=(4, 0))
+        self.alias_entry.insert(0, conn.get("alias") or "")
+        self.alias_entry.grid(row=2, column=1, sticky="w", padx=(4, 0))
         btn = ttk.Button(frame, text="Assign alias", command=self.assign_alias)
-        btn.grid(row=1, column=2, padx=(6, 0))
-        ToolTip(btn, "Bind this device to a settings alias; saves under it. "
-                     "Tags the wireless receiver twin manually (it never resolves by itself).")
+        btn.grid(row=2, column=2, padx=(6, 0))
+        ToolTip(btn, "Name this device; the name shows in the device list and "
+                     "persists in the settings file under its identity key. "
+                     "Tags the wireless receiver twin manually as well.")
 
-        ttk.Label(frame, text="Copy settings to:").grid(row=2, column=0, sticky="w", pady=(6, 0))
+        ttk.Label(frame, text="Copy settings to:").grid(row=3, column=0, sticky="w", pady=(6, 0))
         self.copy_alias_combo = ttk.Combobox(frame, values=sorted(base.devices), width=16)
-        self.copy_alias_combo.grid(row=2, column=1, sticky="w", padx=(4, 0))
+        self.copy_alias_combo.grid(row=3, column=1, sticky="w", padx=(4, 0))
         self.copy_section_vars = {
             name: tk.BooleanVar(value=True) for name in DEVICE_TRANSFER_SECTIONS}
         section_labels = {
@@ -438,13 +455,112 @@ class SettingsWindow(tk.Toplevel):
             chk = ttk.Checkbutton(frame, text=section_labels[name], variable=var)
             chk.grid(row=idx, column=2, sticky="w")
         copy_btn = ttk.Button(frame, text="Copy to alias", command=self.copy_settings_to_alias)
-        copy_btn.grid(row=2, column=3, sticky="e")
+        copy_btn.grid(row=3, column=3, sticky="e")
         ToolTip(copy_btn, "Copies the selected sections of this device's settings into "
                           "the chosen alias; takes effect on that device's next connection.")
+
+        device_btn = ttk.Button(frame, text="Save to Device",
+                                command=self.save_to_focused_device)
+        device_btn.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ToolTip(device_btn, "Save ONLY this device's current values under its "
+                            "identity key; the main Save button stays global.")
         frame.columnconfigure(3, weight=1)
+        self._refresh_device_combo()
+
+    def _live_connections(self):
+        """The running device list; the focused connection when no manager is wired."""
+        manager = self.device_info.get("manager")
+        if manager is not None:
+            conns = manager.list_connections()
+            if conns:
+                return conns
+        return [self.device_info["connection"]]
+
+    def _refresh_device_combo(self):
+        """Rebuild the combo from the live device list, keeping the focus."""
+        conns = self._live_connections()
+        self._device_conns = conns
+        labels = [device_display_name(conn) for conn in conns]
+        self.devices_combo["values"] = labels
+        focused = self.device_info["connection"]
+        index = -1
+        for i, candidate in enumerate(conns):
+            if candidate is focused:
+                index = i
+                break
+        if index >= 0:
+            self.devices_combo.current(index)
+        elif labels:
+            self.devices_combo.current(0)
+
+    def _on_device_selected(self, event=None):
+        """Point the window and its widgets at the selected live device."""
+        conns = getattr(self, "_device_conns", [])
+        index = self.devices_combo.current()
+        if index < 0 or index >= len(conns):
+            return False
+        conn = conns[index]
+        if conn is self.device_info["connection"]:
+            return False
+        self.device_info["connection"] = conn
+        self._rebind_focused_device()
+        ToastNotification(self, "Device Focused",
+                          f"Editing settings of {device_display_name(conn)}.",
+                          timeout_ms=1500)
+        return True
+
+    def _rebind_focused_device(self):
+        conn = self.device_info["connection"]
+        self.config = conn["config"]
+        self.alias_entry.delete(0, "end")
+        self.alias_entry.insert(0, conn.get("alias") or "")
+        self.device_label.configure(text=device_display_name(conn))
+        self._rebind_config_widgets()
+
+    @staticmethod
+    def _set_widget_value(widget, text):
+        """Write a value into an Entry, Combobox or variable-like widget."""
+        if hasattr(widget, "delete") and hasattr(widget, "insert"):
+            widget.delete(0, "end")
+            widget.insert(0, text)
+        elif hasattr(widget, "set"):
+            widget.set(text)
+
+    def _rebind_config_widgets(self):
+        """Reload every tab widget from the now-focused device's config."""
+        config = self.config
+        options = getattr(config, "AVAILABLE_ACTIONS", [])
+        for key, ent in self.entries.items():
+            value = getattr(config, key, None)
+            if value is not None:
+                self._set_widget_value(ent, str(value))
+        for name, var in getattr(self, "feature_vars", {}).items():
+            if name in config.feature_toggles:
+                self._set_widget_value(var, config.feature_toggles[name])
+        for name, var in (("cursor_acceleration", getattr(self, "cursor_accel_var", None)),
+                          ("scroll_acceleration", getattr(self, "scroll_accel_var", None))):
+            if var is not None and name in config.feature_toggles:
+                self._set_widget_value(var, config.feature_toggles[name])
+        for key, var in getattr(self, "button_vars", {}).items():
+            if key in config.feature_toggles:
+                self._set_widget_value(var, config.feature_toggles[key])
+        pen_absolute_var = getattr(self, "pen_absolute_var", None)
+        if pen_absolute_var is not None:
+            self._set_widget_value(pen_absolute_var,
+                                   config.feature_toggles.get("pen_absolute_mode", True))
+        self.saved_actions = dict(config.action_mapping)
+        for combo_map in (getattr(self, "action_combos", {}),
+                          getattr(self, "pen_combos", {}),
+                          getattr(self, "button_combos", {})):
+            for key, combo in combo_map.items():
+                self._set_widget_value(
+                    combo, action_display_value(config.action_mapping.get(key), options))
+        orientation_widget = getattr(self, "orientation_widget", None)
+        if orientation_widget is not None and hasattr(orientation_widget, "draw_degrees"):
+            orientation_widget.draw_degrees(config.orientation_degrees)
 
     def assign_alias(self):
-        """Bind the focused device to a settings alias (manual override, U72 §4)."""
+        """Name the focused device: stores the alias under its identity key (U87 a)."""
         alias = self.alias_entry.get().strip()
         if not alias:
             messagebox.showerror("Invalid Alias", "Enter an alias name before assigning it.")
@@ -452,13 +568,16 @@ class SettingsWindow(tk.Toplevel):
         conn = self.device_info["connection"]
         base = self.device_info["base_config"]
         conn["alias"] = alias
+        identity = conn.get("identity")
+        if identity is not None:
+            base.set_device_alias(identity, alias)
         # The binding lets this product id resolve to the alias on the next
         # connection; the receiver twin is never auto-aliased.
         base.set_device_entry(alias, {}, bindings=[conn["product_id"]])
-        self.device_label.configure(
-            text=f"{conn['product_string']} — alias: {alias}")
+        self.device_label.configure(text=device_display_name(conn))
+        self._refresh_device_combo()
         ToastNotification(self, "Alias Assigned",
-                          f"Device bound to alias '{alias}'. Save to persist.",
+                          f"Device named '{alias}'. Save to persist.",
                           timeout_ms=1800)
         return True
 
@@ -951,6 +1070,34 @@ class SettingsWindow(tk.Toplevel):
             return False
 
         ToastNotification(self, "Success", "Settings applied directly to driver!", timeout_ms=1500)
+        return True
+
+    def save_to_focused_device(self):
+        """Subset save (U87 e): only the focused device's values, under its key.
+
+        The main Save button keeps writing the global sections; this button
+        writes nothing else, so one device's values never leak into another.
+        """
+        if not self.apply_settings():
+            return False
+
+        conn = self.device_info["connection"]
+        base = self.device_info["base_config"]
+        identity = conn.get("identity")
+        if identity is None:
+            messagebox.showerror(
+                "No Device Identity",
+                "This connection carries no identity key; nothing was saved.")
+            return False
+
+        base.set_device_identity_settings(
+            identity, collect_config_sections(conn["config"], DEVICE_TRANSFER_SECTIONS))
+        filepath = getattr(base, "save_path", "user.cfg")
+        base.save_to_file(filepath)
+
+        ToastNotification(self, "Device Saved",
+                          f"Saved {device_display_name(conn)} under its identity key.",
+                          timeout_ms=1800)
         return True
 
     def save_to_file(self):

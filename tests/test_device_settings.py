@@ -329,6 +329,34 @@ class FakeEntry:
     def get(self):
         return self.value
 
+    def delete(self, start, end=None):
+        self.value = ""
+
+    def insert(self, index, text):
+        self.value = (self.value or "") + text
+
+
+class FakeCombo:
+    """Duck-typed ttk.Combobox: value list plus a current selection index."""
+
+    def __init__(self, values=None, current=0):
+        self.values = list(values or [])
+        self._current = current if self.values else -1
+
+    def __setitem__(self, key, value):
+        if key == "values":
+            self.values = list(value)
+            self._current = 0 if self.values else -1
+
+    def current(self, index=None):
+        if index is None:
+            return self._current
+        self._current = index
+
+    def get(self):
+        if 0 <= self._current < len(self.values):
+            return self.values[self._current]
+        return ""
 
 class FakeVar:
     def __init__(self, value):
@@ -367,15 +395,29 @@ class FakeDeviceWindow:
         self.action_combos = {}
         self.alias_entry = FakeEntry(alias)
         self.copy_alias_combo = FakeEntry(target)
+        self.devices_combo = FakeCombo([conn["product_string"]])
         self.copy_section_vars = {
             name: FakeVar(value)
             for name, value in (sections or {}).items()}
         self.device_label = FakeLabel(conn["product_string"])
         self.apply_settings = types.MethodType(gui.SettingsWindow.apply_settings, self)
         self.save_to_file = types.MethodType(gui.SettingsWindow.save_to_file, self)
+        self.save_to_focused_device = types.MethodType(
+            gui.SettingsWindow.save_to_focused_device, self)
         self.assign_alias = types.MethodType(gui.SettingsWindow.assign_alias, self)
         self.copy_settings_to_alias = types.MethodType(
             gui.SettingsWindow.copy_settings_to_alias, self)
+        self._live_connections = types.MethodType(
+            gui.SettingsWindow._live_connections, self)
+        self._refresh_device_combo = types.MethodType(
+            gui.SettingsWindow._refresh_device_combo, self)
+        self._rebind_focused_device = types.MethodType(
+            gui.SettingsWindow._rebind_focused_device, self)
+        self._set_widget_value = gui.SettingsWindow._set_widget_value
+        self._rebind_config_widgets = types.MethodType(
+            gui.SettingsWindow._rebind_config_widgets, self)
+        self._on_device_selected = types.MethodType(
+            gui.SettingsWindow._on_device_selected, self)
 
 
 @pytest.fixture
@@ -432,7 +474,7 @@ def test_assign_alias_binds_connection(device_surface):
     assert win.assign_alias() is True
     assert conn["alias"] == "wacom-intuos5-m"
     assert base.devices["wacom-intuos5-m"]["bindings"] == [789]
-    assert "alias: wacom-intuos5-m" in win.device_label.text
+    assert win.device_label.text == "wacom-intuos5-m"
 
 
 def test_assign_alias_rejects_empty(device_surface):

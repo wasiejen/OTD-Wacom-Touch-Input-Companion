@@ -4,6 +4,19 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261031-0406:
+- device identity (approved packet parts a, b, e): one interface's identity key
+  is a 12-hex sha1 over its full HID interface path plus its serial string,
+  never a bare interface index. The device bar feeds a focused-device combo on
+  the live connection list; unnamed devices show their interface name.
+- Alias lane in `user.cfg`: `device_alias_<hash>` stores the user name of one
+  device; assigning an alias renames the focused device and reloads it on the
+  next start. Per-device lane `device_settings_<hash>` carries motion, toggle
+  and mapping sections; those values overlay the alias entry, global values
+  stay the fallback default.
+- "Save to Device" button on the device bar writes ONLY the focused device's
+  current values under its identity key; the main Save button is unchanged.
+
 261031-0315:
 - device orientation rotation (approved packet a,b,c,d): `orientation_degrees`
   (0..359, 1° steps) rotates touch contacts and pen points about the tablet

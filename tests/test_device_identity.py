@@ -6,7 +6,14 @@ Device-free: tmp files only, no real device, no GUI window.
 import json
 import threading
 
+import gui
 import pytest
+
+from test_device_settings import (
+    FakeDeviceWindow,
+    FakeEntry,
+    FakeMessageBox,
+)
 
 from touch_controller import (
     DEVICE_ALIAS_PREFIX,
@@ -18,6 +25,7 @@ from touch_controller import (
 
 
 WACOM_PATH = b"ACM&W87&0&MI_00"
+OTHER_PATH = b"ACM&W87&0&MI_10"
 
 
 # --- identity rule (U87 a) ----------------------------------------------------
@@ -222,3 +230,134 @@ def test_stored_identity_alias_wins_over_model_class(monkeypatch, tmp_path, fake
     stop.set()
     for thread in conn["threads"].values():
         thread.join(2)
+
+
+# --- GUI device bar on a duck-typed surface (U87 a, e) ------------------------
+
+class ManagerStub:
+    """Live device list for the focused-device combo; no threads, no device."""
+
+    def __init__(self, conns):
+        self._conns = conns
+
+    def list_connections(self):
+        return self._conns
+
+
+@pytest.fixture
+def identity_surface(monkeypatch, tmp_path):
+    """Base config, two live connections (one named, one unnamed) and a stub box."""
+    monkeypatch.chdir(tmp_path)
+    box = FakeMessageBox()
+    monkeypatch.setattr(gui, "messagebox", box)
+    monkeypatch.setattr(gui, "ToastNotification", lambda *args, **kwargs: None)
+    base = DriverConfig()
+    base.save_path = str(tmp_path / "user.cfg")
+    identity = device_identity_hash(WACOM_PATH)
+    other = device_identity_hash(OTHER_PATH)
+    conn = {"id": "dev-0", "identity": identity, "product_id": 789,
+            "product_string": "Wacom Intuos5 touch M", "alias": "Kitchen Intuos",
+            "config": base.fork_for_device(None, identity)}
+    other_conn = {"id": "dev-1", "identity": other, "product_id": 791,
+                  "product_string": "Wacom Intuos5 touch L", "alias": None,
+                  "config": base.fork_for_device(None, other)}
+    info = {"connection": conn, "base_config": base,
+            "manager": ManagerStub([conn, other_conn])}
+    return base, info, conn, other_conn, box
+
+
+
+
+def test_subset_save_writes_exactly_its_device_key(identity_surface, tmp_path):
+    base, info, conn, other_conn, box = identity_surface
+    win = FakeDeviceWindow(base, conn)
+    win.entries = {"cursor_speed_low": FakeEntry("9.5"), "pen_speed": FakeEntry("6.0")}
+
+    assert win.save_to_focused_device() is True
+
+    data = json.loads((tmp_path / "user.cfg").read_text())
+    key = f"{DEVICE_SETTINGS_PREFIX}{conn['identity']}"
+    assert data[key]["motion_and_thresholds"]["cursor_speed_low"] == 9.5
+    assert data[key]["motion_and_thresholds"]["pen_speed"] == 6.0
+    # Only this device's key: the twin's key is not written, globals stay.
+    assert f"{DEVICE_SETTINGS_PREFIX}{other_conn['identity']}" not in data
+    assert data["motion_and_thresholds"]["cursor_speed_low"] == 5.0
+    assert base.device_settings[conn["identity"]] == \
+        data[key]
+
+
+def test_subset_save_leaves_other_devices_untouched(identity_surface, tmp_path):
+    base, info, conn, other_conn, box = identity_surface
+    base.set_device_identity_settings(other_conn["identity"], {
+        "motion_and_thresholds": {"cursor_speed_low": 12.0}})
+    win = FakeDeviceWindow(base, conn)
+    win.entries = {"cursor_speed_low": FakeEntry("9.5")}
+
+    assert win.save_to_focused_device() is True
+
+    data = json.loads((tmp_path / "user.cfg").read_text())
+    other_key = f"{DEVICE_SETTINGS_PREFIX}{other_conn['identity']}"
+    assert data[other_key]["motion_and_thresholds"]["cursor_speed_low"] == 12.0
+
+
+def test_subset_save_without_identity_reports(identity_surface, tmp_path):
+    base, info, conn, other_conn, box = identity_surface
+    conn.pop("identity")
+    win = FakeDeviceWindow(base, conn)
+
+    assert win.save_to_focused_device() is False
+    assert box.errors and box.errors[0][0] == "No Device Identity"
+    assert not (tmp_path / "user.cfg").exists()
+
+
+def test_alias_rename_persists_under_identity_key(identity_surface, tmp_path):
+    base, info, conn, other_conn, box = identity_surface
+    win = FakeDeviceWindow(base, conn, alias="Bedroom Tablet")
+
+    assert win.assign_alias() is True
+    assert conn["alias"] == "Bedroom Tablet"
+    base.save_to_file()
+
+    fresh = DriverConfig()
+    assert fresh.load_from_file(str(tmp_path / "user.cfg")) is True
+    assert fresh.alias_for_identity(conn["identity"]) == "Bedroom Tablet"
+    assert json.loads((tmp_path / "user.cfg").read_text())[
+        f"{DEVICE_ALIAS_PREFIX}{conn['identity']}"] == "Bedroom Tablet"
+
+
+def test_combo_lists_live_devices_with_fallback_names(identity_surface):
+    base, info, conn, other_conn, box = identity_surface
+    win = FakeDeviceWindow(base, conn)
+    win.device_info = info
+
+    win._refresh_device_combo()
+
+    assert win.devices_combo.values == ["Kitchen Intuos", "Wacom Intuos5 touch L"]
+    assert win.devices_combo.current() == 0
+
+
+def test_focus_switch_repoints_config_and_widgets(identity_surface):
+    base, info, conn, other_conn, box = identity_surface
+    win = FakeDeviceWindow(base, conn)
+    win.device_info = info
+    win.entries = {"cursor_speed_low": FakeEntry("9.5")}
+    win._refresh_device_combo()
+
+    win.devices_combo.current(1)
+    assert win._on_device_selected() is True
+
+    assert win.config is other_conn["config"]
+    assert win.device_label.text == "Wacom Intuos5 touch L"
+    assert win.alias_entry.value == ""
+    # The reloaded widget value comes from the newly focused device.
+    assert win.entries["cursor_speed_low"].get() == "5.0"
+
+
+def test_focus_switch_on_same_device_is_noop(identity_surface):
+    base, info, conn, other_conn, box = identity_surface
+    win = FakeDeviceWindow(base, conn)
+    win.device_info = info
+    win._refresh_device_combo()
+
+    assert win._on_device_selected() is False
+    assert win.config is conn["config"]
