@@ -23,6 +23,7 @@ from touch_controller import (
     pen_specs_for_product,
     process_pen_report,
     rotated_pen_extents,
+    update_pen_cursor,
 )
 
 SPECS = {"max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7}
@@ -225,6 +226,25 @@ def test_filled_models_drive_the_pen_consumers():
     assert pen_rotation_center(specs_791) == (2048.0, 2048.0)
     assert rotated_pen_extents(specs_788, 0) == (0, 0, 4096, 4096)
     assert rotated_pen_extents(specs_791, 90) == (0, 0, 4096, 4096)
+
+
+def test_filled_models_clamp_absolute_and_scale_relative(state, dispatcher, config,
+                                                          stub_send_input):
+    # The two P1 lanes the filled box feeds (reviewer fire-2):
+    # absolute mode clamps coordinates above the 4096 square to the desktop
+    # edge (data-validity flag); relative mode scales per-model mm/count
+    # asymmetrically for 788: x 215.9/4096, y 134.6/4096 (at speed 8:
+    # 400 counts -> 168 px x and 105 px y, not the 200 counts/mm Medium math).
+    specs = pen_specs_for_product(788)
+    update_pen_cursor(state, dispatcher, config, specs, 5000, 5000)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 65535)
+    config.feature_toggles["pen_absolute_mode"] = False
+    config.pen_speed = 8.0
+    state.pen_position = None  # origin reset: the next report starts the delta lane
+    update_pen_cursor(state, dispatcher, config, specs, 0, 0)
+    stub_send_input.clear()
+    update_pen_cursor(state, dispatcher, config, specs, 400, 400)
+    assert stub_send_input == [("mouse", 0x0001, 0, 168, 105)]
 
 
 def test_wireless_receiver_id_prints_the_named_fallback_line(capsys):

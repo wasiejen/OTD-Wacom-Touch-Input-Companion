@@ -4,6 +4,15 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261103-1430:
+
+- reviewer fire-2 (P0=0 floor PASS) P1 follow-up (U311b): pin the two
+  unpinned consumer lanes — absolute mode with the 788 box clamps
+  coordinates above 4096 to the desktop edge (5000 -> 65535), and relative
+  mode scales per-model mm/count (speed 8: 400 counts -> 168 px x,
+  105 px y; the 134.6/4096 y axis, not Medium's 200 counts/mm). RED-before
+  at the Medium fallback (7333.6 -> 7333, 16/16 px).
+
 261103-1415:
 
 - review cycle on the 1400 fill (U311b): table comment states the data
