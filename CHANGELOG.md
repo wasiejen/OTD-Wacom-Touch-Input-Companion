@@ -4,6 +4,22 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261103-1415:
+
+- review cycle on the 1400 fill (U311b): table comment states the data
+  provenance honestly (jsonc commit d1d70e12 supplied via the task spec, NOT
+  resolvable in this repo) and records DATA-VALIDITY FLAGS for the
+  maintainer's hardware acceptance — the square 4096/4096 box is anisotropic
+  (18.97 x 30.43 counts/mm vs 789's exact 200.0), absolute mode clamps above
+  4096 in update_pen_cursor if the models report 16-bit coordinates,
+  pen_rotation_center lands at (2048.0, 2048.0), and the Large row's area is
+  numerically smaller than the Small row's. Numbers stay verbatim maintainer
+  data; no code-side adjustment.
+- Pins: added consumer pins (pen_rotation_center + rotated_pen_extents on the
+  resolved 788/791 dicts, byte-exact, RED-before at the Medium fallback
+  center 22352.0/13970.0); removed the two subsumed pins (is-not-default
+  identity leg, redundant distinct-set check).
+
 261103-1400:
 
 - per-model pen tables data fill (TODO #311, U311b): the two PENDING slots

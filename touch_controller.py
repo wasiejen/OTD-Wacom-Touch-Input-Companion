@@ -1133,10 +1133,20 @@ PEN_VIRTUAL_RESOLUTION = 65535
 # Digitizer ranges per product id: one explicit per-model entry keyed by the
 # wired product_id. 789 (PTH-651, Medium) is pinned from upstream
 # Wacom/PTH-651.json. 788 (PTH-451, Small) and 791 (PTH-851, Large) carry the
-# maintainer's device data (jsonc commit d1d70e12): 4096/4096 extents,
-# 215.9 mm wide, 134.6 mm tall (Small) and 118.6 mm tall (Large). Ids with no
-# entry (unknown ids, the wireless receiver id 132) resolve through the named
-# fallback line below.
+# maintainer's device data (jsonc commit d1d70e12, supplied via the U311b
+# task spec; the commit is NOT resolvable in this repo): both carry 4096/4096
+# extents and a 215.9 mm width, 134.6 mm tall (Small) and 118.6 mm tall
+# (Large). DATA-VALIDITY FLAGS — recorded for the maintainer's hardware
+# acceptance (TODO #311), do NOT adjust from code without device data:
+#  - 789 is exactly 200.0 counts/mm; the 4096/4096 square box is 18.97 x
+#    30.43 counts/mm (788) and 18.97 x 34.54 (791). If 788/791 report 16-bit
+#    coordinates like their pinned sibling, absolute mode clamps above 4096
+#    in update_pen_cursor, and pen_rotation_center lands at (2048.0, 2048.0)
+#    for a 1.6:1 rectangle (rotated_pen_extents pivots about it at 90/270).
+#  - The Large row (215.9 x 118.6 mm) is numerically SMALLER in area than the
+#    Small row (215.9 x 134.6 mm) — the model names disagree.
+# Ids with no entry (unknown ids, the wireless receiver id 132) resolve
+# through the named fallback line below.
 PEN_SPECS_BY_PRODUCT = {
     789: {"max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7},
     788: {"max_x": 4096, "max_y": 4096, "width_mm": 215.9, "height_mm": 134.6},

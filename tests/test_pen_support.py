@@ -19,8 +19,10 @@ from touch_controller import (
     decode_pen_position,
     decode_pen_pressure,
     parse_pen_packet,
+    pen_rotation_center,
     pen_specs_for_product,
     process_pen_report,
+    rotated_pen_extents,
 )
 
 SPECS = {"max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7}
@@ -196,24 +198,33 @@ def test_known_models_route_to_their_own_tables_quietly(capsys):
     for product_id in (789, 788, 791):
         specs = pen_specs_for_product(product_id)
         assert specs is touch_controller.PEN_SPECS_BY_PRODUCT[product_id]
-    # The two filled models do NOT share the Medium default table.
-    for product_id in (788, 791):
-        assert (pen_specs_for_product(product_id)
-                is not touch_controller.PEN_SPECS_DEFAULT)
     assert capsys.readouterr().out == ""
 
 
 def test_models_carry_valued_distinct_tables():
-    # Maintainer device data (jsonc commit d1d70e12): the three models carry
-    # byte-exact valued dicts and the three tables are distinct.
+    # Maintainer device data (jsonc commit d1d70e12, supplied via task spec;
+    # the commit is not resolvable in this repo): the three models carry
+    # byte-exact, per-model distinct dicts.
     assert touch_controller.PEN_SPECS_BY_PRODUCT[788] == {
         "max_x": 4096, "max_y": 4096, "width_mm": 215.9, "height_mm": 134.6}
     assert touch_controller.PEN_SPECS_BY_PRODUCT[791] == {
         "max_x": 4096, "max_y": 4096, "width_mm": 215.9, "height_mm": 118.6}
     assert touch_controller.PEN_SPECS_BY_PRODUCT[789] == {
         "max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7}
-    tables = tuple(touch_controller.PEN_SPECS_BY_PRODUCT.values())
-    assert len({tuple(sorted(table.items())) for table in tables}) == 3
+
+
+def test_filled_models_drive_the_pen_consumers():
+    # The resolved 788/791 dicts drive the pen math byte-exactly: the square
+    # 4096/4096 box centers at (2048.0, 2048.0) (not the 789 Medium center),
+    # and the unrotated/rotated extents land on that square. Data-validity
+    # flags (square extents, center, clamp) are recorded in the table comment
+    # for maintainer hardware acceptance (TODO #311).
+    specs_788 = pen_specs_for_product(788)
+    specs_791 = pen_specs_for_product(791)
+    assert pen_rotation_center(specs_788) == (2048.0, 2048.0)
+    assert pen_rotation_center(specs_791) == (2048.0, 2048.0)
+    assert rotated_pen_extents(specs_788, 0) == (0, 0, 4096, 4096)
+    assert rotated_pen_extents(specs_791, 90) == (0, 0, 4096, 4096)
 
 
 def test_wireless_receiver_id_prints_the_named_fallback_line(capsys):
