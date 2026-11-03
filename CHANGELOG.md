@@ -22,9 +22,12 @@ on GitHub mark shipped states — `v0.2.2` is the latest release.
   defaults" line). Medium behavior is unchanged; relative speed scaling,
   rotation center and rotated-extent math all read the resolved specs dict
   untouched.
-- Device-free pins: known id routes to its own table quietly; pending ids
-  (788/791/132) and unknown ids print the named line byte-exact. RED-before
-  measured: 3 pins FAIL pre-change (old line shape + KeyError).
+- Device-free pins: known id routes to its own table quietly; the pending
+  ids (788/791) and ids with no entry at all (e.g. wireless receiver 132,
+  999) print the named line byte-exact. RED-before measured: 3 pins FAIL
+  pre-change (old line shape + KeyError).
+
+261103-0447:
 
 - import-order fix (latent NameError at module import, TODO #311 lead):
   the module-level `config = DriverConfig()` runs at import and validates
