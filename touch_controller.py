@@ -1132,17 +1132,15 @@ PEN_VIRTUAL_RESOLUTION = 65535
 
 # Digitizer ranges per product id: one explicit per-model entry keyed by the
 # wired product_id. 789 (PTH-651, Medium) is pinned from upstream
-# Wacom/PTH-651.json. 788 (PTH-451, Small) and 791 (PTH-851, Large) are
-# explicit PENDING entries (value None): their real extents are not recorded
-# in this repo and the upstream datasheet values were unavailable (404) at
-# implementation time — NO numbers are invented. Pending ids resolve through
-# the named fallback line below; fill each entry with the extents measured
-# on hardware (max_x/max_y/width_mm/height_mm), then the model routes to its
-# own table without any code change to the resolver.
+# Wacom/PTH-651.json. 788 (PTH-451, Small) and 791 (PTH-851, Large) carry the
+# maintainer's device data (jsonc commit d1d70e12): 4096/4096 extents,
+# 215.9 mm wide, 134.6 mm tall (Small) and 118.6 mm tall (Large). Ids with no
+# entry (unknown ids, the wireless receiver id 132) resolve through the named
+# fallback line below.
 PEN_SPECS_BY_PRODUCT = {
     789: {"max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7},
-    788: None,  # PTH-451 Small — extents pending hardware measurement
-    791: None,  # PTH-851 Large — extents pending hardware measurement
+    788: {"max_x": 4096, "max_y": 4096, "width_mm": 215.9, "height_mm": 134.6},
+    791: {"max_x": 4096, "max_y": 4096, "width_mm": 215.9, "height_mm": 118.6},
 }
 PEN_SPECS_DEFAULT = PEN_SPECS_BY_PRODUCT[789]
 
@@ -1150,7 +1148,7 @@ def pen_specs_for_product(product_id):
     """Digitizer ranges for the pen device.
 
     A product with a table entry routes to its own model. A product with no
-    entry (unknown id, or a pending per-model entry) prints ONE byte-stable
+    entry (unknown id, wireless receiver id 132) prints ONE byte-stable
     named fallback line and uses the Medium defaults.
     """
     specs = PEN_SPECS_BY_PRODUCT.get(product_id)

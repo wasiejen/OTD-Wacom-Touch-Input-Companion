@@ -191,32 +191,41 @@ def test_short_packet_and_tool_report_are_tolerated(state, dispatcher, config, s
     assert state.pen_position is None
 
 
-def test_known_product_routes_to_its_table_quietly(capsys):
-    assert pen_specs_for_product(789) is touch_controller.PEN_SPECS_BY_PRODUCT[789]
+def test_known_models_route_to_their_own_tables_quietly(capsys):
+    # All three wired model ids resolve to their OWN table, no print.
+    for product_id in (789, 788, 791):
+        specs = pen_specs_for_product(product_id)
+        assert specs is touch_controller.PEN_SPECS_BY_PRODUCT[product_id]
+    # The two filled models do NOT share the Medium default table.
+    for product_id in (788, 791):
+        assert (pen_specs_for_product(product_id)
+                is not touch_controller.PEN_SPECS_DEFAULT)
     assert capsys.readouterr().out == ""
 
 
-def test_pending_models_print_the_named_fallback_line(capsys):
-    # 788 (PTH-451 small) and 791 (PTH-851 large) have explicit table entries
-    # pending hardware extents; 132 is the wireless receiver id. Each falls
-    # back to Medium with ONE byte-stable named line per call.
-    for product_id in (788, 791, 132):
-        assert pen_specs_for_product(product_id) is touch_controller.PEN_SPECS_DEFAULT
-    assert capsys.readouterr().out == (
-        "pen_specs= no-table product=788 using=medium\n"
-        "pen_specs= no-table product=791 using=medium\n"
-        "pen_specs= no-table product=132 using=medium\n"
-    )
+def test_models_carry_valued_distinct_tables():
+    # Maintainer device data (jsonc commit d1d70e12): the three models carry
+    # byte-exact valued dicts and the three tables are distinct.
+    assert touch_controller.PEN_SPECS_BY_PRODUCT[788] == {
+        "max_x": 4096, "max_y": 4096, "width_mm": 215.9, "height_mm": 134.6}
+    assert touch_controller.PEN_SPECS_BY_PRODUCT[791] == {
+        "max_x": 4096, "max_y": 4096, "width_mm": 215.9, "height_mm": 118.6}
+    assert touch_controller.PEN_SPECS_BY_PRODUCT[789] == {
+        "max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7}
+    tables = tuple(touch_controller.PEN_SPECS_BY_PRODUCT.values())
+    assert len({tuple(sorted(table.items())) for table in tables}) == 3
+
+
+def test_wireless_receiver_id_prints_the_named_fallback_line(capsys):
+    # 132 is the wireless receiver id: no table entry, so it falls back to
+    # Medium with ONE byte-stable named line per call.
+    assert pen_specs_for_product(132) is touch_controller.PEN_SPECS_DEFAULT
+    assert capsys.readouterr().out == "pen_specs= no-table product=132 using=medium\n"
 
 
 def test_unknown_product_prints_the_named_fallback_line(capsys):
     assert pen_specs_for_product(999) is touch_controller.PEN_SPECS_DEFAULT
     assert capsys.readouterr().out == "pen_specs= no-table product=999 using=medium\n"
-
-
-def test_pending_models_have_explicit_table_entries():
-    assert touch_controller.PEN_SPECS_BY_PRODUCT[788] is None
-    assert touch_controller.PEN_SPECS_BY_PRODUCT[791] is None
 
 
 def test_pen_config_round_trip(monkeypatch, tmp_path):

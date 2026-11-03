@@ -4,6 +4,22 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261103-1400:
+
+- per-model pen tables data fill (TODO #311, U311b): the two PENDING slots
+  `PEN_SPECS_BY_PRODUCT[788]` (PTH-451, Small) and `[791]` (PTH-851, Large)
+  are filled with the maintainer's device data (jsonc commit `d1d70e12`):
+  788 = max_x 4096, max_y 4096, 215.9 x 134.6 mm; 791 = max_x 4096,
+  max_y 4096, 215.9 x 118.6 mm. Both models now route to their own table
+  quietly; ids with no entry (unknown ids, wireless receiver 132) keep the
+  named fallback line. Large-tablet full-pen-area acceptance stays with the
+  maintainer (hardware).
+- Pins: all three wired ids (789/788/791) route to their own table with no
+  print; the two filled models do not share the Medium default; the three
+  byte-exact dicts are distinct; 132 + 999 print the named line byte-exact.
+  RED-before measured: the routing and dict pins FAIL pre-fill
+  (None slots).
+
 261103-0448:
 
 - per-model pen tables structure (TODO #311, research Draft A):
