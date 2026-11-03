@@ -4,7 +4,27 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
-261103-0447:
+261103-0448:
+
+- per-model pen tables structure (TODO #311, research Draft A):
+  `PEN_SPECS_BY_PRODUCT` now carries explicit per-model entries keyed by the
+  wired product id. 789 (PTH-651, Medium) is pinned unchanged from upstream
+  Wacom/PTH-651.json. 788 (PTH-451, Small) and 791 (PTH-851, Large) are
+  explicit PENDING entries (value `None`): their real digitizer extents are
+  not recorded in this repo, the git history never carried them, and the
+  upstream datasheet values returned 404 at implementation time — no
+  numbers are invented. The real extents land as a maintainer-hardware
+  input item; filling an entry routes that model to its own table with no
+  resolver change.
+- the fallback path prints ONE byte-stable named line for a product with no
+  table: `pen_specs= no-table product=<id> using=medium` (replaces the old
+  "[Pen] No digitizer ranges for product ...; using Intuos Pro Medium
+  defaults" line). Medium behavior is unchanged; relative speed scaling,
+  rotation center and rotated-extent math all read the resolved specs dict
+  untouched.
+- Device-free pins: known id routes to its own table quietly; pending ids
+  (788/791/132) and unknown ids print the named line byte-exact. RED-before
+  measured: 3 pins FAIL pre-change (old line shape + KeyError).
 
 - import-order fix (latent NameError at module import, TODO #311 lead):
   the module-level `config = DriverConfig()` runs at import and validates

@@ -191,11 +191,32 @@ def test_short_packet_and_tool_report_are_tolerated(state, dispatcher, config, s
     assert state.pen_position is None
 
 
-def test_pen_specs_table_and_unknown_fallback(capsys):
+def test_known_product_routes_to_its_table_quietly(capsys):
     assert pen_specs_for_product(789) is touch_controller.PEN_SPECS_BY_PRODUCT[789]
-    specs = pen_specs_for_product(132)
-    assert specs["max_x"] == 44704
-    assert "No digitizer ranges" in capsys.readouterr().out
+    assert capsys.readouterr().out == ""
+
+
+def test_pending_models_print_the_named_fallback_line(capsys):
+    # 788 (PTH-451 small) and 791 (PTH-851 large) have explicit table entries
+    # pending hardware extents; 132 is the wireless receiver id. Each falls
+    # back to Medium with ONE byte-stable named line per call.
+    for product_id in (788, 791, 132):
+        assert pen_specs_for_product(product_id) is touch_controller.PEN_SPECS_DEFAULT
+    assert capsys.readouterr().out == (
+        "pen_specs= no-table product=788 using=medium\n"
+        "pen_specs= no-table product=791 using=medium\n"
+        "pen_specs= no-table product=132 using=medium\n"
+    )
+
+
+def test_unknown_product_prints_the_named_fallback_line(capsys):
+    assert pen_specs_for_product(999) is touch_controller.PEN_SPECS_DEFAULT
+    assert capsys.readouterr().out == "pen_specs= no-table product=999 using=medium\n"
+
+
+def test_pending_models_have_explicit_table_entries():
+    assert touch_controller.PEN_SPECS_BY_PRODUCT[788] is None
+    assert touch_controller.PEN_SPECS_BY_PRODUCT[791] is None
 
 
 def test_pen_config_round_trip(monkeypatch, tmp_path):
