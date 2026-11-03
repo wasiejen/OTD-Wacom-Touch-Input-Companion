@@ -378,6 +378,20 @@ class ActionDispatcher():
              
 
 # ==============================================================================
+# SHARED ROTATION CONSTANTS (U74)
+# ==============================================================================
+# Defined here, before the config class: the module-level DriverConfig
+# instance at the end of that class validates orientation_degrees, so the
+# bounds constant must exist at import time.
+# Touch sub-blocks decode to 0..4095 (parse_sub_block), so the touch rotation
+# center is that square's middle. The pen rotation center is the digitizer
+# center from the per-model ranges (PEN_SPECS_BY_PRODUCT / PTH-651).
+TOUCH_COORD_MAX = 4095
+TOUCH_ROTATION_CENTER = (TOUCH_COORD_MAX / 2, TOUCH_COORD_MAX / 2)
+ORIENTATION_MIN_DEGREES = 0
+ORIENTATION_MAX_DEGREES = 359
+
+# ==============================================================================
 # CONFIGURATION CLASS
 # ==============================================================================
 # Settings alias rule (U72 §4): model-class from the wired product_id.
@@ -1167,13 +1181,9 @@ DIAL_ANGLE_RANGE = 0x47
 # ==============================================================================
 # DEVICE ORIENTATION (U74) — shared rotation for touch and pen coordinates
 # ==============================================================================
-# Touch sub-blocks decode to 0..4095 (parse_sub_block), so the touch rotation
-# center is that square's middle. The pen rotation center is the digitizer
-# center from the per-model ranges (PEN_SPECS_BY_PRODUCT / PTH-651).
-TOUCH_COORD_MAX = 4095
-TOUCH_ROTATION_CENTER = (TOUCH_COORD_MAX / 2, TOUCH_COORD_MAX / 2)
-ORIENTATION_MIN_DEGREES = 0
-ORIENTATION_MAX_DEGREES = 359
+# The bounds and center constants (TOUCH_COORD_MAX, TOUCH_ROTATION_CENTER,
+# ORIENTATION_MIN/MAX_DEGREES) live above the config class: the module-level
+# DriverConfig instance validates orientation_degrees at import time.
 
 def rotate_point(x, y, degrees, center_x, center_y):
     """Rotate a device coordinate about the center by whole degrees.

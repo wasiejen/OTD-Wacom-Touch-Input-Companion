@@ -4,6 +4,18 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261103-0447:
+
+- import-order fix (latent NameError at module import, TODO #311 lead):
+  the module-level `config = DriverConfig()` runs at import and validates
+  `orientation_degrees`, which referenced `ORIENTATION_MAX_DEGREES` before
+  the constant was defined below the class. With a repo-root `user.cfg`
+  carrying an orientation key, importing the module raised NameError and
+  the whole test suite failed collection (16 collection errors, measured
+  pre-fix). The four U74 rotation constants (TOUCH_COORD_MAX,
+  TOUCH_ROTATION_CENTER, ORIENTATION_MIN/MAX_DEGREES) moved above the
+  config class; values, comments and behavior unchanged.
+
 261031-0720:
 
 - config load atomicity and validation (TODO #254): `load_from_file`
