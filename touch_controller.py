@@ -1139,12 +1139,19 @@ PEN_VIRTUAL_RESOLUTION = 65535
 # (Large). DATA-VALIDITY FLAGS — recorded for the maintainer's hardware
 # acceptance (TODO #311), do NOT adjust from code without device data:
 #  - 789 is exactly 200.0 counts/mm; the 4096/4096 square box is 18.97 x
-#    30.43 counts/mm (788) and 18.97 x 34.54 (791). If 788/791 report 16-bit
-#    coordinates like their pinned sibling, absolute mode clamps above 4096
-#    in update_pen_cursor, and pen_rotation_center lands at (2048.0, 2048.0)
-#    for a 1.6:1 rectangle (rotated_pen_extents pivots about it at 90/270).
+#    30.43 counts/mm (788) and 18.97 x 34.54 (791).
 #  - The Large row (215.9 x 118.6 mm) is numerically SMALLER in area than the
 #    Small row (215.9 x 134.6 mm) — the model names disagree.
+# HARDWARE REPORT (2026-11-04, maintainer device test, acceptance request
+# §3): wired Large tablet (791) pins the cursor at the LOWER-RIGHT CORNER
+# for every pen input; wireless (Medium fallback table) behaves like a
+# Medium pad, upper-left works, ~2/3 of width/height usable. The 791 pen
+# coordinates therefore run PAST the filled 4096 square (16-bit family
+# coordinates like 789's); the true 788/791 pen extents stay UNVERIFIED
+# (no probe data in probe/). The U344 autoscale lane (pen_effective_specs,
+# pen_extents_autoscale line) maps the box grown to the observed
+# coordinate range per session — the table stays as filled, numbers are
+# NOT adjusted from code.
 # Ids with no entry (unknown ids, the wireless receiver id 132) resolve
 # through the named fallback line below.
 PEN_SPECS_BY_PRODUCT = {
@@ -1262,6 +1269,26 @@ def rotated_pen_extents(pen_specs, degrees):
     cy = pen_specs["max_y"] / 2
     return (cx - width / 2, cy - height / 2, width, height)
 
+def pen_effective_specs(pen_specs, state):
+    """The declared digitizer box grown to the observed coordinate range.
+
+    Defensive lane (U344, TODO #311): the maintainer's 2026-11-04 hardware
+    report shows the 791 pen coordinates running past the filled 4096
+    square (wired cursor pinned at the lower-right corner; wireless under
+    the Medium fallback behaves like a Medium pad), so the true pen extents
+    stay unverified and the table stays as filled. The pen consumers map
+    THIS box: per axis the larger of the declared extent and the largest
+    coordinate observed in this session. A model reporting inside its
+    declared box returns the input dict unchanged (identity).
+    """
+    if state.pen_obs_max_x <= pen_specs["max_x"] and \
+            state.pen_obs_max_y <= pen_specs["max_y"]:
+        return pen_specs
+    grown = dict(pen_specs)
+    grown["max_x"] = max(pen_specs["max_x"], state.pen_obs_max_x)
+    grown["max_y"] = max(pen_specs["max_y"], state.pen_obs_max_y)
+    return grown
+
 # ==============================================================================
 # STATE TRACKER
 # ==============================================================================
@@ -1320,6 +1347,12 @@ class TabletState:
         self.pen_buttons = (False, False)
         self.pen_cursor_acc_x = 0.0
         self.pen_cursor_acc_y = 0.0
+        # U344 autoscale lane: the largest decoded pen coordinate per axis
+        # this session (raw, pre-orientation) plus the one-shot flag for
+        # the named autoscale line.
+        self.pen_obs_max_x = 0
+        self.pen_obs_max_y = 0
+        self.pen_extents_scaled_logged = False
 
         # Touch button/dial tracking (U71): last-seen byte 4 press bitmask,
         # central-button press state, dial origin angle and step accumulator.
@@ -1490,9 +1523,21 @@ def process_pen_report(report, state, action_dispatch, config, pen_specs):
         return
 
     x, y = decode_pen_position(report)
+    # U344 autoscale: track the raw observed coordinate range, map the box
+    # grown to it, and print ONE named line the first time it has to grow.
+    state.pen_obs_max_x = max(state.pen_obs_max_x, x)
+    state.pen_obs_max_y = max(state.pen_obs_max_y, y)
+    grown_specs = pen_effective_specs(pen_specs, state)
+    if grown_specs is not pen_specs and not state.pen_extents_scaled_logged:
+        print(f"pen_extents_autoscale declared_x={pen_specs['max_x']} "
+              f"declared_y={pen_specs['max_y']} "
+              f"observed_x={state.pen_obs_max_x} "
+              f"observed_y={state.pen_obs_max_y} using=observed")
+        state.pen_extents_scaled_logged = True
     # Orientation (U74): same shared transform as the touch contacts, about
-    # the digitizer center from the per-model ranges. Tilt stays ignored.
-    x, y = apply_orientation((x, y), config, pen_rotation_center(pen_specs))
+    # the digitizer center from the per-model ranges (U344: the grown box).
+    # Tilt stays ignored.
+    x, y = apply_orientation((x, y), config, pen_rotation_center(grown_specs))
     if is_rotation:
         # Bytes 6-7 carry rotation, not pressure; values carry over.
         new_buttons = state.pen_buttons
@@ -1510,7 +1555,7 @@ def process_pen_report(report, state, action_dispatch, config, pen_specs):
                 ad.release_pen_button(slot)
     state.pen_buttons = new_buttons
 
-    update_pen_cursor(state, ad, config, pen_specs, x, y)
+    update_pen_cursor(state, ad, config, grown_specs, x, y)
     update_pen_pressure_button(state, ad, config)
 
 def decode_button_report(report):

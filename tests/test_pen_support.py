@@ -60,6 +60,12 @@ def process(report, state, dispatcher, config):
     process_pen_report(report, state, dispatcher, config, SPECS)
 
 
+def process_791(report, state, dispatcher, config):
+    """The filled 791 table: the maintainer's Large tablet lane (U344)."""
+    process_pen_report(report, state, dispatcher, config,
+                       touch_controller.PEN_SPECS_BY_PRODUCT[791])
+
+
 def mouse_flags(events):
     return [e[1] for e in events if e[0] == "mouse"]
 
@@ -245,6 +251,79 @@ def test_filled_models_clamp_absolute_and_scale_relative(state, dispatcher, conf
     stub_send_input.clear()
     update_pen_cursor(state, dispatcher, config, specs, 400, 400)
     assert stub_send_input == [("mouse", 0x0001, 0, 168, 105)]
+
+
+def test_autoscale_grows_the_box_and_prints_one_named_line(state, dispatcher, config,
+                                                            stub_send_input, capsys):
+    # U344 hardware report (2026-11-04): the 791 pen coordinates run past
+    # the filled 4096 square (wired cursor pinned at the lower-right
+    # corner). The mapping box grows to the largest observed coordinate per
+    # axis and ONE byte-stable named line fires; later reports stay quiet.
+    process_791(build_pen_report(0x20, x=5000, y=5000), state, dispatcher, config)
+    assert capsys.readouterr().out == (
+        "pen_extents_autoscale declared_x=4096 declared_y=4096 "
+        "observed_x=5000 observed_y=5000 using=observed\n")
+    # Grown square box (5000,5000): the corner coordinate maps to the edge.
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 65535)
+    assert state.pen_obs_max_x == 5000
+    assert state.pen_obs_max_y == 5000
+    stub_send_input.clear()
+    process_791(build_pen_report(0x20, x=2500, y=2500), state, dispatcher, config)
+    assert capsys.readouterr().out == ""
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 32767, 32767)
+    assert state.pen_obs_max_x == 5000
+    assert state.pen_obs_max_y == 5000
+
+
+def test_effective_specs_drive_rotation_center_and_extents(state):
+    # The grown box feeds BOTH consumers: rotation center and extents take
+    # the grown max, not the declared 4096.
+    specs = touch_controller.PEN_SPECS_BY_PRODUCT[791]
+    state.pen_obs_max_x = 65535
+    state.pen_obs_max_y = 65535
+    grown = touch_controller.pen_effective_specs(specs, state)
+    assert grown is not specs
+    assert grown["max_x"] == 65535
+    assert grown["max_y"] == 65535
+    assert grown["width_mm"] == 215.9
+    assert touch_controller.pen_rotation_center(grown) == (32767.5, 32767.5)
+    assert touch_controller.rotated_pen_extents(grown, 0) == (0, 0, 65535, 65535)
+
+
+def test_effective_specs_passthrough_within_declared_box(state):
+    # A model reporting inside its declared box (789 lane) returns the
+    # declared dict unchanged: no copy, no grow.
+    specs = touch_controller.PEN_SPECS_BY_PRODUCT[789]
+    state.pen_obs_max_x = 1000
+    state.pen_obs_max_y = 1000
+    assert touch_controller.pen_effective_specs(specs, state) is specs
+
+
+def test_in_range_reports_keep_the_box_and_stay_quiet(state, dispatcher, config,
+                                                       stub_send_input, capsys):
+    # 789 full-box coordinate: observed max lands ON the declared edge, the
+    # box does not grow and no named line prints.
+    process(build_pen_report(0x20, x=44704, y=27940), state, dispatcher, config)
+    assert capsys.readouterr().out == ""
+    assert state.pen_obs_max_x == 44704
+    assert state.pen_obs_max_y == 27940
+    assert touch_controller.pen_effective_specs(SPECS, state) is SPECS
+
+
+def test_relative_mode_uses_the_grown_box(state, dispatcher, config, stub_send_input):
+    # Relative mode scales by the GROWN box too: the 791 square declared
+    # 4096 would scale counts like the 18.97 x 34.54 counts/mm flag math;
+    # the observed 16-bit range scales per the real physical width.
+    config.feature_toggles["pen_absolute_mode"] = False
+    config.pen_speed = 8.0
+    process_791(build_pen_report(0x20, x=65535, y=65535), state, dispatcher, config)
+    stub_send_input.clear()
+    process_791(build_pen_report(0x20, x=65935, y=65935), state, dispatcher, config)
+    # 400 counts at 215.9/65935 counts/mm (x) and 118.6/65935 (y), speed 8:
+    # x 10.47 px -> 10, y 5.75 px -> 5 (fractional parts stay accumulated).
+    assert stub_send_input == [("mouse", 0x0001, 0, 10, 5)]
+    assert state.pen_obs_max_x == 65935
+    assert state.pen_obs_max_y == 65935
 
 
 def test_wireless_receiver_id_prints_the_named_fallback_line(capsys):

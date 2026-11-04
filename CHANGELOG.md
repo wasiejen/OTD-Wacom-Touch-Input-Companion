@@ -4,6 +4,24 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261104-0127:
+
+- 791 pen projection fix (TODO #311, U344 goal 1): the maintainer's
+  2026-11-04 hardware report confirms the wired Large tablet pins the cursor
+  at the lower-right corner for every pen input — its pen coordinates run
+  past the filled 4096 square (16-bit family coordinates like 789's). The
+  true 788/791 pen extents stay UNVERIFIED (no probe data), so the code is
+  DEFENSIVE: a per-session autoscale lane (pen_effective_specs) grows the
+  mapping box to the largest observed coordinate per axis and prints ONE
+  named line `pen_extents_autoscale declared_x=… observed_x=… using=observed`;
+  rotation center, extents and relative scaling all consume the grown box.
+  Table values stay verbatim (no fabrication).
+- Pins: grown-box mapping with the named line byte-exact + one-shot (second
+  report silent), grown box feeds rotation center (32767.5) and extents,
+  declared-box passthrough (identity), 789 in-range reports stay quiet,
+  relative scaling on the grown 16-bit box. RED-before: all five FAIL at the
+  unchanged tree.
+
 261103-1430:
 
 - reviewer fire-2 (P0=0 floor PASS) P1 follow-up (U311b): pin the two
