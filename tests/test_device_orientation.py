@@ -196,7 +196,11 @@ def test_pen_absolute_point_rotates_around_digitizer_center(config, state,
 def test_pen_absolute_rotated_extents_reach_full_desktop(config, state,
                                                          dispatcher, stub_send_input):
     """Device-free projection pin (#274): the rotated digitizer box maps to
-    the full desktop at 90/270, corners exact."""
+    the full box at 90/270, corners exact. The stretch opt-in (U344 goal 3)
+    keeps the full-desktop corners byte-exactly; the 1:1 default scales the
+    rotated box (long axis = 90°-rotated height) at equal px-per-mm, so the
+    short axis lands in the centered band 12287..53247."""
+    config.feature_toggles["pen_stretch_full_desktop"] = True
     config.orientation_degrees = 90
     # NW tablet corner turns clockwise onto the desktop east edge.
     process_pen_report(build_pen_report(0x20, x=0, y=0),
@@ -212,6 +216,20 @@ def test_pen_absolute_rotated_extents_reach_full_desktop(config, state,
     process_pen_report(build_pen_report(0x20, x=44704, y=0),
                        state, dispatcher, config, SPECS)
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 0, 0)
+
+
+def test_pen_absolute_rotated_box_1to1_default(config, state,
+                                               dispatcher, stub_send_input):
+    # U344 goal 3: 1:1 default at 90°: the rotated box (extents 27940 x
+    # 44704) scales at 65535/44704; y reaches the full desktop, x lands in
+    # the centered band (NW corner east edge -> 53247, SE -> 12287).
+    config.orientation_degrees = 90
+    process_pen_report(build_pen_report(0x20, x=0, y=0),
+                       state, dispatcher, config, SPECS)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 53247, 0)
+    process_pen_report(build_pen_report(0x20, x=44704, y=27940),
+                       state, dispatcher, config, SPECS)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 12287, 65535)
 
 
 def test_pen_absolute_zero_orientation_mapping_is_unchanged(config, state,

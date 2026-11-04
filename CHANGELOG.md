@@ -4,6 +4,26 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261104-0130:
+
+- 25:9 ultrawide pen mapping (TODO #311, U344 goal 3): the maintainer
+  observed the whole ultrawide screen STRETCHED across the full pen area;
+  pen writing needs the movement relation 1:1 on both axes. New feature
+  toggle `pen_stretch_full_desktop` (default False): the DEFAULT absolute
+  mapping keeps equal px-per-mm on x and y — one scale from the longer box
+  axis, the box centered in the free band (25:9 screen: the pen area covers
+  a center slice, not the whole screen). `True` = the observed stretch
+  behavior, per-axis scales across the full desktop.
+- Pins: 1:1 default full-box corners (789: x full 0..65535, y centered
+  12287..53247, px-per-mm parity ratio pinned), stretch opt-in full-area
+  corners, direct clamp lane split (default 65535/56267, stretch
+  65535/65535), toggle default + round trip, rotated 90° box 1:1
+  (53247/12287/65535); the #274 rotated-corners pin moves to the
+  stretch=True lane (it pins the pre-U344 projection contract).
+  RED-before: the default-lane repins FAIL at the unchanged tree; the
+  stretch=True legs replay pre-U344 behavior BY DESIGN (no RED — the
+  toggle-presence pin carries the discriminator).
+
 261104-0145:
 
 - wireless pen size option (TODO #311, U344 goal 2): the wireless add-on is

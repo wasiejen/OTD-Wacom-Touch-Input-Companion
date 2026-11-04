@@ -101,14 +101,52 @@ def test_rotation_report_carries_previous_pressure(state, dispatcher, config, st
     assert mouse_flags(stub_send_input) == [ABS_FLAGS, 0x0002]
 
 
-def test_absolute_mode_maps_full_range(state, dispatcher, config, stub_send_input):
+def test_absolute_mode_default_maps_full_range_1to1(state, dispatcher, config, stub_send_input):
+    # U344 goal 3: the DEFAULT mapping keeps equal px-per-mm on both axes
+    # (pen writing is the primary use). The 789 box (223.52 x 139.7 mm)
+    # scales at the longer axis: x spans the full desktop, y the CENTERED
+    # band 12287..53247 in virtual space. On a 25:9 ultrawide the pen area
+    # then covers a center slice, not the stretched full screen.
+    process(build_pen_report(0x20, x=0, y=0), state, dispatcher, config)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 0, 12287)
+    process(build_pen_report(0x20, x=44704, y=27940), state, dispatcher, config)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 53247)
+    y_range = 53247 - 12287
+    assert abs(y_range / 139.7 - 65535 / 223.52) < 0.05
+
+
+def test_absolute_mode_stretch_opt_in_stretches_full_area(state, dispatcher,
+                                                          config, stub_send_input):
+    # Opt-in flag (U344 goal 3): the maintainer's ultrawide observation —
+    # the whole 25:9 screen stretched across the full pen area, per-axis
+    # scales, the pre-U344 default behavior.
+    config.feature_toggles["pen_stretch_full_desktop"] = True
     process(build_pen_report(0x20, x=44704, y=27940), state, dispatcher, config)
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 65535)
 
 
 def test_absolute_mode_clamps_above_max(state, dispatcher, config, stub_send_input):
-    process(build_pen_report(0x20, x=50000, y=30000), state, dispatcher, config)
+    # Direct consumer call (no autoscale observation): coordinates above
+    # the declared box clamp on the long axis; the 1:1 default scales y
+    # into the centered band, the stretch opt-in clamps both axes.
+    update_pen_cursor(state, dispatcher, config, SPECS, 50000, 30000)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 56267)
+    config.feature_toggles["pen_stretch_full_desktop"] = True
+    stub_send_input.clear()
+    update_pen_cursor(state, dispatcher, config, SPECS, 50000, 30000)
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 65535)
+
+
+def test_stretch_toggle_defaults_and_round_trips(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    cfg = DriverConfig()
+    assert cfg.feature_toggles["pen_stretch_full_desktop"] is False
+    cfg.feature_toggles["pen_stretch_full_desktop"] = True
+    path = tmp_path / "user.cfg"
+    cfg.save_to_file(str(path))
+    fresh = DriverConfig()
+    assert fresh.load_from_file(str(path)) is True
+    assert fresh.feature_toggles["pen_stretch_full_desktop"] is True
 
 
 def test_relative_mode_first_report_sets_origin_only(state, dispatcher, config, stub_send_input):

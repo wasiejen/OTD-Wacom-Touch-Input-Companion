@@ -665,6 +665,10 @@ class DriverConfig:
             "5f_pinch_out" : False,
             # Pen movement mode: True = absolute screen mapping, False = relative deltas.
             "pen_absolute_mode" : True,
+            # Ultrawide mapping (U344 goal 3): False = 1:1 on both axes
+            # (equal px-per-mm, centered slice); True = the whole digitizer
+            # box stretched across the full desktop per axis.
+            "pen_stretch_full_desktop" : False,
             # Touch buttons and rotary dial (U71): one toggle per control.
             "btn1_press" : True,
             "btn2_press" : True,
@@ -1493,10 +1497,27 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y):
         # without shifting any integer device coordinate's truncated result.
         left, top, extent_w, extent_h = rotated_pen_extents(
             pen_specs, config.orientation_degrees)
-        nx = min(max(int((x - left) * PEN_VIRTUAL_RESOLUTION / extent_w + 1e-9), 0),
-                 PEN_VIRTUAL_RESOLUTION)
-        ny = min(max(int((y - top) * PEN_VIRTUAL_RESOLUTION / extent_h + 1e-9), 0),
-                 PEN_VIRTUAL_RESOLUTION)
+        if config.feature_toggles.get("pen_stretch_full_desktop", False):
+            # Opt-in stretch (U344 goal 3): per-axis scales, the whole
+            # digitizer box stretched across the full desktop — the
+            # maintainer's ultrawide observation, kept as opt-in.
+            nx = min(max(int((x - left) * PEN_VIRTUAL_RESOLUTION / extent_w + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
+            ny = min(max(int((y - top) * PEN_VIRTUAL_RESOLUTION / extent_h + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
+        else:
+            # Default 1:1 (U344 goal 3): pen writing keeps equal px-per-mm
+            # on both axes. One scale from the longer box axis; the box is
+            # centered in the band the shorter axis leaves free. On a 25:9
+            # ultrawide the pen area covers a center slice of the screen,
+            # not the stretched whole screen.
+            scale = PEN_VIRTUAL_RESOLUTION / max(extent_w, extent_h)
+            offset_x = (PEN_VIRTUAL_RESOLUTION - scale * extent_w) / 2
+            offset_y = (PEN_VIRTUAL_RESOLUTION - scale * extent_h) / 2
+            nx = min(max(int(offset_x + (x - left) * scale + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
+            ny = min(max(int(offset_y + (y - top) * scale + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
         state.pen_position = (x, y)
         ad.send_pen_absolute_move(nx, ny)
         return
