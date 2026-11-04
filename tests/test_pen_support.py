@@ -4,6 +4,7 @@ Synthetic 10-byte 0x02 reports per the documented Intuos-V1 layout
 (agent/research/2026-10-31_u68-otd-pen-layout.md). No device, no GUI.
 """
 
+import json
 import threading
 import time
 
@@ -331,6 +332,93 @@ def test_wireless_receiver_id_prints_the_named_fallback_line(capsys):
     # Medium with ONE byte-stable named line per call.
     assert pen_specs_for_product(132) is touch_controller.PEN_SPECS_DEFAULT
     assert capsys.readouterr().out == "pen_specs= no-table product=132 using=medium\n"
+
+
+def test_wireless_size_from_config_routes_the_receiver(capsys, config):
+    # U344 goal 2: the wireless addon carries receiver id 132 on ALL tablet
+    # sizes, so the size is not detectable. The user config names it; the
+    # default is medium (his observed wireless behavior: behaves like a
+    # Medium pad) and the named line reports the routing byte-exactly.
+    assert config.wireless_pen_size == "medium"
+    capsys.readouterr()  # drain the fixture's config-load banner
+    assert pen_specs_for_product(132, config) is touch_controller.PEN_SPECS_BY_PRODUCT[789]
+    assert capsys.readouterr().out == "pen_specs= wireless_size=medium product=132 using=789\n"
+
+
+def test_wireless_size_large_and_small_select_their_tables(capsys, config):
+    capsys.readouterr()  # drain the fixture's config-load banner
+    config.wireless_pen_size = "large"
+    assert pen_specs_for_product(132, config) is touch_controller.PEN_SPECS_BY_PRODUCT[791]
+    assert capsys.readouterr().out == "pen_specs= wireless_size=large product=132 using=791\n"
+    config.wireless_pen_size = "small"
+    assert pen_specs_for_product(132, config) is touch_controller.PEN_SPECS_BY_PRODUCT[788]
+    assert capsys.readouterr().out == "pen_specs= wireless_size=small product=132 using=788\n"
+
+
+def test_unknown_product_with_config_keeps_the_no_table_line(capsys, config):
+    # An id that is not the receiver keeps the plain fallback line: the
+    # size setting applies to the receiver only.
+    capsys.readouterr()  # drain the fixture's config-load banner
+    assert pen_specs_for_product(999, config) is touch_controller.PEN_SPECS_DEFAULT
+    assert capsys.readouterr().out == "pen_specs= no-table product=999 using=medium\n"
+
+
+def test_wireless_size_round_trips_through_the_config_file(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    cfg = DriverConfig()
+    cfg.wireless_pen_size = "large"
+    path = tmp_path / "user.cfg"
+    cfg.save_to_file(str(path))
+    fresh = DriverConfig()
+    assert fresh.load_from_file(str(path)) is True
+    assert fresh.wireless_pen_size == "large"
+
+
+def test_wireless_size_is_validated_and_normalized(monkeypatch, tmp_path):
+    monkeypatch.chdir(tmp_path)
+    path = tmp_path / "size.cfg"
+    path.write_text(json.dumps(
+        {"motion_and_thresholds": {"wireless_pen_size": " Large "}}))
+    cfg = DriverConfig()
+    assert cfg.load_from_file(str(path)) is True
+    assert cfg.wireless_pen_size == "large"
+
+    bad = tmp_path / "bad.cfg"
+    bad.write_text(json.dumps(
+        {"motion_and_thresholds": {"wireless_pen_size": "huge"}}))
+    cfg2 = DriverConfig()
+    assert cfg2.load_from_file(str(bad)) is False
+    assert cfg2.wireless_pen_size == "medium"
+
+
+def test_wireless_thread_resolves_the_size_from_config(fake_hid, stub_send_input,
+                                                       capsys, config):
+    dev = FakeDevice(reports=[build_pen_report(0xE0, x=100, y=100)])
+    fake_hid._queue.append(dev)
+    state = TabletState()
+    dispatcher = ActionDispatcher(state)
+    enabled = threading.Event()
+    enabled.set()
+    stop = threading.Event()
+    config.wireless_pen_size = "large"
+
+    thread = threading.Thread(
+        target=touch_controller.run_interface,
+        args=("Pen", {"interface_number": 1, "path": b"fake-path", "product_id": 132},
+              state, dispatcher, enabled, stop),
+        kwargs={"idle_poll": 0.02, "cfg": config},
+        daemon=True,
+    )
+    thread.start()
+    deadline = time.monotonic() + 1.0
+    while not state.pen_in_proximity and time.monotonic() < deadline:
+        time.sleep(0.002)
+    enabled.clear()
+    thread.join(timeout=0.5)
+
+    out = capsys.readouterr().out
+    assert "pen_specs= wireless_size=large product=132 using=791" in out
+    assert not thread.is_alive()
 
 
 def test_unknown_product_prints_the_named_fallback_line(capsys):

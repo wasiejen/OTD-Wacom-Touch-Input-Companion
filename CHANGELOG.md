@@ -4,6 +4,21 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261104-0145:
+
+- wireless pen size option (TODO #311, U344 goal 2): the wireless add-on is
+  receiver id 132 on ALL tablet sizes, so the tablet size is not detectable
+  wireless. New user-config key `wireless_pen_size` (small/medium/large,
+  validated, round-trips; default medium per the maintainer's observed
+  wireless behavior) routes id 132 to the matching model table with the
+  named line `pen_specs= wireless_size=<size> product=132 using=<model>`;
+  other no-entry ids keep the plain fallback line. GUI lane untouched
+  (config-file + named-log scope).
+- Pins: default-medium, large and small routing byte-exact, 999 keeps the
+  no-table line with cfg passed, config round trip, validation rejects
+  `huge` (nothing applied) and normalizes ` Large `, wireless thread
+  resolves the size from config. RED-before: all six FAIL pre-change.
+
 261104-0127:
 
 - 791 pen projection fix (TODO #311, U344 goal 1): the maintainer's

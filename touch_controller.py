@@ -448,6 +448,18 @@ DEVICE_ALIAS_PREFIX = "device_alias_"
 DEVICE_SETTINGS_PREFIX = "device_settings_"
 DEVICE_IDENTITY_HASH_LENGTH = 12
 
+# Wireless pen size lane (U344 goal 2): the wireless add-on is the same
+# receiver (product id 132) on ALL tablet sizes, so the paired tablet size
+# is NOT detectable from enumeration. The user config names the size
+# (small/medium/large) and the driver routes id 132 to the matching model
+# table. Default: medium, per the maintainer's observed wireless behavior
+# (behaves like a Medium pad). The constants live above the config class:
+# the module-level DriverConfig instance reads the default at import time.
+WIRELESS_RECEIVER_PRODUCT_ID = 132
+WIRELESS_PEN_SIZES = ("small", "medium", "large")
+WIRELESS_PEN_SIZE_TO_PRODUCT = {"small": 788, "medium": 789, "large": 791}
+WIRELESS_PEN_SIZE_DEFAULT = "medium"
+
 
 def device_identity_hash(path, serial_number=""):
     """Identity key of one interface: 12-hex hash over interface path + serial.
@@ -480,7 +492,7 @@ class DriverConfig:
         "scroll_deadzone", "scroll_min_sens", "scroll_max_sens",
         "scroll_speed_low", "scroll_speed_high",
         "pen_speed", "pen_pressure_threshold",
-        "dial_step_threshold", "orientation_degrees",
+        "dial_step_threshold", "orientation_degrees", "wireless_pen_size",
     )
 
     # Sections the saved file may hold. "devices" is the reserved slot (c):
@@ -586,6 +598,11 @@ class DriverConfig:
         # pen coordinates around the tablet center before the gesture/cursor
         # path; positive degrees turn the input clockwise on screen.
         self.orientation_degrees = 0
+
+        # Wireless pen size (U344 goal 2): the receiver id 132 is shared by
+        # every tablet size, so the user names the size of the tablet the
+        # add-on is paired to; the driver routes 132 to that model table.
+        self.wireless_pen_size = WIRELESS_PEN_SIZE_DEFAULT
         
         # Gesture Thresholds
         self.max_tap_duration = 0.250       # Seconds
@@ -829,6 +846,16 @@ class DriverConfig:
                 ref = self._error_reference(raw_text, key, index)
                 if key not in self.MOTION_KEYS:
                     warnings.append(f"unknown motion key '{key}' ({ref}) ignored")
+                    continue
+                if key == "wireless_pen_size":
+                    # U344 goal 2: a NAME, not a number — accepted values
+                    # are small/medium/large, case and space tolerant.
+                    if isinstance(val, str) and val.strip().lower() in WIRELESS_PEN_SIZES:
+                        validated["motion"][key] = val.strip().lower()
+                    else:
+                        errors.append(f"'motion_and_thresholds.{key}' needs one of "
+                                      f"{'/'.join(WIRELESS_PEN_SIZES)}, "
+                                      f"got {self._describe(val)} ({ref})")
                     continue
                 number = self._coerce_number(val)
                 if number is None:
@@ -1161,15 +1188,22 @@ PEN_SPECS_BY_PRODUCT = {
 }
 PEN_SPECS_DEFAULT = PEN_SPECS_BY_PRODUCT[789]
 
-def pen_specs_for_product(product_id):
+def pen_specs_for_product(product_id, cfg=None):
     """Digitizer ranges for the pen device.
 
-    A product with a table entry routes to its own model. A product with no
-    entry (unknown id, wireless receiver id 132) prints ONE byte-stable
-    named fallback line and uses the Medium defaults.
+    A product with a table entry routes to its own model. The wireless
+    receiver (id 132) has no table entry: its paired tablet size is not
+    detectable, so the user-config size names the model (named routing
+    line, default medium). Any other id with no entry prints ONE
+    byte-stable named fallback line and uses the Medium defaults.
     """
     specs = PEN_SPECS_BY_PRODUCT.get(product_id)
     if specs is None:
+        if product_id == WIRELESS_RECEIVER_PRODUCT_ID and cfg is not None:
+            size = getattr(cfg, "wireless_pen_size", WIRELESS_PEN_SIZE_DEFAULT)
+            model = WIRELESS_PEN_SIZE_TO_PRODUCT.get(size, 789)
+            print(f"pen_specs= wireless_size={size} product={product_id} using={model}")
+            return PEN_SPECS_BY_PRODUCT[model]
         print(f"pen_specs= no-table product={product_id} using=medium")
         return PEN_SPECS_DEFAULT
     return specs
@@ -2008,7 +2042,7 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
 
         pen_specs = None
         if interface_type == "Pen":
-            pen_specs = pen_specs_for_product(device_info.get("product_id"))
+            pen_specs = pen_specs_for_product(device_info.get("product_id"), cfg)
             print(f"{header} Init report not sent: upstream sends FeatureInitReport "
                   "'02 08' at device open; requirement unknown (pen data reads without it).")
 
