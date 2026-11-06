@@ -330,7 +330,7 @@ def test_autoscale_grows_the_box_and_prints_one_named_line(state, dispatcher, co
 
 def test_effective_specs_drive_rotation_center_and_extents(state):
     # The grown box feeds BOTH consumers: rotation center and extents take
-    # the grown max, not the declared 4096.
+    # the grown max, not the declared 65024x40640.
     specs = touch_controller.PEN_SPECS_BY_PRODUCT[791]
     state.pen_obs_max_x = 65535
     state.pen_obs_max_y = 65535
