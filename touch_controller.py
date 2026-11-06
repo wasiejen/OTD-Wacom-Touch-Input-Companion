@@ -456,6 +456,11 @@ DEVICE_IDENTITY_HASH_LENGTH = 12
 # (behaves like a Medium pad). The constants live above the config class:
 # the module-level DriverConfig instance reads the default at import time.
 WIRELESS_RECEIVER_PRODUCT_ID = 132
+# Maintainer ruling 2026-11-04 (U370 leg 5): a wireless package carries the
+# SAME coordinates as wired (only fewer bundled fields), so this map selects
+# the model extents preset and NOTHING else -- no separate wireless
+# coordinate scaling exists or should be invented (pinned by
+# test_wireless_size_selects_only_the_model_extents_preset).
 WIRELESS_PEN_SIZES = ("small", "medium", "large")
 WIRELESS_PEN_SIZE_TO_PRODUCT = {"small": 788, "medium": 789, "large": 791}
 WIRELESS_PEN_SIZE_DEFAULT = "medium"
@@ -1162,33 +1167,31 @@ PEN_BUTTON_2_MASK = 0x04        # status bit 2: pen button 2
 PEN_VIRTUAL_RESOLUTION = 65535
 
 # Digitizer ranges per product id: one explicit per-model entry keyed by the
-# wired product_id. 789 (PTH-651, Medium) is pinned from upstream
-# Wacom/PTH-651.json. 788 (PTH-451, Small) and 791 (PTH-851, Large) carry the
-# maintainer's device data (jsonc commit d1d70e12, supplied via the U311b
-# task spec; the commit is NOT resolvable in this repo): both carry 4096/4096
-# extents and a 215.9 mm width, 134.6 mm tall (Small) and 118.6 mm tall
-# (Large). DATA-VALIDITY FLAGS — recorded for the maintainer's hardware
-# acceptance (TODO #311), do NOT adjust from code without device data:
-#  - 789 is exactly 200.0 counts/mm; the 4096/4096 square box is 18.97 x
-#    30.43 counts/mm (788) and 18.97 x 34.54 (791).
-#  - The Large row (215.9 x 118.6 mm) is numerically SMALLER in area than the
-#    Small row (215.9 x 134.6 mm) — the model names disagree.
-# HARDWARE REPORT (2026-11-04, maintainer device test, acceptance request
-# §3): wired Large tablet (791) pins the cursor at the LOWER-RIGHT CORNER
-# for every pen input; wireless (Medium fallback table) behaves like a
-# Medium pad, upper-left works, ~2/3 of width/height usable. The 791 pen
-# coordinates therefore run PAST the filled 4096 square (16-bit family
-# coordinates like 789's); the true 788/791 pen extents stay UNVERIFIED
-# (no probe data in probe/). The U344 autoscale lane (pen_effective_specs,
-# pen_extents_autoscale line) maps the box grown to the observed
-# coordinate range per session — the table stays as filled, numbers are
-# NOT adjusted from code.
+# wired product id. All three rows are VERBATIM from the OpenTabletDriver
+# Digitizer block at pinned commit
+# https://raw.githubusercontent.com/OpenTabletDriver/OpenTabletDriver/2c4b9a5649eb34cd74bc8b1b1041dbb0356ae762/OpenTabletDriver.Configurations/Configurations/Wacom/PTH-851.json
+# (same commit, same folder: PTH-451.json for 788, PTH-651.json for 789):
+#   788 = Wacom PTH-451 (Intuos Pro Small)  157.48 x  98.425 mm, 16:10
+#   789 = Wacom PTH-651 (Intuos Pro Medium) 223.52 x 139.7   mm, 16:10
+#   791 = Wacom PTH-851 (Intuos Pro Large)  325.12 x 203.2   mm, 16:10
+# Every row is exactly 200.0 counts/mm on both axes. The OTD Touch
+# sub-block (4095/4095) is the TOUCH digitizer, NOT the pen: it never
+# feeds this table (U370 ruling). Pre-U370 the 788/791 rows carried
+# probe-era fills (4096/4096 square @ 215.9 mm width); the maintainer's
+# 2026-11-04 hardware findings (791 edges unreachable ~100 px, diagonal
+# shallower than 1:1) came from that square box skewing the 1:1 lane, not
+# from the hardware. The U344 autoscale lane (pen_effective_specs,
+# pen_extents_autoscale line) stays as the safety net: grow-only, it can
+# never shrink below these declared extents (pinned).
 # Ids with no entry (unknown ids, the wireless receiver id 132) resolve
 # through the named fallback line below.
 PEN_SPECS_BY_PRODUCT = {
+    # OTD PTH-651.json @ 2c4b9a56, Digitizer block:
     789: {"max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7},
-    788: {"max_x": 4096, "max_y": 4096, "width_mm": 215.9, "height_mm": 134.6},
-    791: {"max_x": 4096, "max_y": 4096, "width_mm": 215.9, "height_mm": 118.6},
+    # OTD PTH-451.json @ 2c4b9a56, Digitizer block:
+    788: {"max_x": 31496, "max_y": 19685, "width_mm": 157.48, "height_mm": 98.425},
+    # OTD PTH-851.json @ 2c4b9a56, Digitizer block:
+    791: {"max_x": 65024, "max_y": 40640, "width_mm": 325.12, "height_mm": 203.2},
 }
 PEN_SPECS_DEFAULT = PEN_SPECS_BY_PRODUCT[789]
 
@@ -1310,14 +1313,13 @@ def rotated_pen_extents(pen_specs, degrees):
 def pen_effective_specs(pen_specs, state):
     """The declared digitizer box grown to the observed coordinate range.
 
-    Defensive lane (U344, TODO #311): the maintainer's 2026-11-04 hardware
-    report shows the 791 pen coordinates running past the filled 4096
-    square (wired cursor pinned at the lower-right corner; wireless under
-    the Medium fallback behaves like a Medium pad), so the true pen extents
-    stay unverified and the table stays as filled. The pen consumers map
-    THIS box: per axis the larger of the declared extent and the largest
-    coordinate observed in this session. A model reporting inside its
-    declared box returns the input dict unchanged (identity).
+    Defensive safety net (U344, kept under the U370 authoritative OTD
+    extents): per axis the larger of the declared extent and the largest
+    coordinate observed in this session -- GROW-ONLY, it can never shrink
+    below the corrected declared extents (pinned by
+    test_autoscale_floor_cannot_shrink_below_declared_extents). The pen
+    consumers map THIS box. A model reporting inside its declared box
+    returns the input dict unchanged (identity).
     """
     if state.pen_obs_max_x <= pen_specs["max_x"] and \
             state.pen_obs_max_y <= pen_specs["max_y"]:

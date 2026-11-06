@@ -62,7 +62,7 @@ def process(report, state, dispatcher, config):
 
 
 def process_791(report, state, dispatcher, config):
-    """The filled 791 table: the maintainer's Large tablet lane (U344)."""
+    """The authoritative 791 OTD table: the maintainer's Large tablet lane."""
     process_pen_report(report, state, dispatcher, config,
                        touch_controller.PEN_SPECS_BY_PRODUCT[791])
 
@@ -248,40 +248,53 @@ def test_known_models_route_to_their_own_tables_quietly(capsys):
 
 
 def test_models_carry_valued_distinct_tables():
-    # Maintainer device data (jsonc commit d1d70e12, supplied via task spec;
-    # the commit is not resolvable in this repo): the three models carry
-    # byte-exact, per-model distinct dicts.
+    # U370 (HW-ACCEPT-2026-11-04): all three tables are byte-exact per-model
+    # dicts from OpenTabletDriver at pinned commit
+    # 2c4b9a5649eb34cd74bc8b1b1041dbb0356ae762, Digitizer block of
+    # Wacom/PTH-451.json (788), Wacom/PTH-651.json (789) and
+    # Wacom/PTH-851.json (791).
     assert touch_controller.PEN_SPECS_BY_PRODUCT[788] == {
-        "max_x": 4096, "max_y": 4096, "width_mm": 215.9, "height_mm": 134.6}
+        "max_x": 31496, "max_y": 19685, "width_mm": 157.48, "height_mm": 98.425}
     assert touch_controller.PEN_SPECS_BY_PRODUCT[791] == {
-        "max_x": 4096, "max_y": 4096, "width_mm": 215.9, "height_mm": 118.6}
+        "max_x": 65024, "max_y": 40640, "width_mm": 325.12, "height_mm": 203.2}
     assert touch_controller.PEN_SPECS_BY_PRODUCT[789] == {
         "max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7}
 
 
-def test_filled_models_drive_the_pen_consumers():
-    # The resolved 788/791 dicts drive the pen math byte-exactly: the square
-    # 4096/4096 box centers at (2048.0, 2048.0) (not the 789 Medium center),
-    # and the unrotated/rotated extents land on that square. Data-validity
-    # flags (square extents, center, clamp) are recorded in the table comment
-    # for maintainer hardware acceptance (TODO #311).
+def test_pen_tables_are_200_counts_per_mm_on_every_axis():
+    # U370 aspect audit: every OTD table row is exactly 200.0 counts/mm on
+    # both axes (the old filled 4096 square ran 18.97 x 30.43 / 34.54), and
+    # every row spans 16:10 in counts -- so the default 1:1 lane maps a
+    # centered band, not an aspect-skewed fill.
+    for specs in touch_controller.PEN_SPECS_BY_PRODUCT.values():
+        assert abs(specs["max_x"] / specs["width_mm"] - 200.0) < 1e-6
+        assert abs(specs["max_y"] / specs["height_mm"] - 200.0) < 1e-6
+        assert abs(specs["max_x"] / specs["max_y"] - 1.6) < 1e-6
+
+
+def test_authoritative_models_drive_the_pen_consumers():
+    # U370: the resolved 788/791 dicts drive the pen math byte-exactly. The
+    # non-square OTD boxes center per axis (788 at (15748.0, 9842.5), 791 at
+    # (32512.0, 20320.0)) and the unrotated extents carry the true 16:10
+    # counts, not the old filled 4096 square.
     specs_788 = pen_specs_for_product(788)
     specs_791 = pen_specs_for_product(791)
-    assert pen_rotation_center(specs_788) == (2048.0, 2048.0)
-    assert pen_rotation_center(specs_791) == (2048.0, 2048.0)
-    assert rotated_pen_extents(specs_788, 0) == (0, 0, 4096, 4096)
-    assert rotated_pen_extents(specs_791, 90) == (0, 0, 4096, 4096)
+    assert pen_rotation_center(specs_788) == (15748.0, 9842.5)
+    assert pen_rotation_center(specs_791) == (32512.0, 20320.0)
+    assert rotated_pen_extents(specs_788, 0) == (0, 0, 31496, 19685)
+    assert rotated_pen_extents(specs_791, 0) == (0, 0, 65024, 40640)
 
 
-def test_filled_models_clamp_absolute_and_scale_relative(state, dispatcher, config,
-                                                          stub_send_input):
-    # The two P1 lanes the filled box feeds (reviewer fire-2):
-    # absolute mode clamps coordinates above the 4096 square to the desktop
-    # edge (data-validity flag); relative mode scales per-model mm/count
-    # asymmetrically for 788: x 215.9/4096, y 134.6/4096 (at speed 8:
-    # 400 counts -> 168 px x and 105 px y, not the 200 counts/mm Medium math).
+def test_authoritative_models_clamp_absolute_and_scale_relative(state, dispatcher, config,
+                                                                 stub_send_input):
+    # U370 repin of the two P1 lanes on the authoritative 788 OTD box:
+    # absolute mode clamps coordinates past the 31496 x 19685 box to the
+    # desktop edge; relative mode scales per-model mm/count -- 788 runs
+    # exactly 200 counts/mm on both axes, so at speed 8: 400 counts ->
+    # 2.0 mm x 8 -> x int(15.99999...) = 15, y int(16.0) = 16 (the x float
+    # lands below 16 by float noise; the fraction stays accumulated).
     specs = pen_specs_for_product(788)
-    update_pen_cursor(state, dispatcher, config, specs, 5000, 5000)
+    update_pen_cursor(state, dispatcher, config, specs, 40000, 40000)
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 65535)
     config.feature_toggles["pen_absolute_mode"] = False
     config.pen_speed = 8.0
@@ -289,29 +302,30 @@ def test_filled_models_clamp_absolute_and_scale_relative(state, dispatcher, conf
     update_pen_cursor(state, dispatcher, config, specs, 0, 0)
     stub_send_input.clear()
     update_pen_cursor(state, dispatcher, config, specs, 400, 400)
-    assert stub_send_input == [("mouse", 0x0001, 0, 168, 105)]
+    assert stub_send_input == [("mouse", 0x0001, 0, 15, 16)]
 
 
 def test_autoscale_grows_the_box_and_prints_one_named_line(state, dispatcher, config,
                                                             stub_send_input, capsys):
-    # U344 hardware report (2026-11-04): the 791 pen coordinates run past
-    # the filled 4096 square (wired cursor pinned at the lower-right
-    # corner). The mapping box grows to the largest observed coordinate per
-    # axis and ONE byte-stable named line fires; later reports stay quiet.
-    process_791(build_pen_report(0x20, x=5000, y=5000), state, dispatcher, config)
+    # U344 defensive lane kept as the safety net under the U370 corrected
+    # 791 extents: coordinates past the OTD 65024 x 40640 box grow the
+    # mapping box per axis and ONE byte-stable named line fires; later
+    # reports stay quiet. The grown 16:10 box maps per the 1:1 default lane.
+    process_791(build_pen_report(0x20, x=70000, y=50000), state, dispatcher, config)
     assert capsys.readouterr().out == (
-        "pen_extents_autoscale declared_x=4096 declared_y=4096 "
-        "observed_x=5000 observed_y=5000 using=observed\n")
-    # Grown square box (5000,5000): the corner coordinate maps to the edge.
-    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 65535)
-    assert state.pen_obs_max_x == 5000
-    assert state.pen_obs_max_y == 5000
+        "pen_extents_autoscale declared_x=65024 declared_y=40640 "
+        "observed_x=70000 observed_y=50000 using=observed\n")
+    # Grown box corner (70000,50000): x spans the full desktop, y lands in
+    # the centered band at int(9362.142857 + 46810.714286 + 1e-9) = 56172.
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 56172)
+    assert state.pen_obs_max_x == 70000
+    assert state.pen_obs_max_y == 50000
     stub_send_input.clear()
     process_791(build_pen_report(0x20, x=2500, y=2500), state, dispatcher, config)
     assert capsys.readouterr().out == ""
-    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 32767, 32767)
-    assert state.pen_obs_max_x == 5000
-    assert state.pen_obs_max_y == 5000
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 2340, 11702)
+    assert state.pen_obs_max_x == 70000
+    assert state.pen_obs_max_y == 50000
 
 
 def test_effective_specs_drive_rotation_center_and_extents(state):
@@ -324,7 +338,7 @@ def test_effective_specs_drive_rotation_center_and_extents(state):
     assert grown is not specs
     assert grown["max_x"] == 65535
     assert grown["max_y"] == 65535
-    assert grown["width_mm"] == 215.9
+    assert grown["width_mm"] == 325.12
     assert touch_controller.pen_rotation_center(grown) == (32767.5, 32767.5)
     assert touch_controller.rotated_pen_extents(grown, 0) == (0, 0, 65535, 65535)
 
@@ -350,19 +364,88 @@ def test_in_range_reports_keep_the_box_and_stay_quiet(state, dispatcher, config,
 
 
 def test_relative_mode_uses_the_grown_box(state, dispatcher, config, stub_send_input):
-    # Relative mode scales by the GROWN box too: the 791 square declared
-    # 4096 would scale counts like the 18.97 x 34.54 counts/mm flag math;
-    # the observed 16-bit range scales per the real physical width.
+    # Relative mode scales by the GROWN box too: the 791 OTD box (200
+    # counts/mm) grows to the observed 65935 range, so counts scale below
+    # the declared physical density.
     config.feature_toggles["pen_absolute_mode"] = False
     config.pen_speed = 8.0
     process_791(build_pen_report(0x20, x=65535, y=65535), state, dispatcher, config)
     stub_send_input.clear()
     process_791(build_pen_report(0x20, x=65935, y=65935), state, dispatcher, config)
-    # 400 counts at 215.9/65935 counts/mm (x) and 118.6/65935 (y), speed 8:
-    # x 10.47 px -> 10, y 5.75 px -> 5 (fractional parts stay accumulated).
-    assert stub_send_input == [("mouse", 0x0001, 0, 10, 5)]
+    # 400 counts at 325.12/65935 counts/mm (x) and 203.2/65935 (y), speed 8:
+    # x 15.779 px -> 15, y 9.862 px -> 9 (fractional parts stay accumulated).
+    assert stub_send_input == [("mouse", 0x0001, 0, 15, 9)]
     assert state.pen_obs_max_x == 65935
     assert state.pen_obs_max_y == 65935
+
+
+def test_791_default_lane_maps_aspect_correct_1to1(state, dispatcher, config, stub_send_input):
+    # U370 goal (maintainer finding: diagonal shallower than 1:1 on the
+    # filled 4096 square): with the authoritative 791 box (65024 x 40640,
+    # 16:10) the DEFAULT absolute lane keeps one scale on both axes. The
+    # x axis spans the full desktop (longer axis), the y box lands in the
+    # centered band 12287..53247 -- the same 16:10 band as the 789 pin --
+    # so px-per-mm is equal on x and y and every corner of the pen area
+    # is reachable. Pre-change (square 4096 box) both axes ran to 65535.
+    specs = pen_specs_for_product(791)
+    update_pen_cursor(state, dispatcher, config, specs, 0, 0)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 0, 12287)
+    stub_send_input.clear()
+    update_pen_cursor(state, dispatcher, config, specs, 65024, 40640)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 53247)
+    stub_send_input.clear()
+    update_pen_cursor(state, dispatcher, config, specs, 32512, 20320)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 32767, 32767)
+
+
+def test_791_stretch_optin_still_fills_the_desktop(state, dispatcher, config, stub_send_input):
+    # U344 goal-3 opt-in kept by the U370 ruling: pen_stretch_full_desktop
+    # = True keeps the old per-axis stretch -- on the new 16:10 box both
+    # axes run to 65535, the aspect is NOT preserved (opt-in).
+    config.feature_toggles["pen_stretch_full_desktop"] = True
+    specs = pen_specs_for_product(791)
+    update_pen_cursor(state, dispatcher, config, specs, 0, 0)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 0, 0)
+    stub_send_input.clear()
+    update_pen_cursor(state, dispatcher, config, specs, 65024, 40640)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 65535)
+
+
+def test_autoscale_floor_cannot_shrink_below_declared_extents(state):
+    # U370 leg 4: the autoscale safety net stays GROW-ONLY against the
+    # corrected declared extents. Observed coordinates inside the OTD 791
+    # box return the declared dict unchanged (identity); a mixed exceed
+    # grows only the x axis and the y axis can never fall below the
+    # declared 40640 floor.
+    specs = touch_controller.PEN_SPECS_BY_PRODUCT[791]
+    state.pen_obs_max_x = 40000
+    state.pen_obs_max_y = 40000
+    assert touch_controller.pen_effective_specs(specs, state) is specs
+    state.pen_obs_max_x = 70000
+    grown = touch_controller.pen_effective_specs(specs, state)
+    assert grown["max_x"] == 70000
+    assert grown["max_y"] == 40640
+    assert grown["width_mm"] == 325.12
+    assert grown["height_mm"] == 203.2
+
+
+def test_wireless_size_selects_only_the_model_extents_preset(config, state, dispatcher,
+                                                             stub_send_input):
+    # Maintainer ruling 2026-11-04 (U370 leg 5): a wireless package carries
+    # the SAME coordinates as wired (only fewer bundled fields), so
+    # wireless_pen_size selects the model extents preset and NOTHING else
+    # -- no separate wireless coordinate scaling exists. The routed dict is
+    # the model table object itself, and the wireless-routed mapping emits
+    # byte-identical events to the wired 791 lane for the same coordinate.
+    config.wireless_pen_size = "large"
+    routed = pen_specs_for_product(132, config)
+    assert routed is touch_controller.PEN_SPECS_BY_PRODUCT[791]
+    update_pen_cursor(state, dispatcher, config, routed, 65024, 40640)
+    wireless_event = stub_send_input[-1]
+    stub_send_input.clear()
+    update_pen_cursor(state, dispatcher, config,
+                      touch_controller.PEN_SPECS_BY_PRODUCT[791], 65024, 40640)
+    assert wireless_event == stub_send_input[-1]
 
 
 def test_wireless_receiver_id_prints_the_named_fallback_line(capsys):
