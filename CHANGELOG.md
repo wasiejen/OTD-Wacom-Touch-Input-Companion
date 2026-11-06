@@ -4,6 +4,34 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261106-0240:
+
+ - FIXED real digitizer extents (U370, HW-ACCEPT-2026-11-04): the 788 and 791
+   `PEN_SPECS_BY_PRODUCT` rows were probe-era fills (4096/4096 square box);
+   they are now VERBATIM from OpenTabletDriver at pinned commit
+   `2c4b9a5649eb34cd74bc8b1b1041dbb0356ae762` (Wacom/PTH-451.json for 788:
+   31496 x 19685 @ 157.48 x 98.425 mm; Wacom/PTH-851.json for 791:
+   65024 x 40640 @ 325.12 x 203.2 mm -- both exactly 200.0 counts/mm, 16:10,
+   like 789). 788 DIFF: width 215.9 -> 157.48 mm, height 134.6 -> 98.425 mm
+   (the probe-era mm were wrong, not just the counts). User-visible: the 1:1
+   default absolute lane on 791 now maps the FULL pen area edge-to-edge and
+   the diagonal runs true 1:1 (old square box skewed it -- the maintainer's
+   edges-unreachable ~100 px and shallow-diagonal findings came from the box,
+   not the hardware). The OTD Touch sub-block (4095/4095) is the touch
+   digitizer, never the pen. The U344 autoscale lane stays as the grow-only
+   safety net; the wireless size picker selects the extents preset only
+   (maintainer ruling 2026-11-04 -- wireless coordinates are identical to
+   wired, no separate wireless scaling exists).
+ - Pins: byte-exact OTD table values + 200 counts/mm + 16:10 census, 791
+   aspect lane (top edge 0/12287, corner 65535/53247, center parity),
+   stretch opt-in still fills the desktop on the 16:10 box, autoscale
+   grow-only floor vs the corrected extents, wireless-routed mapping emits
+   byte-identical events to the wired 791 lane; repinned 788/791 consumer,
+   clamp, relative (200 c/mm math: 400 counts speed 8 -> 15,16), named
+   autoscale line, grown-box lanes. RED-before: nine pins FAIL at the
+   unchanged tree; the stretch opt-in and wireless preset-identity legs
+   replay kept behavior BY DESIGN (no RED -- ruling pins).
+
 261104-0130:
 
 - 25:9 ultrawide pen mapping (TODO #311, U344 goal 3): the maintainer
