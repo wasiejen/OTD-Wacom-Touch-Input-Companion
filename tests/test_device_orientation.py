@@ -49,6 +49,12 @@ def touch_report(blocks):
 @pytest.fixture
 def config(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
+    # U376: this file pins the orientation transform, not the desktop aspect,
+    # so every absolute case maps on a SQUARE synthetic desktop -- there the
+    # isotropic px/mm fit and the old normalized-space parity give one number
+    # and the emitted corners stay independent of the machine's real desktop.
+    monkeypatch.setattr("touch_controller.virtual_desktop_metrics",
+                        lambda: (0, 0, 1440, 1440))
     return DriverConfig()
 
 
