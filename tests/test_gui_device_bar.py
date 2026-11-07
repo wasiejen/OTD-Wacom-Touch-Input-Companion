@@ -27,6 +27,9 @@ class StubManager:
     def __init__(self, conns=()):
         self._conns = list(conns)
 
+    def set_connections(self, conns):
+        self._conns = list(conns)
+
     def list_connections(self):
         return list(self._conns)
 
@@ -116,15 +119,36 @@ def test_no_device_build_focuses_first_live_connection(tk_root, base_config, mon
 
 
 def test_refresh_adopts_live_connection_when_focus_died(tk_root, base_config, monkeypatch):
-    stale = make_conn(base_config, alias="stale-alias")
-    live = make_conn(base_config, alias="live-alias", product_id=791)
-    di = {"connection": stale, "base_config": base_config,
-          "manager": StubManager([live])}
+    c1 = make_conn(base_config, alias="live-alias")
+    c2 = make_conn(base_config, alias="next-alias", product_id=791)
+    mgr = StubManager([c1])
+    di = {"connection": c1, "base_config": base_config, "manager": mgr}
     win, box = build_window(tk_root, base_config, di, monkeypatch)
-    win._refresh_device_combo()
-    assert di["connection"] is live
     assert win.device_label.cget("text") == "live-alias"
-    assert win.config is live["config"]
+    # The device drops out of the live list after the window is open.
+    mgr.set_connections([c2])
+    win._refresh_device_combo()
+    assert di["connection"] is c2
+    assert win.device_label.cget("text") == "next-alias"
+    assert win.config is c2["config"]
+    assert box.errors == []
+
+
+def test_reopen_with_adopted_bundle_rebinds_config(tk_root, base_config, monkeypatch):
+    c1 = make_conn(base_config, alias="alias-one")
+    di = {"connection": None, "base_config": base_config,
+          "manager": StubManager([c1])}
+    win1, box1 = build_window(tk_root, base_config, di, monkeypatch)
+    assert di["connection"] is c1
+    assert win1.config is c1["config"]
+    CONSTRUCTED.remove(win1)
+    win1.destroy()
+    # DriverTrayApp._show_settings_gui reopens from the SAME adopted bundle
+    # while still passing its own global config_ref -- the second open must
+    # rebind the editing config too, not just the first pickup.
+    win2, box2 = build_window(tk_root, base_config, di, monkeypatch)
+    assert win2.config is c1["config"]
+    assert win2.device_label.cget("text") == "alias-one"
 
 
 def test_plain_window_without_device_info(tk_root, base_config, monkeypatch):
@@ -227,4 +251,5 @@ def test_main_passes_manager_bundle_without_connection(tmp_path, monkeypatch):
     di = captured["device_info"]
     assert di["connection"] is None
     assert isinstance(di["manager"], FakeManagerThread)
-    assert di["base_config"] is not None
+    # The bundle must carry the very module-global config the tray binds.
+    assert di["base_config"] is touch_controller.config

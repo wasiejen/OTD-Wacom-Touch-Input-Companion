@@ -21,13 +21,16 @@ on GitHub mark shipped states — `v0.2.2` is the latest release.
     is focused the label reads "No device connected yet" and Save to File
     takes the global lane; the first live device from the manager's list is
     adopted at build time as the editing target -- config, tabs, Apply Live
-    and the save lanes all bind to it, as on a launch-time connection --
-    and Save to Device, Assign alias and Copy to alias answer "No Device
-    Focused" until a device is focused. Refresh re-adopts a live device
-    when the focused connection dropped. The copy-section checkbuttons no
+    and the save lanes all bind to it, as on a launch-time connection, on
+    every open -- and Save to Device, Assign alias and Copy to alias answer
+    "No Device Focused" until a device is focused. Whenever the bar
+    re-reads the live list (window open, Refresh, the Assign-alias
+    refresh) and the focused connection is gone, it adopts the first live
+    device and names the new focus with the same "Device Focused" toast a
+    manual pick shows. The copy-section checkbuttons no
     longer share their grid cell with the Assign-alias button (a
-    U87-era overlap). 13 new headless Tk construction pins (withdrawn
-    root, no event pump, windows pinned unmapped); suite 308 -> 321.
+    U87-era overlap). 14 new headless Tk construction pins (withdrawn
+    root, no event pump, windows pinned unmapped); suite 308 -> 322.
     Live GUI acceptance PENDING the maintainer.
 
 261107-1917:

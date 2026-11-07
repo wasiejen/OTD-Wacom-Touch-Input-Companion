@@ -419,17 +419,19 @@ class SettingsWindow(tk.Toplevel):
 
     def _build_device_bar(self, container):
         # U383: a missing launch connection is no reason to skip the section;
-        # focus the first live device from the manager, else none. The picked
+        # focus the first live device from the manager, else none. The focused
         # device becomes the editing target too -- the same config the
-        # launch-connection path passes in as config_ref -- so tabs, Apply
-        # Live and the save lanes all agree on it.
+        # launch-connection path passes in as config_ref -- on EVERY build, so
+        # reopens from the tray-adopted bundle bind the device config as well
+        # (reviewer P0: a first-build-only rebind falls back to the half-focus
+        # on the second open).
         conn = self.device_info.get("connection")
         if conn is None:
             live = self._live_connections()
             conn = live[0] if live else None
             self.device_info["connection"] = conn
-            if conn is not None:
-                self.config = conn["config"]
+        if conn is not None:
+            self.config = conn["config"]
         base = self.device_info["base_config"]
         frame = ttk.LabelFrame(container, text=" Focused Device ", padding=8)
         frame.pack(fill="x", pady=(0, 6))
@@ -511,10 +513,15 @@ class SettingsWindow(tk.Toplevel):
         elif labels:
             # U383: the focused connection dropped -- adopt the first live
             # device so combo, label, editing config and save lanes agree.
+            # Reached from window build, the Refresh button and assign_alias's
+            # internal refresh; the toast names the new focus like a manual
+            # combo selection does (reviewer P2: silent adoption).
             self.device_info["connection"] = conns[0]
             self.devices_combo.current(0)
-            if hasattr(self, "device_label"):
-                self._rebind_focused_device()
+            self._rebind_focused_device()
+            ToastNotification(self, "Device Focused",
+                              f"Editing settings of {device_display_name(conns[0])}.",
+                              timeout_ms=1500)
 
     def _on_device_selected(self, event=None):
         """Point the window and its widgets at the selected live device."""
