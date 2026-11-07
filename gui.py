@@ -8,6 +8,7 @@ from pystray import MenuItem as item
 
 from touch_controller import (
     ORIENTATION_MAX_DEGREES,
+    TOUCH_ACTION_CHOICES,
     rotate_point,
     snapshot_device_sections,
 )
@@ -156,6 +157,12 @@ def device_display_name(conn):
 # Touch button and dial controls (U71): one toggle plus one mapping per control.
 BUTTON_CONTROL_KEYS = tuple(f"btn{n}_press" for n in range(1, 9)) + (
     "central_press", "dial_cw", "dial_ccw")
+
+# Touch part of each express key (U381 / #381): one toggle plus one modifier
+# choice per button, shown only for the 8 express keys. The value vocabulary
+# is TOUCH_ACTION_CHOICES ("none" plus the modifier names), not the tap-action
+# list; the part defaults to off.
+BUTTON_TOUCH_KEYS = tuple(f"btn{n}_touch" for n in range(1, 9))
 
 
 def action_display_value(action, options):
@@ -371,6 +378,10 @@ class SettingsWindow(tk.Toplevel):
         # Button/dial toggles and comboboxes (U71), filled by the Buttons tab.
         self.button_vars = {}
         self.button_combos = {}
+        # Touch-part toggles and modifier comboboxes (U381 / #381), also filled
+        # by the Buttons tab; the part defaults to off.
+        self.touch_vars = {}
+        self.touch_combos = {}
 
         main_container = ttk.Frame(self)
         main_container.pack(fill="both", expand=True, padx=10, pady=10)
@@ -936,7 +947,31 @@ class SettingsWindow(tk.Toplevel):
             ToolTip(chk, tip)
             ToolTip(combo, tip)
 
+            touch_key = f"btn{key[3]}_touch"
+            if touch_key in BUTTON_TOUCH_KEYS:
+                # U381 / #381: touch part of this express key -- the modifier
+                # held while the finger keeps contact, off by default.
+                touch_tip = (f"Touch part of express key {key[3]}: while a finger keeps "
+                             "contact, this modifier is held down and it releases on the "
+                             "full release. Off by default.")
+                touch_var = tk.BooleanVar(value=self.config.feature_toggles.get(touch_key, False))
+                touch_chk = ttk.Checkbutton(mapping_frame, text="touch", variable=touch_var)
+                touch_chk.grid(row=idx, column=3, sticky="w", pady=4)
+                self.touch_vars[touch_key] = touch_var
+
+                current_touch = self.config.action_mapping.get(touch_key)
+                touch_combo = ttk.Combobox(mapping_frame, values=list(TOUCH_ACTION_CHOICES),
+                                           state="readonly", width=8)
+                touch_combo.set(action_display_value(current_touch, TOUCH_ACTION_CHOICES))
+                touch_combo.grid(row=idx, column=4, sticky="e", pady=4)
+                self.touch_combos[touch_key] = touch_combo
+                self.saved_actions[touch_key] = current_touch
+
+                ToolTip(touch_chk, touch_tip)
+                ToolTip(touch_combo, touch_tip)
+
         mapping_frame.columnconfigure(2, weight=1)
+        mapping_frame.columnconfigure(4, weight=1)
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
@@ -962,7 +997,7 @@ class SettingsWindow(tk.Toplevel):
         # pen_absolute_mode since it is in the Pen tab, and the button/dial controls
         # since they are in the Buttons tab.
         excluded_features = ({"cursor_acceleration", "scroll_acceleration", "pen_absolute_mode"}
-                             | set(BUTTON_CONTROL_KEYS))
+                             | set(BUTTON_CONTROL_KEYS) | set(BUTTON_TOUCH_KEYS))
 
         for feature_key, enabled in self.config.feature_toggles.items():
             if feature_key in excluded_features:
@@ -1096,6 +1131,19 @@ class SettingsWindow(tk.Toplevel):
             }
             button_vars = getattr(self, "button_vars", {})
             button_toggles = {key: var.get() for key, var in button_vars.items()}
+            # U381 / #381: the touch part rides the same apply lane; its combo
+            # resolves against the modifier vocabulary, not the action list.
+            touch_combos = getattr(self, "touch_combos", {})
+            button_actions.update({
+                touch_key: resolve_action_mapping(
+                    combo.get(),
+                    saved_actions.get(touch_key, self.config.action_mapping.get(touch_key)),
+                    TOUCH_ACTION_CHOICES,
+                )
+                for touch_key, combo in touch_combos.items()
+            })
+            touch_vars = getattr(self, "touch_vars", {})
+            button_toggles.update({touch_key: var.get() for touch_key, var in touch_vars.items()})
 
             # 2. Validate everything, then apply all-or-nothing
             apply_settings_to_config(
