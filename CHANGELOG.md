@@ -4,6 +4,36 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261107-2123:
+
+  - FIXED dead touch buttons and rotary dial (U381 / #381, #382; root cause
+    read from the maintainer's own probe capture): the wired capture sets ONE
+    interface constant for the whole file, so the recorded button/dial rows
+    (report id 0x03) arrive on the same HID interface as the pen rows (report
+    id 0x02), yet the U71 live path fed the button handler only from a THIRD
+    interface. With the two interfaces the tablet offers, that handler never
+    started, and the Pen and Touch readers each dropped every 0x03 report at
+    their own report-id filter -- a press or a dial turn reached no action.
+    `run_interface` now routes every report by its report id
+    (`handle_report_by_id`): an 0x03 report runs the button/dial handler on
+    whichever interface read it (pen, touch, or the optional third one), and
+    each interface keeps its own id filter for everything else.
+  - Touch part of each express key is now configurable (#381): the byte 5
+    contact edge holds the configured modifier (none / ctrl / shift / alt) for
+    the duration of the contact and releases it on the recorded full-release
+    state, so a press made while a finger keeps contact runs with that
+    modifier held; the press edge is never gated by the contact state, and a
+    thread exit mid-touch releases the held modifier; a modifier two contacts
+    share goes down once and releases only with the last of them. Every button
+    defaults to DISABLED (toggle off plus "none"). The Buttons tab gained one touch check
+    and one modifier combobox per express key (existing grid pattern, off by
+    default); apply and save ride the button lane, and config validation takes
+    the modifier vocabulary for `btn1_touch..btn8_touch` only.
+    49 new fixture pins against the recorded byte rows (RED-before measured on
+    the unchanged code); suite 322 -> 371. Live acceptance PENDING the
+    maintainer's tablet session: 8 button presses fire their assignments, dial
+    turns fire their steps, and touch modifier holds work when enabled.
+
 261107-1952:
 
   - FIXED the missing Focused-Device section above the pen tabs

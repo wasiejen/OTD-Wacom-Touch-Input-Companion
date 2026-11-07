@@ -41,7 +41,8 @@ class FakeWindow:
     """Duck-typed SettingsWindow widget surface used by apply/save."""
 
     def __init__(self, config, entries, accel=(True, True), features=None, actions=None,
-                 pen_absolute=None, pen_buttons=None, buttons=None, button_toggles=None):
+                 pen_absolute=None, pen_buttons=None, buttons=None, button_toggles=None,
+                 touches=None, touch_toggles=None):
         self.config = config
         self.entries = {key: FakeEntry(value) for key, value in entries.items()}
         self.cursor_accel_var = FakeVar(accel[0])
@@ -56,6 +57,10 @@ class FakeWindow:
             self.button_combos = {key: FakeEntry(value) for key, value in buttons.items()}
         if button_toggles is not None:
             self.button_vars = {key: FakeVar(value) for key, value in button_toggles.items()}
+        if touches is not None:
+            self.touch_combos = {key: FakeEntry(value) for key, value in touches.items()}
+        if touch_toggles is not None:
+            self.touch_vars = {key: FakeVar(value) for key, value in touch_toggles.items()}
         # Bind the real SettingsWindow.apply_settings body onto this surface.
         self.apply_settings = types.MethodType(gui.SettingsWindow.apply_settings, self)
 
@@ -267,3 +272,33 @@ def test_apply_button_invalid_number_leaves_config_untouched(window_surface):
     assert config.dial_step_threshold == 4.0
     assert config.action_mapping["btn1_press"] == "undo"
     assert box.errors
+
+
+def test_apply_touch_settings_updates_config(window_surface):
+    """U381 / #381: the touch part rides the button apply lane."""
+    config, box = window_surface
+    win = make_window(config, {},
+                      touches={"btn1_touch": "shift", "btn2_touch": "none"},
+                      touch_toggles={"btn1_touch": True, "btn2_touch": False})
+
+    applied = types.MethodType(gui.SettingsWindow.apply_settings, win)()
+
+    assert applied is True
+    assert config.action_mapping["btn1_touch"] == "shift"
+    assert config.action_mapping["btn2_touch"] == "none"
+    assert config.feature_toggles["btn1_touch"] is True
+    assert config.feature_toggles["btn2_touch"] is False
+
+
+def test_save_writes_touch_settings(window_surface, tmp_path):
+    """U381 / #381: the touch part lands in the saved sections."""
+    config, box = window_surface
+    win = make_window(config, {}, touches={"btn3_touch": "alt"},
+                      touch_toggles={"btn3_touch": True})
+
+    saved = types.MethodType(gui.SettingsWindow.save_to_file, win)()
+
+    assert saved is True
+    data = json.loads((tmp_path / "user.cfg").read_text())
+    assert data["action_mapping"]["btn3_touch"] == "alt"
+    assert data["feature_toggles"]["btn3_touch"] is True
