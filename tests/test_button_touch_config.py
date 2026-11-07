@@ -236,3 +236,36 @@ def test_load_rejects_unknown_touch_modifier(tmp_path, monkeypatch, capsys):
 
 def test_touch_action_choices_are_the_documented_vocabulary():
     assert TOUCH_ACTION_CHOICES == ("none", "ctrl", "shift", "alt")
+
+
+def test_default_none_with_toggle_on_fires_nothing_and_warns_nothing(config, pair,
+                                                                     stub_send_input,
+                                                                     capsys):
+    """The GUI's default-shown state (toggle on, combo still "none") is quiet."""
+    config.feature_toggles["btn1_touch"] = True
+
+    process(BTN1_TOUCH, pair, config)
+    process(FULL_RELEASE, pair, config)
+
+    assert stub_send_input == []
+    assert pair[1].touch_held == {}
+    assert "Unknown touch modifier" not in capsys.readouterr().out
+
+
+def test_two_slots_sharing_one_modifier_release_only_with_the_last(config, pair,
+                                                                   stub_send_input):
+    """Derived contact row (two fingers, same modifier): the shared key stays
+    down while either contact stands (byte 5 bits copied from the recorded
+    per-button contact rows of buttons 1 and 2)."""
+    enable_touch(config, 1, "ctrl")
+    enable_touch(config, 2, "ctrl")
+
+    process(build_row(touch=0x03), pair, config)
+    assert downs(stub_send_input, VK_CTRL) == 1
+
+    process(build_row(touch=0x02), pair, config)
+    assert ups(stub_send_input, VK_CTRL) == 0
+    assert pair[1].touch_held == {2: "ctrl"}
+
+    process(FULL_RELEASE, pair, config)
+    assert ups(stub_send_input, VK_CTRL) == 1

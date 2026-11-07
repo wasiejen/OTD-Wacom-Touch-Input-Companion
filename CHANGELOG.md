@@ -23,13 +23,14 @@ on GitHub mark shipped states — `v0.2.2` is the latest release.
     the duration of the contact and releases it on the recorded full-release
     state, so a press made while a finger keeps contact runs with that
     modifier held; the press edge is never gated by the contact state, and a
-    thread exit mid-touch releases the held modifier. Every button defaults to
-    DISABLED (toggle off plus "none"). The Buttons tab gained one touch check
+    thread exit mid-touch releases the held modifier; a modifier two contacts
+    share goes down once and releases only with the last of them. Every button
+    defaults to DISABLED (toggle off plus "none"). The Buttons tab gained one touch check
     and one modifier combobox per express key (existing grid pattern, off by
     default); apply and save ride the button lane, and config validation takes
     the modifier vocabulary for `btn1_touch..btn8_touch` only.
-    46 new fixture pins against the recorded byte rows (RED-before measured on
-    the unchanged code); suite 322 -> 368. Live acceptance PENDING the
+    49 new fixture pins against the recorded byte rows (RED-before measured on
+    the unchanged code); suite 322 -> 371. Live acceptance PENDING the
     maintainer's tablet session: 8 button presses fire their assignments, dial
     turns fire their steps, and touch modifier holds work when enabled.
 

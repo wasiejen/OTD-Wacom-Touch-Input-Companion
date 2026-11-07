@@ -297,20 +297,32 @@ class ActionDispatcher():
     def press_touch_modifier(self, slot, modifier):
         """Touch contact edge: hold the configured modifier while the finger stays.
 
-        Unknown modifier names are ignored instead of raising: the value comes
-        from a user-editable config file, and one bad entry must not take the
-        reader thread down.
+        "none" (the default) and an unset value do nothing and say nothing;
+        any other unknown name is ignored instead of raising, because the
+        value comes from a user-editable config file and one bad entry must
+        not take the reader thread down.
         """
+        if modifier is None or modifier == TOUCH_NO_ACTION:
+            return
         if modifier not in TOUCH_MODIFIER_KEYS:
             print(f"[Warning] Unknown touch modifier: {modifier}")
+            return
+        if modifier in self.touch_held.values():
+            # Another contact already holds this modifier down: record the
+            # slot only, so the key-down/up pair stays balanced.
+            self.touch_held[slot] = modifier
             return
         self.press_key(modifier)
         self.touch_held[slot] = modifier
 
     def release_touch_modifier(self, slot):
-        """Full release of one contact: drop only that slot's held modifier."""
+        """Full release of one contact: drop that slot's hold.
+
+        A modifier two buttons both hold stays down until the last slot using
+        it releases, so lifting one finger cannot un-modify the other.
+        """
         modifier = self.touch_held.pop(slot, None)
-        if modifier is not None:
+        if modifier is not None and modifier not in self.touch_held.values():
             self.release_key(modifier)
 
     # ==============================================================================

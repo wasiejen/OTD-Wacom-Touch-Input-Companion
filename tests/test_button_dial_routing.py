@@ -82,9 +82,21 @@ def key_ups(events, vk):
     return sum(1 for e in events if e[0] == "key" and e[1] == vk and e[2] == 0x0002)
 
 
+class SizeRecordingDevice(PlainDevice):
+    """Fake device remembering the max_size each read requested."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.sizes = []
+
+    def read(self, max_size=64):
+        self.sizes.append(max_size)
+        return super().read(max_size)
+
+
 @contextlib.contextmanager
 def interface_stream(fake_hid, interface_type, reports, state, dispatcher, cfg,
-                     interface_number=0):
+                     interface_number=0, device_cls=PlainDevice):
     """Run one real interface reader over a scripted report queue.
 
     The fake hid module serves the reader's device() call, so run_interface
@@ -93,7 +105,7 @@ def interface_stream(fake_hid, interface_type, reports, state, dispatcher, cfg,
     enabled event (the reader's pause path) and joins, so the held-input
     release of thread exit is part of the recorded events.
     """
-    device = PlainDevice(reports=[list(r) for r in reports])
+    device = device_cls(reports=[list(r) for r in reports])
     fake_hid._queue.append(device)
     enabled = threading.Event()
     enabled.set()
@@ -232,3 +244,17 @@ def test_thread_exit_releases_a_held_touch_modifier(fake_hid, config, stub_send_
 
     assert key_ups(stub_send_input, VK_CTRL) == 1
     assert dispatcher.touch_held == {}
+
+
+def test_button_id_survives_the_touch_interface_read_size(fake_hid, config,
+                                                          stub_send_input):
+    """The Touch reader asks for 66 bytes while the button report is 10; the
+    routing depends on the report id still standing at byte 0."""
+    config.action_mapping["btn1_press"] = "volume_up"
+    state = TabletState()
+    dispatcher = ActionDispatcher(state, config)
+
+    with interface_stream(fake_hid, "Touch", [BTN1_PRESS], state, dispatcher, config,
+                          interface_number=1, device_cls=SizeRecordingDevice) as device:
+        assert wait_until(lambda: key_downs(stub_send_input, VK_VOLUME_UP) > 0)
+        assert 66 in device.sizes

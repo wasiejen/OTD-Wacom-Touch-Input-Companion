@@ -163,6 +163,9 @@ BUTTON_CONTROL_KEYS = tuple(f"btn{n}_press" for n in range(1, 9)) + (
 # is TOUCH_ACTION_CHOICES ("none" plus the modifier names), not the tap-action
 # list; the part defaults to off.
 BUTTON_TOUCH_KEYS = tuple(f"btn{n}_touch" for n in range(1, 9))
+# Explicit press -> touch pairing (no string slicing): the tab builds the two
+# widgets of one express key from this map.
+BUTTON_TOUCH_BY_PRESS = {f"btn{n}_press": f"btn{n}_touch" for n in range(1, 9)}
 
 
 def action_display_value(action, options):
@@ -947,13 +950,13 @@ class SettingsWindow(tk.Toplevel):
             ToolTip(chk, tip)
             ToolTip(combo, tip)
 
-            touch_key = f"btn{key[3]}_touch"
-            if touch_key in BUTTON_TOUCH_KEYS:
+            touch_key = BUTTON_TOUCH_BY_PRESS.get(key)
+            if touch_key is not None:
                 # U381 / #381: touch part of this express key -- the modifier
                 # held while the finger keeps contact, off by default.
-                touch_tip = (f"Touch part of express key {key[3]}: while a finger keeps "
-                             "contact, this modifier is held down and it releases on the "
-                             "full release. Off by default.")
+                touch_tip = (f"Touch part of express key {touch_key[3]}: while a finger "
+                             "keeps contact, this modifier is held down and it releases on "
+                             "the full release. Off by default.")
                 touch_var = tk.BooleanVar(value=self.config.feature_toggles.get(touch_key, False))
                 touch_chk = ttk.Checkbutton(mapping_frame, text="touch", variable=touch_var)
                 touch_chk.grid(row=idx, column=3, sticky="w", pady=4)
