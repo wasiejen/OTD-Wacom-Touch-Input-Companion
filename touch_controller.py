@@ -119,6 +119,9 @@ class ActionDispatcher():
         self.pen_button_held = {}
         # Tablet button-held inputs (U71): slots 1..8 express keys, 9 central.
         self.button_held = {}
+        # Touch-part holds (U381 / #381): slots 1..8 while byte 5 keeps a
+        # finger in contact; the modifier is released on the full release.
+        self.touch_held = {}
 
         # The Dispatch Table
         self.ACTION_DISPATCH = {
@@ -288,6 +291,29 @@ class ActionDispatcher():
             self.send_mouse_click(self.PEN_BUTTON_FLAGS[action_name][1])
 
     # ==============================================================================
+    # TOUCH-PART HELPERS (U381 / #381)
+    # ==============================================================================
+
+    def press_touch_modifier(self, slot, modifier):
+        """Touch contact edge: hold the configured modifier while the finger stays.
+
+        Unknown modifier names are ignored instead of raising: the value comes
+        from a user-editable config file, and one bad entry must not take the
+        reader thread down.
+        """
+        if modifier not in TOUCH_MODIFIER_KEYS:
+            print(f"[Warning] Unknown touch modifier: {modifier}")
+            return
+        self.press_key(modifier)
+        self.touch_held[slot] = modifier
+
+    def release_touch_modifier(self, slot):
+        """Full release of one contact: drop only that slot's held modifier."""
+        modifier = self.touch_held.pop(slot, None)
+        if modifier is not None:
+            self.release_key(modifier)
+
+    # ==============================================================================
     # HELPER FUNCTIONS - INPUT
     # ==============================================================================  
 
@@ -311,6 +337,14 @@ class ActionDispatcher():
         cannot leave Ctrl or the left button pressed system-wide.
         """
         released = []
+
+        # Touch holds first: their modifier names also sit in held_keys, and
+        # releasing them here keeps the generic pass below from sending a
+        # second key-up for the same modifier (U381 / #381).
+        for slot, modifier in list(self.touch_held.items()):
+            self.release_key(modifier)
+            released.append(f"touch_{modifier}_{slot}")
+        self.touch_held.clear()
 
         for vk_code in list(self.held_keys):
             self.release_key(vk_code)
@@ -390,6 +424,17 @@ TOUCH_COORD_MAX = 4095
 TOUCH_ROTATION_CENTER = (TOUCH_COORD_MAX / 2, TOUCH_COORD_MAX / 2)
 ORIENTATION_MIN_DEGREES = 0
 ORIENTATION_MAX_DEGREES = 359
+
+# Touch-part config (U381 / #381): byte 5 of the 0x03 report marks a finger in
+# contact with express key n; the configured modifier is held for the duration
+# of that contact and released on the recorded full-release state. Defaults are
+# disabled (toggle False plus "none"), so the touch part fires nothing until
+# the user enables it per button. Defined above DriverConfig: its defaults
+# reference them, and the module config instance builds at import time.
+TOUCH_CONTROL_KEYS = tuple(f"btn{n}_touch" for n in range(1, 9))
+TOUCH_NO_ACTION = "none"
+TOUCH_MODIFIER_KEYS = ("ctrl", "shift", "alt")
+TOUCH_ACTION_CHOICES = (TOUCH_NO_ACTION,) + TOUCH_MODIFIER_KEYS
 
 # ==============================================================================
 # CONFIGURATION CLASS
@@ -686,6 +731,17 @@ class DriverConfig:
             "central_press" : True,
             "dial_cw" : True,
             "dial_ccw" : True,
+            # Touch part of each express key (U381 #381): holds its modifier
+            # while the finger keeps contact. Default DISABLED -- the touch
+            # part fires nothing until the user turns it on per button.
+            "btn1_touch" : False,
+            "btn2_touch" : False,
+            "btn3_touch" : False,
+            "btn4_touch" : False,
+            "btn5_touch" : False,
+            "btn6_touch" : False,
+            "btn7_touch" : False,
+            "btn8_touch" : False,
             #"0f" : True,
         }
         
@@ -777,6 +833,18 @@ class DriverConfig:
             "central_press": "middle_click",
             "dial_cw": "next",
             "dial_ccw": "prev",
+            # Touch part of each express key (U381 #381): a modifier held for
+            # the duration of the byte 5 contact, released on full release.
+            # Vocabulary is TOUCH_ACTION_CHOICES, not AVAILABLE_ACTIONS; the
+            # default "none" plus the False toggle keeps the part disabled.
+            "btn1_touch": TOUCH_NO_ACTION,
+            "btn2_touch": TOUCH_NO_ACTION,
+            "btn3_touch": TOUCH_NO_ACTION,
+            "btn4_touch": TOUCH_NO_ACTION,
+            "btn5_touch": TOUCH_NO_ACTION,
+            "btn6_touch": TOUCH_NO_ACTION,
+            "btn7_touch": TOUCH_NO_ACTION,
+            "btn8_touch": TOUCH_NO_ACTION,
             
             #"0f" : "left_hold_release",
         }
@@ -913,7 +981,11 @@ class DriverConfig:
                 if not isinstance(val, str):
                     errors.append(f"'action_mapping.{key}' needs an action name, "
                                   f"got {self._describe(val)} ({ref})")
-                elif val not in self.AVAILABLE_ACTIONS:
+                elif val not in (TOUCH_ACTION_CHOICES if key in TOUCH_CONTROL_KEYS
+                                 else self.AVAILABLE_ACTIONS):
+                    # U381: a btn*_touch value names a touch modifier from
+                    # TOUCH_ACTION_CHOICES; every other key takes an action
+                    # name from AVAILABLE_ACTIONS.
                     errors.append(f"'action_mapping.{key}' maps to unknown action "
                                   f"{self._describe(val)} ({ref})")
                 else:
@@ -1526,7 +1598,10 @@ class TabletState:
 
         # Touch button/dial tracking (U71): last-seen byte 4 press bitmask,
         # central-button press state, dial origin angle and step accumulator.
+        # U381 adds the byte 5 contact mask, so a touch part sees its own
+        # contact edges independently of the press edges.
         self.button_press_mask = 0
+        self.button_touch_mask = 0
         self.central_pressed = False
         self.dial_last_angle = None
         self.dial_acc = 0.0
@@ -1856,7 +1931,11 @@ def process_button_report(report, state, action_dispatch, config):
     byte 3 bit 0 is the central button. Press and release edges drive the
     mapping table like the pen buttons. Byte 2 carries the dial angle while a
     finger is in the rotary field; deltas accumulate into CW/CCW step actions,
-    mirroring the alt-tab step family. Touch contact (byte 5) fires nothing.
+    mirroring the alt-tab step family. Byte 5 is the touch-contact mask: its
+    edges drive the per-button touch part (U381 / #381: hold the configured
+    modifier while the contact lasts, disabled by default) and never gate a
+    press -- contact alone carries no press, and a press stays live while the
+    finger keeps contact.
     """
     parsed = decode_button_report(report)
     if parsed is None:
@@ -1864,6 +1943,23 @@ def process_button_report(report, state, action_dispatch, config):
 
     ad = action_dispatch
     press_mask = parsed["press"]
+
+    # Touch part before the press edges (U381 / #381): a press that arrives in
+    # the same report as a fresh contact runs with that contact's modifier
+    # already held down (recorded press row carries both bits).
+    touch_mask = parsed["touch"]
+    for slot in range(1, 9):
+        bit = BUTTON_TOUCH_MASKS[slot - 1]
+        present = bool(touch_mask & bit)
+        if present == bool(state.button_touch_mask & bit):
+            continue
+        key = f"btn{slot}_touch"
+        if present:
+            if config.feature_toggles.get(key, False):
+                ad.press_touch_modifier(slot, config.action_mapping.get(key))
+        else:
+            ad.release_touch_modifier(slot)
+    state.button_touch_mask = touch_mask
 
     for slot in range(1, 9):
         bit = BUTTON_PRESS_MASKS[slot - 1]
@@ -1906,6 +2002,21 @@ def process_button_report(report, state, action_dispatch, config):
         # Finger lifted from the rotary field: drop origin and partial step.
         state.dial_last_angle = None
         state.dial_acc = 0.0
+
+def handle_report_by_id(report, state, action_dispatch, cfg):
+    """Consume any report whose id names its own handler (U381 / #381, #382).
+
+    Returns True when this function owned the report. The recorded wired
+    capture (maintainer/draft/WTD_pen_support_probe_data.md: one interface
+    constant for the whole file) reads pen id 0x02 and button/dial id 0x03
+    rows from the SAME interface, so a reader must not assume its interface
+    carries a single report id: without this route a 0x03 press reached the
+    pen or touch handler, hit that handler's own id filter, and was dropped.
+    """
+    if report and report[0] == BUTTON_REPORT_ID:
+        process_button_report(report, state, action_dispatch, cfg)
+        return True
+    return False
 
 def parse_sub_block(block):
     if len(block) < 5:
@@ -2304,7 +2415,12 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
                 report = dev.read(read_size)
 
             if report:
-                if interface_type == "Touch":
+                if handle_report_by_id(report, state, action_dispatch, cfg):
+                    # U381: the 0x03 button/dial report shares the pen or the
+                    # touch interface on the recorded device; the id route
+                    # owns it on every interface, the third interface too.
+                    pass
+                elif interface_type == "Touch":
                     process_touch_report(report, state, action_dispatch, cfg)
                 elif interface_type == "Pen":
                     parse_pen_packet(report, state)
