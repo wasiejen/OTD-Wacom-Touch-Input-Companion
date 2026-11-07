@@ -30,6 +30,12 @@ from touch_controller import (
 SPECS = {"max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7}
 HOVER_ROW = [0x02, 0x20, 0x00, 0x00, 0x32, 0xB6, 0x00, 0x00, 0x00, 0xFD]
 ABS_FLAGS = 0x0001 | 0x8000 | 0x4000
+# U376: every absolute-value pin in this file feeds a SQUARE synthetic
+# desktop. On a 1:1-aspect desktop the isotropic fit reduces exactly to the
+# U344 normalized-space parity, so the corner numbers stay machine-free and
+# byte-exact; the ultrawide anisotropy the fix targets lives in
+# tests/test_pen_absolute_isotropy.py.
+SQUARE_1440 = (0, 0, 1440, 1440)
 
 
 def build_pen_report(status, x=0, y=0, pressure=0, hover=0):
@@ -58,13 +64,15 @@ def dispatcher(state):
 
 
 def process(report, state, dispatcher, config):
-    process_pen_report(report, state, dispatcher, config, SPECS)
+    process_pen_report(report, state, dispatcher, config, SPECS,
+                       screen_metrics=SQUARE_1440)
 
 
 def process_791(report, state, dispatcher, config):
     """The authoritative 791 OTD table: the maintainer's Large tablet lane."""
     process_pen_report(report, state, dispatcher, config,
-                       touch_controller.PEN_SPECS_BY_PRODUCT[791])
+                       touch_controller.PEN_SPECS_BY_PRODUCT[791],
+                       screen_metrics=SQUARE_1440)
 
 
 def mouse_flags(events):
@@ -102,11 +110,12 @@ def test_rotation_report_carries_previous_pressure(state, dispatcher, config, st
 
 
 def test_absolute_mode_default_maps_full_range_1to1(state, dispatcher, config, stub_send_input):
-    # U344 goal 3: the DEFAULT mapping keeps equal px-per-mm on both axes
-    # (pen writing is the primary use). The 789 box (223.52 x 139.7 mm)
-    # scales at the longer axis: x spans the full desktop, y the CENTERED
-    # band 12287..53247 in virtual space. On a 25:9 ultrawide the pen area
-    # then covers a center slice, not the stretched full screen.
+    # U344 goal 3 default lane, pinned on the SQUARE synthetic desktop: there
+    # the isotropic px/mm fit (U376) and the old normalized-space parity give
+    # one number, so the 789 box keeps x full 0..65535 and y the centered band
+    # 12287..53247 (equal px-per-mm on both axes). On a non-square desktop the
+    # parity is no longer px/mm parity -- see tests/test_pen_absolute_isotropy.py
+    # for the ultrawide isotropy and centering pins.
     process(build_pen_report(0x20, x=0, y=0), state, dispatcher, config)
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 0, 12287)
     process(build_pen_report(0x20, x=44704, y=27940), state, dispatcher, config)
@@ -129,11 +138,13 @@ def test_absolute_mode_clamps_above_max(state, dispatcher, config, stub_send_inp
     # Direct consumer call (no autoscale observation): coordinates above
     # the declared box clamp on the long axis; the 1:1 default scales y
     # into the centered band, the stretch opt-in clamps both axes.
-    update_pen_cursor(state, dispatcher, config, SPECS, 50000, 30000)
+    update_pen_cursor(state, dispatcher, config, SPECS, 50000, 30000,
+                      screen_metrics=SQUARE_1440)
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 56267)
     config.feature_toggles["pen_stretch_full_desktop"] = True
     stub_send_input.clear()
-    update_pen_cursor(state, dispatcher, config, SPECS, 50000, 30000)
+    update_pen_cursor(state, dispatcher, config, SPECS, 50000, 30000,
+                      screen_metrics=SQUARE_1440)
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 65535)
 
 
@@ -294,7 +305,8 @@ def test_authoritative_models_clamp_absolute_and_scale_relative(state, dispatche
     # 2.0 mm x 8 -> x int(15.99999...) = 15, y int(16.0) = 16 (the x float
     # lands below 16 by float noise; the fraction stays accumulated).
     specs = pen_specs_for_product(788)
-    update_pen_cursor(state, dispatcher, config, specs, 40000, 40000)
+    update_pen_cursor(state, dispatcher, config, specs, 40000, 40000,
+                      screen_metrics=SQUARE_1440)
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 65535)
     config.feature_toggles["pen_absolute_mode"] = False
     config.pen_speed = 8.0
@@ -310,20 +322,23 @@ def test_autoscale_grows_the_box_and_prints_one_named_line(state, dispatcher, co
     # U344 defensive lane kept as the safety net under the U370 corrected
     # 791 extents: coordinates past the OTD 65024 x 40640 box grow the
     # mapping box per axis and ONE byte-stable named line fires; later
-    # reports stay quiet. The grown 16:10 box maps per the 1:1 default lane.
+    # reports stay quiet. The grown box maps through the isotropic lane.
     process_791(build_pen_report(0x20, x=70000, y=50000), state, dispatcher, config)
     assert capsys.readouterr().out == (
         "pen_extents_autoscale declared_x=65024 declared_y=40640 "
         "observed_x=70000 observed_y=50000 using=observed\n")
-    # Grown box corner (70000,50000): x spans the full desktop, y lands in
-    # the centered band at int(9362.142857 + 46810.714286 + 1e-9) = 56172.
-    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 56172)
+    # Grown box corner (70000,50000): the grown COUNT box (1.40 aspect) keeps
+    # the declared 16:10 mm box, so the isotropic fit runs off width on the
+    # square desktop: scale = 1440/325.12 px/mm, x spans 0..65535 and the mm
+    # box uses 203.2 * 1440/325.12 = 900 px of the 1440, so the y corner lands
+    # at int(12287.8125 + 50000 * 0.8191875 + 1e-9) = 53247.
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 53247)
     assert state.pen_obs_max_x == 70000
     assert state.pen_obs_max_y == 50000
     stub_send_input.clear()
     process_791(build_pen_report(0x20, x=2500, y=2500), state, dispatcher, config)
     assert capsys.readouterr().out == ""
-    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 2340, 11702)
+    assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 2340, 14335)
     assert state.pen_obs_max_x == 70000
     assert state.pen_obs_max_y == 50000
 
@@ -383,18 +398,22 @@ def test_791_default_lane_maps_aspect_correct_1to1(state, dispatcher, config, st
     # U370 goal (maintainer finding: diagonal shallower than 1:1 on the
     # filled 4096 square): with the authoritative 791 box (65024 x 40640,
     # 16:10) the DEFAULT absolute lane keeps one scale on both axes. The
-    # x axis spans the full desktop (longer axis), the y box lands in the
-    # centered band 12287..53247 -- the same 16:10 band as the 789 pin --
-    # so px-per-mm is equal on x and y and every corner of the pen area
-    # is reachable. Pre-change (square 4096 box) both axes ran to 65535.
+    # x axis spans the full desktop, the y box lands in the centered band
+    # 12287..53247 -- the same 16:10 band as the 789 pin -- so px-per-mm is
+    # equal on both axes of THIS square desktop and every corner of the pen
+    # area is reachable. Pre-change (square 4096 box) both axes ran to 65535.
+    # Ultrawide isotropy/centering: tests/test_pen_absolute_isotropy.py.
     specs = pen_specs_for_product(791)
-    update_pen_cursor(state, dispatcher, config, specs, 0, 0)
+    update_pen_cursor(state, dispatcher, config, specs, 0, 0,
+                      screen_metrics=SQUARE_1440)
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 0, 12287)
     stub_send_input.clear()
-    update_pen_cursor(state, dispatcher, config, specs, 65024, 40640)
+    update_pen_cursor(state, dispatcher, config, specs, 65024, 40640,
+                      screen_metrics=SQUARE_1440)
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 53247)
     stub_send_input.clear()
-    update_pen_cursor(state, dispatcher, config, specs, 32512, 20320)
+    update_pen_cursor(state, dispatcher, config, specs, 32512, 20320,
+                      screen_metrics=SQUARE_1440)
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 32767, 32767)
 
 
@@ -589,6 +608,7 @@ def test_pen_thread_processes_full_report_and_logs_init_note(fake_hid, stub_send
 
     assert not thread.is_alive()
     assert state.pen_position == (1000, 1000)
+    assert state.pen_product_id == 789, "the pen thread names the product for the mapping log"
     mouse_flags = [e[1] for e in stub_send_input if e[0] == "mouse"]
     assert ABS_FLAGS in mouse_flags
     assert 0x0002 in mouse_flags

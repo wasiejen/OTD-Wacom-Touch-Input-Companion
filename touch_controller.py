@@ -1281,6 +1281,28 @@ def apply_orientation(point, cfg, center):
     return rotate_point(point[0], point[1], cfg.orientation_degrees,
                         center[0], center[1])
 
+def _abs_snap_cos_sin(degrees):
+    """Whole-quadrant-snapped |cos|, |sin| of the orientation angle.
+
+    One snap rule for both count extents and the physical box, so the two
+    stay proportional for a uniform-density digitizer. 0° gives (1.0, 0.0).
+    """
+    if degrees == 0:
+        return (1.0, 0.0)
+    rad = math.radians(degrees)
+    cos_a = abs(math.cos(rad))
+    sin_a = abs(math.sin(rad))
+    if cos_a > 1 - 1e-9:
+        cos_a = 1.0
+    elif cos_a < 1e-9:
+        cos_a = 0.0
+    if sin_a > 1 - 1e-9:
+        sin_a = 1.0
+    elif sin_a < 1e-9:
+        sin_a = 0.0
+    return (cos_a, sin_a)
+
+
 def rotated_pen_extents(pen_specs, degrees):
     """Bounding box of the digitizer rectangle after the orientation rotation.
 
@@ -1293,22 +1315,108 @@ def rotated_pen_extents(pen_specs, degrees):
     """
     if degrees == 0:
         return (0, 0, pen_specs["max_x"], pen_specs["max_y"])
-    rad = math.radians(degrees)
-    cos_a = abs(math.cos(rad))
-    sin_a = abs(math.sin(rad))
-    if cos_a > 1 - 1e-9:
-        cos_a = 1.0
-    elif cos_a < 1e-9:
-        cos_a = 0.0
-    if sin_a > 1 - 1e-9:
-        sin_a = 1.0
-    elif sin_a < 1e-9:
-        sin_a = 0.0
+    cos_a, sin_a = _abs_snap_cos_sin(degrees)
     width = pen_specs["max_x"] * cos_a + pen_specs["max_y"] * sin_a
     height = pen_specs["max_x"] * sin_a + pen_specs["max_y"] * cos_a
     cx = pen_specs["max_x"] / 2
     cy = pen_specs["max_y"] / 2
     return (cx - width / 2, cy - height / 2, width, height)
+
+
+def rotated_pen_box_mm(pen_specs, degrees):
+    """Physical mm size of the mapped (rotated) digitizer box.
+
+    The mm counterpart of rotated_pen_extents with the SAME snap, so a
+    uniform-density digitizer (every PEN_SPECS row runs exactly 200 counts/mm
+    on both axes) keeps the mm box and the count box proportional. A grown
+    (autoscaled) box keeps the declared mm size, so its mm-per-count drops
+    with the growth -- exactly as the relative lane scales it.
+    Returns (width_mm, height_mm); 0° returns the declared size.
+    """
+    cos_a, sin_a = _abs_snap_cos_sin(degrees)
+    return (pen_specs["width_mm"] * cos_a + pen_specs["height_mm"] * sin_a,
+            pen_specs["height_mm"] * cos_a + pen_specs["width_mm"] * sin_a)
+
+
+# ==============================================================================
+# VIRTUAL DESKTOP GEOMETRY (U376 / #380)
+# ==============================================================================
+# MOUSEEVENTF_VIRTUALDESK stretches the 0..65535 absolute range over the
+# virtual desktop's PIXEL extents (the same process-DPI space GetSystemMetrics
+# reports, so the two sides use one metric). A mapping computed in that
+# normalized space therefore keeps equal FRACTIONS of the screen per mm, not
+# equal px/mm: on a 25:9 desktop the U344 "1:1 default" squashed the height by
+# exactly the screen aspect (maintainer report 2026-11-06: a 45 deg pen line
+# ran 22.7 deg and the top and bottom 3/16 of the display were unreachable).
+# The isotropic default needs the desktop pixel extents at mapping time.
+SM_CMONITORS = 2
+SM_CXVIRTUALSCREEN = 7
+SM_CYVIRTUALSCREEN = 8
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+
+
+def _get_system_metrics(index):
+    """One system-metrics read, None when the host offers none."""
+    try:
+        return int(ctypes.windll.user32.GetSystemMetrics(index))
+    except Exception:
+        return None
+
+
+def virtual_desktop_metrics():
+    """Virtual desktop bounds (left, top, width_px, height_px), None if none.
+
+    Read-only system metrics -- no input event is ever sent here. None names
+    the degraded mapping lane: a host without the metrics API, or a read that
+    returns a zero extent.
+    """
+    left = _get_system_metrics(SM_XVIRTUALSCREEN)
+    top = _get_system_metrics(SM_YVIRTUALSCREEN)
+    width = _get_system_metrics(SM_CXVIRTUALSCREEN)
+    height = _get_system_metrics(SM_CYVIRTUALSCREEN)
+    if None in (left, top, width, height) or width <= 0 or height <= 0:
+        return None
+    return (left, top, width, height)
+
+
+def monitor_count():
+    """Display-monitor count from the system metrics, None if unavailable."""
+    return _get_system_metrics(SM_CMONITORS)
+
+
+PEN_MAP_DIAG_ENV = "WTD_PEN_MAP_DIAG"
+
+
+def pen_mapping_diag_enabled():
+    """Env gate for the one-shot pen mapping diagnostic line (U376 leg 1)."""
+    return os.environ.get(PEN_MAP_DIAG_ENV, "") == "1"
+
+
+def pen_isotropic_absolute_projection(extent_w, extent_h, box_mm_w, box_mm_h,
+                                      screen_w_px, screen_h_px):
+    """Isotropic centered absolute mapping in the 0..65535 normalized space.
+
+    ONE px-per-mm scale = min(screen_w_px / box_mm_w, screen_h_px / box_mm_h):
+    the digitizer box FITS the desktop instead of one axis stretching past the
+    other, and it is centered, so each unreachable band is symmetric and a
+    45 deg pen stroke maps at 45 deg (U376 fix; the opt-in stretch lane keeps
+    the per-axis anisotropic fill).
+
+    Returns (scale_px_per_mm, used_px_w, used_px_h, norm_scale_x, norm_scale_y,
+             norm_off_x, norm_off_y): the pixel footprint plus the normalized
+    coefficients of the consumer formula
+    nx = int(norm_off_x + (device_x - left) * norm_scale_x + 1e-9).
+    """
+    scale = min(screen_w_px / box_mm_w, screen_h_px / box_mm_h)
+    used_w = box_mm_w * scale
+    used_h = box_mm_h * scale
+    norm_off_x = (screen_w_px - used_w) / 2.0 * PEN_VIRTUAL_RESOLUTION / screen_w_px
+    norm_off_y = (screen_h_px - used_h) / 2.0 * PEN_VIRTUAL_RESOLUTION / screen_h_px
+    norm_scale_x = used_w * PEN_VIRTUAL_RESOLUTION / (extent_w * screen_w_px)
+    norm_scale_y = used_h * PEN_VIRTUAL_RESOLUTION / (extent_h * screen_h_px)
+    return (scale, used_w, used_h, norm_scale_x, norm_scale_y,
+            norm_off_x, norm_off_y)
 
 def pen_effective_specs(pen_specs, state):
     """The declared digitizer box grown to the observed coordinate range.
@@ -1393,6 +1501,10 @@ class TabletState:
         self.pen_obs_max_x = 0
         self.pen_obs_max_y = 0
         self.pen_extents_scaled_logged = False
+        # U376 diagnostic lane: the wired product id of this connection and
+        # the one-shot flag for the named mapping-snapshot line.
+        self.pen_product_id = None
+        self.pen_abs_map_logged = False
 
         # Touch button/dial tracking (U71): last-seen byte 4 press bitmask,
         # central-button press state, dial origin angle and step accumulator.
@@ -1486,9 +1598,43 @@ def release_pen_inputs(state, action_dispatch):
     state.pen_pressure = 0
     state.pen_buttons = (False, False)
 
-def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y):
+def _log_pen_mapping_diagnostic(state, config, pen_specs, metrics, mode,
+                                extent_w, extent_h, px_mm, bands):
+    """One-shot named mapping snapshot of the absolute lane (U376 leg 1).
+
+    Byte-stable key=value line, gated by env WTD_PEN_MAP_DIAG=1 and printed
+    once per connection: it names the branch that executed, the declared
+    extents with the product id, the mapped count and mm box, the autoscale
+    observed range, the desktop geometry with its monitor count, and the
+    px-per-mm scale of each axis plus its unreachable band. The mapping
+    itself is untouched by this line.
+    """
+    box_mm_w, box_mm_h = rotated_pen_box_mm(pen_specs, config.orientation_degrees)
+    if px_mm is not None:
+        scales = "px_mm_x=%.4f px_mm_y=%.4f band_x=%.2f_px band_y=%.2f_px" % (
+            px_mm[0], px_mm[1], bands[0], bands[1])
+    else:
+        scales = "px_mm_x=na px_mm_y=na band_x=na band_y=na"
+    monitors = monitor_count()
+    print("pen_abs_map mode=%s product=%s declared=%dx%d box=%dx%d "
+          "box_mm=%.4fx%.4f obs=%dx%d screen=%sx%s monitors=%s %s"
+          % (mode, state.pen_product_id,
+             pen_specs["max_x"], pen_specs["max_y"],
+             int(extent_w), int(extent_h), box_mm_w, box_mm_h,
+             state.pen_obs_max_x, state.pen_obs_max_y,
+             metrics[2] if metrics is not None else "na",
+             metrics[3] if metrics is not None else "na",
+             monitors if monitors is not None else "na", scales))
+
+
+def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
+                      screen_metrics=None):
     """Move the pointer: absolute maps the digitizer to the virtual desktop,
-    relative sends scaled deltas with a fractional accumulator."""
+    relative sends scaled deltas with a fractional accumulator.
+
+    screen_metrics (U376): synthetic (left, top, width_px, height_px) desktop
+    extents for the tests; None resolves them from the system metrics.
+    """
     ad = action_dispatch
     absolute = config.feature_toggles.get("pen_absolute_mode", True)
 
@@ -1499,20 +1645,48 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y):
         # without shifting any integer device coordinate's truncated result.
         left, top, extent_w, extent_h = rotated_pen_extents(
             pen_specs, config.orientation_degrees)
-        if config.feature_toggles.get("pen_stretch_full_desktop", False):
+        stretch = config.feature_toggles.get("pen_stretch_full_desktop", False)
+        metrics = (virtual_desktop_metrics() if screen_metrics is None
+                   else screen_metrics)
+        px_mm = None
+        bands = None
+        if stretch:
             # Opt-in stretch (U344 goal 3): per-axis scales, the whole
-            # digitizer box stretched across the full desktop — the
+            # digitizer box stretched across the full desktop -- the
             # maintainer's ultrawide observation, kept as opt-in.
             nx = min(max(int((x - left) * PEN_VIRTUAL_RESOLUTION / extent_w + 1e-9), 0),
                      PEN_VIRTUAL_RESOLUTION)
             ny = min(max(int((y - top) * PEN_VIRTUAL_RESOLUTION / extent_h + 1e-9), 0),
                      PEN_VIRTUAL_RESOLUTION)
+            mode = "stretch"
+            if metrics is not None:
+                box_mm_w, box_mm_h = rotated_pen_box_mm(
+                    pen_specs, config.orientation_degrees)
+                px_mm = (metrics[2] / box_mm_w, metrics[3] / box_mm_h)
+                bands = (0.0, 0.0)
+        elif metrics is not None:
+            # Isotropic centered default (U376 fix of the U344 lane): ONE
+            # px-per-mm scale from the desktop fit plus a centering offset, so
+            # a 45 deg pen stroke stays 45 deg and every unreachable band is
+            # symmetric. The old parity ran in the 0..65535 space Windows
+            # stretches to the desktop aspect, so it squashed height by
+            # exactly the screen aspect (maintainer report 2026-11-06).
+            box_mm_w, box_mm_h = rotated_pen_box_mm(
+                pen_specs, config.orientation_degrees)
+            (scale_px_mm, used_w, used_h, scale_x, scale_y,
+             off_x, off_y) = pen_isotropic_absolute_projection(
+                extent_w, extent_h, box_mm_w, box_mm_h, metrics[2], metrics[3])
+            nx = min(max(int(off_x + (x - left) * scale_x + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
+            ny = min(max(int(off_y + (y - top) * scale_y + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
+            px_mm = (scale_px_mm, scale_px_mm)
+            bands = ((metrics[2] - used_w) / 2.0, (metrics[3] - used_h) / 2.0)
+            mode = "isotropic"
         else:
-            # Default 1:1 (U344 goal 3): pen writing keeps equal px-per-mm
-            # on both axes. One scale from the longer box axis; the box is
-            # centered in the band the shorter axis leaves free. On a 25:9
-            # ultrawide the pen area covers a center slice of the screen,
-            # not the stretched whole screen.
+            # Degraded lane (no usable desktop metrics): equal FRACTIONS of
+            # the screen per mm -- the box aspect stays true and px/mm parity
+            # only holds for a square-aspect desktop. Named in the log line.
             scale = PEN_VIRTUAL_RESOLUTION / max(extent_w, extent_h)
             offset_x = (PEN_VIRTUAL_RESOLUTION - scale * extent_w) / 2
             offset_y = (PEN_VIRTUAL_RESOLUTION - scale * extent_h) / 2
@@ -1520,6 +1694,11 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y):
                      PEN_VIRTUAL_RESOLUTION)
             ny = min(max(int(offset_y + (y - top) * scale + 1e-9), 0),
                      PEN_VIRTUAL_RESOLUTION)
+            mode = "isotropic_unmeasured"
+        if pen_mapping_diag_enabled() and not state.pen_abs_map_logged:
+            state.pen_abs_map_logged = True
+            _log_pen_mapping_diagnostic(state, config, pen_specs, metrics, mode,
+                                        extent_w, extent_h, px_mm, bands)
         state.pen_position = (x, y)
         ad.send_pen_absolute_move(nx, ny)
         return
@@ -1552,13 +1731,16 @@ def update_pen_pressure_button(state, action_dispatch, config):
     elif not pressed and ad.pen_pressure_held:
         ad.release_pen_pressure()
 
-def process_pen_report(report, state, action_dispatch, config, pen_specs):
+def process_pen_report(report, state, action_dispatch, config, pen_specs,
+                       screen_metrics=None):
     """Full pen input from the 10-byte 0x02 report (U70).
 
     The status byte switches the meaning of bytes 6-7: bits 1 and 3 mark a
     rotation report (pressure, tilt and buttons carry over from the previous
     report), bit 5 marks a tablet report (pressure valid). Tilt and hover are
     ignored per the approved ruling; pressure acts as left-click state.
+    screen_metrics passes the synthetic desktop extents through to the
+    absolute mapping (U376).
     """
     if not report or report[0] != PEN_REPORT_ID or len(report) < PEN_REPORT_LENGTH:
         return
@@ -1612,7 +1794,8 @@ def process_pen_report(report, state, action_dispatch, config, pen_specs):
                 ad.release_pen_button(slot)
     state.pen_buttons = new_buttons
 
-    update_pen_cursor(state, ad, config, grown_specs, x, y)
+    update_pen_cursor(state, ad, config, grown_specs, x, y,
+                      screen_metrics=screen_metrics)
     update_pen_pressure_button(state, ad, config)
 
 def decode_button_report(report):
@@ -2065,7 +2248,10 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
 
         pen_specs = None
         if interface_type == "Pen":
-            pen_specs = pen_specs_for_product(device_info.get("product_id"), cfg)
+            product_id = device_info.get("product_id")
+            pen_specs = pen_specs_for_product(product_id, cfg)
+            # U376: the named mapping diagnostic names the product it resolved.
+            state.pen_product_id = product_id
             print(f"{header} Init report not sent: upstream sends FeatureInitReport "
                   "'02 08' at device open; requirement unknown (pen data reads without it).")
 

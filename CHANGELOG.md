@@ -4,6 +4,52 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261107-1917:
+
+  - FIXED absolute-mode anisotropy (U376 / #380, maintainer report
+    2026-11-06): the U344 "1:1 default" computed its parity inside the
+    0..65535 space that `MOUSEEVENTF_VIRTUALDESK` stretches over the virtual
+    desktop's PIXEL extents, so it kept equal FRACTIONS of the screen per mm,
+    not equal px-per-mm. Measured pre-fix on the 791 tablet
+    (325.12 x 203.2 mm): 3440x1440 ran 10.5807 x 4.4292 px/mm -- ratio
+    2.3889 = exactly the screen aspect -- a 45 deg pen line landed at
+    22.71 deg and the top and bottom 3/16 of the display were unreachable;
+    5120x1440 ratio 3.5555 / 15.71 deg; a 6880x1440 duo 4.7777 / 11.82 deg;
+    only a square-aspect desktop gave ratio 1.0000, which is the signature of
+    the normalized-space parity. The default lane now takes the desktop pixel
+    extents (`virtual_desktop_metrics`, read-only GetSystemMetrics) and
+    computes ONE px-per-mm scale from the fit
+    (`pen_isotropic_absolute_projection`: scale =
+    min(screen_w / box_w_mm, screen_h / box_h_mm)) plus a centering offset, so
+    a 45 deg stroke maps at 45 deg and every unreachable band is symmetric:
+    791 on 3440x1440 covers the full height and leaves two equal 568 px side
+    bands, on a square desktop the full width and two equal 270 px top and
+    bottom bands. `pen_stretch_full_desktop=1` keeps the per-axis anisotropic
+    fill (semantics unchanged, its pins stayed green). With no usable desktop
+    metrics the mapping falls back to the old normalized parity and names
+    itself `isotropic_unmeasured`. New env-gated one-shot diagnostic
+    `WTD_PEN_MAP_DIAG=1` prints `pen_abs_map mode=... product=...
+    declared=... box=... box_mm=... obs=... screen=... monitors=...
+    px_mm_x=... px_mm_y=... band_x=... band_y=...`. Wireless verdict: the
+    behaves-like-medium observation is the documented `wireless_pen_size`
+    default (receiver id 132 cannot detect the paired tablet, ruling
+    2026-11-04) -- the mapping lane is the same one, so the vertical squash
+    disappears there too and what remains is preset clipping
+    (44704/65024 = 68.75 % of the Large tablet's width maps, coordinates past
+    it clamp to the desktop edge); set `wireless_pen_size=large` over the
+    receiver.
+  - Pins: tests/test_pen_absolute_isotropy.py (12 new) -- equal axis scales
+    and 45 deg preserved on 3440x1440 and 5120x1440, symmetric 568 px side
+    bands, symmetric 270 px top/bottom bands on the square desktop, rotated
+    90 deg isotropy and centering, stretch control still anisotropic
+    (ratio 1.4931), wireless medium preset isotropic plus clipping,
+    GetSystemMetrics index reads and the degraded lane, byte-exact diagnostic
+    line printed once. Every absolute pin now feeds its own synthetic desktop
+    through `screen_metrics`, so the suite no longer depends on the test
+    machine's display (verified green with a forced 3440x1440 desktop);
+    repinned the autoscale lane corners (grown count box keeps the declared
+    mm box: corner 65535/53247, inner 2340/14335).
+
 261106-0240:
 
  - FIXED real digitizer extents (U370, HW-ACCEPT-2026-11-04): the 788 and 791
