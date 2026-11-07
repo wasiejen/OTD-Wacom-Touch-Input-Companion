@@ -351,8 +351,11 @@ class SettingsWindow(tk.Toplevel):
         super().__init__(parent)
         self.state = state_ref
         self.config = config_ref
-        # {"connection": conn dict, "base_config": global config} when a live
-        # device is focused; None keeps the window on plain global settings.
+        # {"connection": conn dict, "base_config": global config, "manager":
+        # manager} when the driver runs (U383: main() always passes this
+        # bundle; connection may be None and the section adopts the first
+        # live device); a None bundle keeps the window on plain global
+        # settings.
         self.device_info = device_info
         self.title("Wacom Touch Driver Settings")
         self.geometry("460x650")
@@ -373,6 +376,8 @@ class SettingsWindow(tk.Toplevel):
         main_container.pack(fill="both", expand=True, padx=10, pady=10)
 
         # Focused-device controls (U73): alias assignment and subset copy.
+        # U383: main() always passes the bundle, so the section is present
+        # even when no device had connected at launch.
         if device_info is not None:
             self._build_device_bar(main_container)
 
@@ -414,12 +419,17 @@ class SettingsWindow(tk.Toplevel):
 
     def _build_device_bar(self, container):
         # U383: a missing launch connection is no reason to skip the section;
-        # focus the first live device from the manager, else none.
+        # focus the first live device from the manager, else none. The picked
+        # device becomes the editing target too -- the same config the
+        # launch-connection path passes in as config_ref -- so tabs, Apply
+        # Live and the save lanes all agree on it.
         conn = self.device_info.get("connection")
         if conn is None:
             live = self._live_connections()
             conn = live[0] if live else None
             self.device_info["connection"] = conn
+            if conn is not None:
+                self.config = conn["config"]
         base = self.device_info["base_config"]
         frame = ttk.LabelFrame(container, text=" Focused Device ", padding=8)
         frame.pack(fill="x", pady=(0, 6))
@@ -499,7 +509,12 @@ class SettingsWindow(tk.Toplevel):
         if index >= 0:
             self.devices_combo.current(index)
         elif labels:
+            # U383: the focused connection dropped -- adopt the first live
+            # device so combo, label, editing config and save lanes agree.
+            self.device_info["connection"] = conns[0]
             self.devices_combo.current(0)
+            if hasattr(self, "device_label"):
+                self._rebind_focused_device()
 
     def _on_device_selected(self, event=None):
         """Point the window and its widgets at the selected live device."""

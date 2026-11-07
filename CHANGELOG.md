@@ -17,14 +17,17 @@ on GitHub mark shipped states — `v0.2.2` is the latest release.
     connection within the 1 s after manager start -- a device that
     connected later never added the section back for that run. main() now
     always passes build_device_info(conn, config, manager): the section
-    builds above the tabs even with no launch connection, shows "No device
-    connected yet", and focuses the first live device from the manager's
-    list at build time; Save to Device, Assign alias and Copy to alias
-    answer "No Device Focused" until a device is picked, and Save to File
-    falls back to the global lane. The copy-section checkbuttons no
+    builds above the tabs even with no launch connection; while no device
+    is focused the label reads "No device connected yet" and Save to File
+    takes the global lane; the first live device from the manager's list is
+    adopted at build time as the editing target -- config, tabs, Apply Live
+    and the save lanes all bind to it, as on a launch-time connection --
+    and Save to Device, Assign alias and Copy to alias answer "No Device
+    Focused" until a device is focused. Refresh re-adopts a live device
+    when the focused connection dropped. The copy-section checkbuttons no
     longer share their grid cell with the Assign-alias button (a
-    U87-era overlap). 12 new headless Tk construction pins (withdrawn
-    root, no event pump, verified never mapped); suite 308 -> 320.
+    U87-era overlap). 13 new headless Tk construction pins (withdrawn
+    root, no event pump, windows pinned unmapped); suite 308 -> 321.
     Live GUI acceptance PENDING the maintainer.
 
 261107-1917:

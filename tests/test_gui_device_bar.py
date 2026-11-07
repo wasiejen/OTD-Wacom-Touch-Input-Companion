@@ -13,6 +13,7 @@ test pumps the event loop, and every constructed window stays unmapped
 (verified: winfo_viewable()==0 after construction).
 """
 
+import sys
 import tkinter as tk
 
 import pytest
@@ -77,6 +78,9 @@ def build_window(root, base, device_info, monkeypatch):
     gui_config = device_info["base_config"] if device_info else base
     win = gui.SettingsWindow(root, TabletState(), gui_config, device_info)
     CONSTRUCTED.append(win)
+    # No test pumps the event loop, so the constructed window must never map
+    # onto the screen; this pins the claim the conftest header makes.
+    assert win.winfo_viewable() == 0
     return win, box
 
 
@@ -105,6 +109,22 @@ def test_no_device_build_focuses_first_live_connection(tk_root, base_config, mon
     win, box = build_window(tk_root, base_config, di, monkeypatch)
     assert di["connection"] is c1
     assert win.device_label.cget("text") == "alias-one"
+    # The adopted focus must be the editing target too, not just the label
+    # (reviewer P0: a label-only half-focus writes the global config and
+    # saves the untouched device config).
+    assert win.config is c1["config"]
+
+
+def test_refresh_adopts_live_connection_when_focus_died(tk_root, base_config, monkeypatch):
+    stale = make_conn(base_config, alias="stale-alias")
+    live = make_conn(base_config, alias="live-alias", product_id=791)
+    di = {"connection": stale, "base_config": base_config,
+          "manager": StubManager([live])}
+    win, box = build_window(tk_root, base_config, di, monkeypatch)
+    win._refresh_device_combo()
+    assert di["connection"] is live
+    assert win.device_label.cget("text") == "live-alias"
+    assert win.config is live["config"]
 
 
 def test_plain_window_without_device_info(tk_root, base_config, monkeypatch):
@@ -177,6 +197,34 @@ def test_build_device_info_keeps_manager_without_connection(base_config):
     assert di["manager"] is mgr
 
 
-def test_main_wires_device_info_through_the_helper():
-    source = __import__("inspect").getsource(touch_controller.main)
-    assert "device_info = build_device_info(conn, config, manager)" in source
+class FakeManagerThread:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def start(self):
+        pass
+
+    def get_primary_connection(self):
+        return None
+
+
+def test_main_passes_manager_bundle_without_connection(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    # main() reassigns the module globals; re-registering the current values
+    # makes monkeypatch restore them at teardown.
+    monkeypatch.setattr(touch_controller, "config", touch_controller.config)
+    monkeypatch.setattr(touch_controller, "DEBUG", touch_controller.DEBUG)
+    monkeypatch.setattr(sys, "argv", ["touch_controller.py"])
+    monkeypatch.setattr(touch_controller.time, "sleep", lambda s: None)
+    monkeypatch.setattr(touch_controller, "DeviceManagerThread", FakeManagerThread)
+    captured = {}
+
+    def recorder(state, gui_config, pause_event, stop_event, device_info=None):
+        captured["device_info"] = device_info
+    monkeypatch.setattr(gui, "launch_gui", recorder)
+
+    assert touch_controller.main() == 0
+    di = captured["device_info"]
+    assert di["connection"] is None
+    assert isinstance(di["manager"], FakeManagerThread)
+    assert di["base_config"] is not None
