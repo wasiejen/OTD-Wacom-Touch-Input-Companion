@@ -26,8 +26,9 @@ on GitHub mark shipped states — `v0.2.2` is the latest release.
     bands, on a square desktop the full width and two equal 270 px top and
     bottom bands. `pen_stretch_full_desktop=1` keeps the per-axis anisotropic
     fill (semantics unchanged, its pins stayed green). With no usable desktop
-    metrics the mapping falls back to the old normalized parity and names
-    itself `isotropic_unmeasured`. New env-gated one-shot diagnostic
+    metrics -- none at all, a zero extent, or an extent below 256 px (a 3 x 3
+    pair is measurable on a headless host) -- the mapping falls back to the
+    old normalized parity and names itself `isotropic_unmeasured`. New env-gated one-shot diagnostic
     `WTD_PEN_MAP_DIAG=1` prints `pen_abs_map mode=... product=...
     declared=... box=... box_mm=... obs=... screen=... monitors=...
     px_mm_x=... px_mm_y=... band_x=... band_y=...`. Wireless verdict: the

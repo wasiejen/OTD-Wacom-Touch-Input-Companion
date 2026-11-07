@@ -207,6 +207,27 @@ def test_791_stretch_optin_control_stays_anisotropic(state, config, stub_send_in
     assert corners == (0, 0, VIRT, VIRT)
 
 
+def test_autoscale_grown_box_keeps_one_px_per_mm_scale(state, config, stub_send_input):
+    # Autoscale safety-net lane: growing the box grows the COUNT range and
+    # keeps the DECLARED mm area -- the repo's pinned density model, the one
+    # the relative lane uses for the same grown box. Under that model the
+    # isotropic fit still runs one scale on both axes: the grown 70000 x 50000
+    # count box (= 325.12 x 203.2 mm) fits 3440x1440 on height, so x covers
+    # 325.12 * 1440/203.2 = 2304 px inside two equal 568 px bands.
+    grown = dict(SPEC_791)
+    grown["max_x"] = 70000
+    grown["max_y"] = 50000
+    scale = 1440 / 203.2
+    scale_x, scale_y, corners = axis_scales_px_per_mm(
+        state, config, grown, ULTRAWIDE_3440, stub_send_input)
+    assert scale_x == pytest.approx(scale, rel=1e-4)
+    assert scale_y == pytest.approx(scale, rel=1e-4)
+    assert_isotropic_and_45deg(scale_x, scale_y)
+    band_left, band_right = band_px(corners[0], corners[2], 3440)
+    assert band_left == pytest.approx(568.0, abs=1.0)
+    assert band_right == pytest.approx(568.0, abs=1.0)
+
+
 # --- leg 3: wireless medium-preset variant -----------------------------------
 
 def test_wireless_medium_default_preset_is_isotropic_but_clips_the_large_box(
@@ -255,6 +276,10 @@ def test_virtual_desktop_metrics_reads_the_documented_indices(monkeypatch):
     assert reads == [76, 77, 7, 8, 2]
     table[7] = 0
     assert touch_controller.virtual_desktop_metrics() is None
+    # Positive junk must not drive the live mapping: a 3 x 3 pair was measured
+    # on this project's headless test host, and it routes to the degraded lane.
+    table.update({7: 3, 8: 3})
+    assert touch_controller.virtual_desktop_metrics() is None
 
 
 def test_virtual_desktop_metrics_is_none_when_the_host_offers_none(monkeypatch):
@@ -274,15 +299,15 @@ def test_missing_metrics_keep_the_normalized_parity_lane(state, config, stub_sen
     # These numbers are the pre-fix default for ANY desktop (band fraction
     # 40640/65024 = 0.625 of the height).
     monkeypatch.setattr(touch_controller, "virtual_desktop_metrics", lambda: None)
-    scale = VIRT / SPEC_791["max_x"]
-    off_y = (VIRT - scale * SPEC_791["max_y"]) / 2
+    # Literal corners, not a recomputed formula: scale = 65535/65024 counts,
+    # offset_y = (65535 - 65535 * 40640/65024)/2 = 12287.8125 and the far
+    # corner 12287.8125 + 40959.375 = 53247.1875, both truncated by int().
     nx0, ny0 = _map_corner(state, config, SPEC_791, 0, 0, None, stub_send_input)
     stub_send_input.clear()
     nx1, ny1 = _map_corner(state, config, SPEC_791, SPEC_791["max_x"],
                            SPEC_791["max_y"], None, stub_send_input)
-    assert (nx0, nx1) == (0, VIRT)
-    assert ny0 == int(off_y)
-    assert ny1 == int(off_y + scale * SPEC_791["max_y"])
+    assert (nx0, ny0) == (0, 12287)
+    assert (nx1, ny1) == (VIRT, 53247)
 
 
 # --- one-shot mapping diagnostic ---------------------------------------------

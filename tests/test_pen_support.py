@@ -459,11 +459,13 @@ def test_wireless_size_selects_only_the_model_extents_preset(config, state, disp
     config.wireless_pen_size = "large"
     routed = pen_specs_for_product(132, config)
     assert routed is touch_controller.PEN_SPECS_BY_PRODUCT[791]
-    update_pen_cursor(state, dispatcher, config, routed, 65024, 40640)
+    update_pen_cursor(state, dispatcher, config, routed, 65024, 40640,
+                      screen_metrics=SQUARE_1440)
     wireless_event = stub_send_input[-1]
     stub_send_input.clear()
     update_pen_cursor(state, dispatcher, config,
-                      touch_controller.PEN_SPECS_BY_PRODUCT[791], 65024, 40640)
+                      touch_controller.PEN_SPECS_BY_PRODUCT[791], 65024, 40640,
+                      screen_metrics=SQUARE_1440)
     assert wireless_event == stub_send_input[-1]
 
 

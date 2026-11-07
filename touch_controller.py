@@ -1328,10 +1328,15 @@ def rotated_pen_box_mm(pen_specs, degrees):
 
     The mm counterpart of rotated_pen_extents with the SAME snap, so a
     uniform-density digitizer (every PEN_SPECS row runs exactly 200 counts/mm
-    on both axes) keeps the mm box and the count box proportional. A grown
-    (autoscaled) box keeps the declared mm size, so its mm-per-count drops
-    with the growth -- exactly as the relative lane scales it.
-    Returns (width_mm, height_mm); 0° returns the declared size.
+    on both axes) keeps the mm box and the count box proportional. Returns
+    (width_mm, height_mm); 0 deg returns the declared size.
+
+    A grown (autoscaled) box keeps the DECLARED mm area: the pinned model of
+    the safety net is that the extra counts spread over the same physical
+    area, so mm-per-count falls with the growth -- the same model the relative
+    lane uses and pins (test_relative_mode_uses_the_grown_box). Under that
+    model one px-per-mm scale still covers both axes of a grown box, which is
+    what pen_isotropic_absolute_projection delivers for it.
     """
     cos_a, sin_a = _abs_snap_cos_sin(degrees)
     return (pen_specs["width_mm"] * cos_a + pen_specs["height_mm"] * sin_a,
@@ -1364,18 +1369,31 @@ def _get_system_metrics(index):
         return None
 
 
+# Junk guard: no real display mode is this small (the smallest shipped is
+# 320x200), while a headless or service-session host can report positive
+# nonsense -- a 3 x 3 pair was measured on this project's test host. Junk
+# extents route the mapping to the documented isotropic_unmeasured lane
+# instead of letting it map against a bogus aspect.
+MIN_DESKTOP_PX = 256
+
+
 def virtual_desktop_metrics():
     """Virtual desktop bounds (left, top, width_px, height_px), None if none.
 
     Read-only system metrics -- no input event is ever sent here. None names
-    the degraded mapping lane: a host without the metrics API, or a read that
-    returns a zero extent.
+    the degraded mapping lane: a host without the metrics API, a read that
+    returns a zero extent, or extents below MIN_DESKTOP_PX (positive junk).
+    Both this read and MOUSEEVENTF_VIRTUALDESK run in the same DPI-awareness
+    space of this process, so their ratio is consistent; a future change to
+    the process DPI awareness must keep that parity.
     """
     left = _get_system_metrics(SM_XVIRTUALSCREEN)
     top = _get_system_metrics(SM_YVIRTUALSCREEN)
     width = _get_system_metrics(SM_CXVIRTUALSCREEN)
     height = _get_system_metrics(SM_CYVIRTUALSCREEN)
-    if None in (left, top, width, height) or width <= 0 or height <= 0:
+    if None in (left, top, width, height):
+        return None
+    if width < MIN_DESKTOP_PX or height < MIN_DESKTOP_PX:
         return None
     return (left, top, width, height)
 
