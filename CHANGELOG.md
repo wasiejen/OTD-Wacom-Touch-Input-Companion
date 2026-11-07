@@ -4,6 +4,35 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261107-1952:
+
+  - FIXED the missing Focused-Device section above the pen tabs
+    (U383 / #383, maintainer report 2026-11-06): the section was never
+    deleted -- it has lived in gui.py since 9a09202 (U73 d), was last
+    shaped by c06bf19 (U87), and gui.py took only the a56b9f8 import
+    refactor after that; `git log -S "Focused Device"` shows only the
+    addition. What made it vanish in the field: SettingsWindow.__init__
+    builds the bar only when device_info is not None, and main() set
+    device_info=None whenever manager.get_primary_connection() found no
+    connection within the 1 s after manager start -- a device that
+    connected later never added the section back for that run. main() now
+    always passes build_device_info(conn, config, manager): the section
+    builds above the tabs even with no launch connection; while no device
+    is focused the label reads "No device connected yet" and Save to File
+    takes the global lane; the first live device from the manager's list is
+    adopted at build time as the editing target -- config, tabs, Apply Live
+    and the save lanes all bind to it, as on a launch-time connection, on
+    every open -- and Save to Device, Assign alias and Copy to alias answer
+    "No Device Focused" until a device is focused. Whenever the bar
+    re-reads the live list (window open, Refresh, the Assign-alias
+    refresh) and the focused connection is gone, it adopts the first live
+    device and names the new focus with the same "Device Focused" toast a
+    manual pick shows. The copy-section checkbuttons no
+    longer share their grid cell with the Assign-alias button (a
+    U87-era overlap). 14 new headless Tk construction pins (withdrawn
+    root, no event pump, windows pinned unmapped); suite 308 -> 322.
+    Live GUI acceptance PENDING the maintainer.
+
 261107-1917:
 
   - FIXED absolute-mode anisotropy (U376 / #380, maintainer report

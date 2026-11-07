@@ -2811,6 +2811,16 @@ def cli_save_as(config, alias):
     return True
 
 
+def build_device_info(conn, base_config, manager):
+    """GUI focus bundle for the settings window (U73/U87).
+
+    A None connection keeps the bar's no-device lane: the section still
+    builds above the tabs and resolves its focus from the manager's live
+    device list (U383 / #383).
+    """
+    return {"connection": conn, "base_config": base_config, "manager": manager}
+
+
 def main():
     global DEBUG
     global config
@@ -2876,12 +2886,13 @@ def main():
         state = conn['state']
         action_dispatch = conn['action']
         gui_config = conn['config']
-        device_info = {"connection": conn, "base_config": config, "manager": manager}
     else:
         state = TabletState()  # Fallback empty state for GUI
         gui_config = config
         action_dispatch = None
-        device_info = None
+    # U383: always carry the manager in the bundle -- the device section is
+    # built above the tabs even when no device had connected at launch.
+    device_info = build_device_info(conn, config, manager)
 
     if action_dispatch:
         actions = list(action_dispatch.ACTION_DISPATCH.keys())
