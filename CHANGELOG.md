@@ -4,6 +4,29 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261107-1952:
+
+  - FIXED the missing Focused-Device section above the pen tabs
+    (U383 / #383, maintainer report 2026-11-06): the section was never
+    deleted -- it has lived in gui.py since 9a09202 (U73 d), was last
+    shaped by c06bf19 (U87), and gui.py took only the a56b9f8 import
+    refactor after that; `git log -S "Focused Device"` shows only the
+    addition. What made it vanish in the field: SettingsWindow.__init__
+    builds the bar only when device_info is not None, and main() set
+    device_info=None whenever manager.get_primary_connection() found no
+    connection within the 1 s after manager start -- a device that
+    connected later never added the section back for that run. main() now
+    always passes build_device_info(conn, config, manager): the section
+    builds above the tabs even with no launch connection, shows "No device
+    connected yet", and focuses the first live device from the manager's
+    list at build time; Save to Device, Assign alias and Copy to alias
+    answer "No Device Focused" until a device is picked, and Save to File
+    falls back to the global lane. The copy-section checkbuttons no
+    longer share their grid cell with the Assign-alias button (a
+    U87-era overlap). 12 new headless Tk construction pins (withdrawn
+    root, no event pump, verified never mapped); suite 308 -> 320.
+    Live GUI acceptance PENDING the maintainer.
+
 261107-1917:
 
   - FIXED absolute-mode anisotropy (U376 / #380, maintainer report

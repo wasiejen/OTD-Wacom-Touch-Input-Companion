@@ -1,8 +1,10 @@
 """Device-free test scaffolding: fake the `hid` module and the input layer.
 
-No real Wacom device, no network, no GUI window, and no live desktop input
-event is touched by this suite: the injection guard installed below blocks
-every Win32 input entry point for the whole session.
+No real Wacom device, no network, no mapped GUI window, and no live desktop
+input event is touched by this suite: the injection guard installed below
+blocks every Win32 input entry point for the whole session. The U383 pins in
+tests/test_gui_device_bar.py construct Tk widgets under a withdrawn root with
+no event pump -- every window stays unmapped (verified winfo_viewable()==0).
 """
 
 import atexit

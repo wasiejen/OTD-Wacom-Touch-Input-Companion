@@ -135,6 +135,10 @@ INVALID_ACTION_PREFIX = "! invalid: "
 # Sections a focused device transfers to another alias (U73 d).
 DEVICE_TRANSFER_SECTIONS = ("motion_and_thresholds", "feature_toggles", "action_mapping")
 
+# No live connection when the window was built (U383): the section still
+# shows above the tabs and its focus is picked up from the live list.
+NO_DEVICE_LABEL = "No device connected yet"
+
 
 def collect_config_sections(config, section_names):
     """Snapshot the named sections of a live config instance as plain dicts."""
@@ -409,7 +413,13 @@ class SettingsWindow(tk.Toplevel):
         ttk.Button(btn_frame, text="Apply Live", command=self.apply_settings).pack(side="right")
 
     def _build_device_bar(self, container):
-        conn = self.device_info["connection"]
+        # U383: a missing launch connection is no reason to skip the section;
+        # focus the first live device from the manager, else none.
+        conn = self.device_info.get("connection")
+        if conn is None:
+            live = self._live_connections()
+            conn = live[0] if live else None
+            self.device_info["connection"] = conn
         base = self.device_info["base_config"]
         frame = ttk.LabelFrame(container, text=" Focused Device ", padding=8)
         frame.pack(fill="x", pady=(0, 6))
@@ -424,12 +434,13 @@ class SettingsWindow(tk.Toplevel):
         refresh_btn.grid(row=0, column=2, padx=(6, 0))
         ToolTip(refresh_btn, "Re-read the live device list from the running driver.")
 
-        self.device_label = ttk.Label(frame, text=device_display_name(conn))
+        self.device_label = ttk.Label(
+            frame, text=device_display_name(conn) if conn else NO_DEVICE_LABEL)
         self.device_label.grid(row=1, column=0, columnspan=4, sticky="w")
 
         ttk.Label(frame, text="Alias:").grid(row=2, column=0, sticky="w")
         self.alias_entry = ttk.Entry(frame, width=16)
-        self.alias_entry.insert(0, conn.get("alias") or "")
+        self.alias_entry.insert(0, (conn.get("alias") or "") if conn else "")
         self.alias_entry.grid(row=2, column=1, sticky="w", padx=(4, 0))
         btn = ttk.Button(frame, text="Assign alias", command=self.assign_alias)
         btn.grid(row=2, column=2, padx=(6, 0))
@@ -447,7 +458,7 @@ class SettingsWindow(tk.Toplevel):
             "feature_toggles": "Toggles",
             "action_mapping": "Mapping",
         }
-        for idx, (name, var) in enumerate(self.copy_section_vars.items(), start=2):
+        for idx, (name, var) in enumerate(self.copy_section_vars.items(), start=3):
             chk = ttk.Checkbutton(frame, text=section_labels[name], variable=var)
             chk.grid(row=idx, column=2, sticky="w")
         copy_btn = ttk.Button(frame, text="Copy to alias", command=self.copy_settings_to_alias)
@@ -470,7 +481,8 @@ class SettingsWindow(tk.Toplevel):
             conns = manager.list_connections()
             if conns:
                 return conns
-        return [self.device_info["connection"]]
+        conn = self.device_info.get("connection")
+        return [conn] if conn is not None else []
 
     def _refresh_device_combo(self):
         """Rebuild the combo from the live device list, keeping the focus."""
@@ -478,7 +490,7 @@ class SettingsWindow(tk.Toplevel):
         self._device_conns = conns
         labels = [device_display_name(conn) for conn in conns]
         self.devices_combo["values"] = labels
-        focused = self.device_info["connection"]
+        focused = self.device_info.get("connection")
         index = -1
         for i, candidate in enumerate(conns):
             if candidate is focused:
@@ -561,7 +573,12 @@ class SettingsWindow(tk.Toplevel):
         if not alias:
             messagebox.showerror("Invalid Alias", "Enter an alias name before assigning it.")
             return False
-        conn = self.device_info["connection"]
+        conn = self.device_info.get("connection")
+        if conn is None:
+            messagebox.showerror(
+                "No Device Focused",
+                "Wake the device and pick it in the device list first.")
+            return False
         base = self.device_info["base_config"]
         conn["alias"] = alias
         identity = conn.get("identity")
@@ -593,7 +610,12 @@ class SettingsWindow(tk.Toplevel):
         if not selected:
             messagebox.showerror("Nothing Selected", "Select at least one section to copy.")
             return False
-        conn = self.device_info["connection"]
+        conn = self.device_info.get("connection")
+        if conn is None:
+            messagebox.showerror(
+                "No Device Focused",
+                "Wake the device and pick it in the device list first.")
+            return False
         base = self.device_info["base_config"]
         entry = dict(base.devices.get(target, {}))
         entry.update(collect_config_sections(conn["config"], selected))
@@ -1077,7 +1099,12 @@ class SettingsWindow(tk.Toplevel):
         if not self.apply_settings():
             return False
 
-        conn = self.device_info["connection"]
+        conn = self.device_info.get("connection")
+        if conn is None:
+            messagebox.showerror(
+                "No Device Focused",
+                "Wake the device and pick it in the device list first.")
+            return False
         base = self.device_info["base_config"]
         identity = conn.get("identity")
         if identity is None:
@@ -1106,8 +1133,8 @@ class SettingsWindow(tk.Toplevel):
             return False
 
         device_info = getattr(self, "device_info", None)
-        if device_info is not None:
-            conn = device_info["connection"]
+        conn = device_info.get("connection") if device_info is not None else None
+        if conn is not None:
             base = device_info["base_config"]
             alias = conn.get("alias")
             if alias is None:
