@@ -2374,6 +2374,15 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
     binding offers read_timeout, otherwise non-blocking reads with an idle
     backoff that never sleeps between reports. Pause/stop still take effect
     within one poll tick while the device is silent.
+
+    Config-fork refresh contract (U386 / TODO #386): a manager spawn passes
+    the connection's own config fork as cfg. The GUI "Apply Live" mutates
+    that same object in place (apply_settings_to_config), so every per-report
+    read of cfg here sees the applied values without a restart. The
+    module-global fallback below serves only a no-manager caller (probe and
+    tests). Known connect-time read: the Pen extents table (pen_specs) is
+    resolved once at thread start, so a wireless size change needs a device
+    reconnect (GUI notice states it; U386 leg 2).
     """
     interface_num = device_info.get('interface_number', -1)
     path = device_info.get('path')
@@ -2664,11 +2673,13 @@ class DeviceManagerThread(threading.Thread):
                     t_pen = threading.Thread(
                         target=run_interface,
                         args=("Pen", pen_dev, t_state, a_dispatch, self.touch_enabled_event, self.stop_event),
+                        kwargs={"cfg": conn_config},
                         daemon=True
                     )
                     t_touch = threading.Thread(
                         target=run_interface,
                         args=("Touch", touch_dev, t_state, a_dispatch, self.touch_enabled_event, self.stop_event),
+                        kwargs={"cfg": conn_config},
                         daemon=True
                     )
 
@@ -2701,6 +2712,7 @@ class DeviceManagerThread(threading.Thread):
                             target=run_interface,
                             args=("Buttons", buttons_dev, t_state, a_dispatch,
                                   self.touch_enabled_event, self.stop_event),
+                            kwargs={"cfg": conn_config},
                             daemon=True
                         )
                         threads['Buttons'] = t_buttons
