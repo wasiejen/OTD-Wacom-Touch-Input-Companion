@@ -293,23 +293,70 @@ def test_virtual_desktop_metrics_is_none_when_the_host_offers_none(monkeypatch):
     assert touch_controller.monitor_count() is None
 
 
-def test_missing_metrics_keep_the_normalized_parity_lane(state, config, stub_send_input,
-                                                         monkeypatch):
-    # Degraded lane: with no usable desktop metrics the mapping cannot know
-    # the desktop aspect, so it keeps equal FRACTIONS per mm -- the box aspect
-    # stays true and px/mm parity holds only for a square-aspect desktop.
-    # These numbers are the pre-fix default for ANY desktop (band fraction
-    # 40640/65024 = 0.625 of the height).
-    monkeypatch.setattr(touch_controller, "virtual_desktop_metrics", lambda: None)
-    # Literal corners, not a recomputed formula: scale = 65535/65024 counts,
-    # offset_y = (65535 - 65535 * 40640/65024)/2 = 12287.8125 and the far
-    # corner 12287.8125 + 40959.375 = 53247.1875, both truncated by int().
+def _junk_metrics(monkeypatch):
+    """Junk virtual-screen reads with SM_CMONITORS=2 (the maintainer's shape).
+
+    Patched at the GetSystemMetrics level (U411 reviewer P1-3): the real
+    metrics-resolution path runs end-to-end, so these pins survive any
+    future routing of the metrics-less lane.
+    """
+    table = {76: 0, 77: 0, 7: 0, 8: 0, 2: 2}
+    monkeypatch.setattr(touch_controller.ctypes.windll.user32,
+                        "GetSystemMetrics", lambda i: table[i])
+
+
+def test_metricsless_host_reaches_both_vertical_extremes(state, config,
+                                                         stub_send_input, monkeypatch):
+    """U411 repro (RED-before @8636c4a): metrics-less host keeps full reach.
+
+    Junk SM_*VIRTUALSCREEN reads (his host: SM_CMONITORS answers 17 while
+    the virtual-screen leg is junk; mocked here as 2 monitors + zeros) must
+    not cost the vertical extremes: the box corners map to ny 0 and VIRT.
+    Pre-fix the degraded lane emitted ny 12287..53247 (18.75 % dead band per
+    end -- the maintainer's center-band report)."""
+    _junk_metrics(monkeypatch)
     nx0, ny0 = _map_corner(state, config, SPEC_791, 0, 0, None, stub_send_input)
     stub_send_input.clear()
     nx1, ny1 = _map_corner(state, config, SPEC_791, SPEC_791["max_x"],
                            SPEC_791["max_y"], None, stub_send_input)
-    assert (nx0, ny0) == (0, 12287)
-    assert (nx1, ny1) == (VIRT, 53247)
+    assert (nx0, ny0) == (0, 0)
+    assert (nx1, ny1) == (VIRT, VIRT)
+
+
+def test_metricsless_lane_equals_the_stretch_math(state, config, stub_send_input,
+                                                  monkeypatch):
+    """U411 ruling (C): the metrics-less lane IS the shipped stretch math.
+
+    Every box corner must emit the identical normalized pair through the
+    metrics-less routing and through the `pen_stretch_full_desktop` toggle
+    ("horizontal unchanged" + no-new-mapping-math, per the ruling)."""
+    _junk_metrics(monkeypatch)
+    for (x, y) in ((0, 0), (SPEC_791["max_x"], 0), (0, SPEC_791["max_y"]),
+                   (SPEC_791["max_x"], SPEC_791["max_y"])):
+        plain = _map_corner(state, config, SPEC_791, x, y, None, stub_send_input)
+        stub_send_input.clear()
+        stretched = _map_corner(state, config, SPEC_791, x, y, None,
+                                stub_send_input, stretch=True)
+        stub_send_input.clear()
+        assert plain == stretched, f"corner {(x, y)}: metrics-less != stretch"
+
+
+def test_missing_metrics_fill_the_full_normalized_range(state, config, stub_send_input,
+                                                        monkeypatch):
+    # U411 / TODO #401 PLANNER RULING (C) 2026-11-11: the degraded lane was
+    # DELIBERATELY RE-PINNED from the old band lock (see git history: it
+    # asserted (nx0,ny0)==(0,12287)/(VIRT,53247), the 62.5 % center band that
+    # produced the maintainer's unreachable top/bottom sixths). On a host
+    # without usable desktop metrics the lane now runs the shipped stretch
+    # full-fill math, so the declared box spans the whole 0..65535 on both
+    # axes; the mode is named `stretch_unmeasured` in the diag line.
+    monkeypatch.setattr(touch_controller, "virtual_desktop_metrics", lambda: None)
+    nx0, ny0 = _map_corner(state, config, SPEC_791, 0, 0, None, stub_send_input)
+    stub_send_input.clear()
+    nx1, ny1 = _map_corner(state, config, SPEC_791, SPEC_791["max_x"],
+                           SPEC_791["max_y"], None, stub_send_input)
+    assert (nx0, ny0) == (0, 0)
+    assert (nx1, ny1) == (VIRT, VIRT)
 
 
 # --- one-shot mapping diagnostic ---------------------------------------------
@@ -357,3 +404,22 @@ def test_mapping_diagnostic_names_the_stretch_branch_once(
     assert out.startswith("pen_abs_map mode=stretch product=791")
     assert ("px_mm_x=%.4f px_mm_y=%.4f band_x=0.00_px band_y=0.00_px"
             % (3440 / 325.12, 1440 / 203.2)) in out
+
+
+def test_mapping_diagnostic_names_the_stretch_unmeasured_branch_once(
+        state, config, stub_send_input, capsys, monkeypatch):
+    # U411 ruling (C): the metrics-less lane is named `stretch_unmeasured`;
+    # junk virtual-screen reads at the GetSystemMetrics level, monitor count
+    # answers (his shape: monitors=17, screen=na). RED-before @8636c4a: the
+    # line named `isotropic_unmeasured`.
+    monkeypatch.setenv(touch_controller.PEN_MAP_DIAG_ENV, "1")
+    _junk_metrics(monkeypatch)
+    state.pen_product_id = 791
+    capsys.readouterr()  # drain any fixture config banner
+    _map_corner(state, config, SPEC_791, 0, 0, None, stub_send_input)
+    out = capsys.readouterr().out
+    assert out.startswith("pen_abs_map mode=stretch_unmeasured product=791")
+    assert ("screen=naxna monitors=2 px_mm_x=na px_mm_y=na "
+            "band_x=na band_y=na\n") in out
+    _map_corner(state, config, SPEC_791, 1000, 1000, None, stub_send_input)
+    assert capsys.readouterr().out == ""  # one-shot holds on this lane too
