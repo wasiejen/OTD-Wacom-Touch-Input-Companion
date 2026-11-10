@@ -230,16 +230,18 @@ def test_autoscale_grown_box_keeps_one_px_per_mm_scale(state, config, stub_send_
 
 # --- leg 3: wireless medium-preset variant -----------------------------------
 
-def test_wireless_medium_default_preset_is_isotropic_but_clips_the_large_box(
+def test_wireless_medium_explicit_preset_is_isotropic_but_clips_the_large_box(
         state, config, stub_send_input, capsys):
-    # Wireless verdict (U376 leg 3): the receiver id 132 cannot detect the
-    # paired tablet, so wireless_pen_size (default "medium") names the extents
-    # preset. The mapping lane is the SAME isotropic lane, so the vertical
-    # squash the maintainer saw disappears with the leg-2 fix; what stays is
-    # preset clipping -- the 789 box ends at 44704 counts, 44704/65024 =
-    # 68.75 % of the Large tablet's width, and coordinates past it clamp.
+    # Wireless verdict (U376 leg 3; renamed U386 / TODO #385): the receiver id
+    # 132 cannot detect the paired tablet, so wireless_tablet_size names the
+    # extents preset -- explicitly, since U386 there is NO default (unset =
+    # loud notice), so this lane picks "medium" itself. The mapping lane is
+    # the SAME isotropic lane, so the vertical squash the maintainer saw
+    # disappears with the leg-2 fix; what stays is preset clipping -- the 789
+    # box ends at 44704 counts, 44704/65024 = 68.75 % of the Large tablet's
+    # width, and coordinates past it clamp.
     capsys.readouterr()  # drain the config-load banner
-    assert config.wireless_pen_size == "medium"
+    config.wireless_tablet_size = "medium"
     specs = pen_specs_for_product(132, config)
     assert specs is touch_controller.PEN_SPECS_BY_PRODUCT[789]
     metrics = ULTRAWIDE_3440

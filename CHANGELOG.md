@@ -4,6 +4,36 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261110-1604:
+
+  - FIXED "Apply Live" never reaching the running readers (U386 / #386;
+    pre-existing gap inherited from the U381 settings lanes): manage_connections
+    built each connection's config fork and stored it in the connection dict,
+    but never passed it to the interface reader threads, so every reader read
+    the module-global config instead. The GUI edits and applies the connection
+    fork, so a live "Apply Live" reached no running reader and every setting
+    took effect only after a restart. All three reader spawns (Pen, Touch, and
+    the optional Buttons thread) now receive the connection fork, which makes
+    the documented contract real: the GUI apply lane mutates that object in
+    place, so every per-report read in a running reader sees the applied
+    values without a restart. One documented connect-time exception: the pen
+    extents table resolves once per reader start, so a wireless tablet-size
+    change applies at the next device reconnect.
+  - RENAMED the wireless size config key `wireless_pen_size` to
+    `wireless_tablet_size` (U386 / #385; ruling 2026-11-07: the wireless path
+    has nothing to do with the pen -- the receiver connects directly to the
+    tablet). Values stay small / medium / large. The old key stays readable as
+    a deprecation alias: old configs keep working and the load prints a loud
+    notice naming the new key; when both keys are present the new one wins.
+  - REMOVED the silent "medium" default of the wireless size (planner ruling
+    for #385): the config attribute is unset (null in user.cfg) until an
+    explicit choice. On the non-detecting wireless receiver (product id 132)
+    an unset size now prints a loud notice naming all three choices plus the
+    config and GUI lanes and labels the MEDIUM extents a FALLBACK, not a
+    default; the Pen tab gained a "Wireless Tablet Size" combobox
+    ("(unset)" + small/medium/large) with a red notice row shown while a
+    receiver connection is live and no size is chosen.
+
 261107-2123:
 
   - FIXED dead touch buttons and rotary dial (U381 / #381, #382; root cause

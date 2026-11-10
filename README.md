@@ -109,6 +109,10 @@ On the Release Page there is now an "OTD_Wacom_Touch_Driver_%VERSION%_win64.exe"
 
 When you hit **Save to File** in the settings GUI, a `user.cfg` file is automatically created or updated in the application directory. On startup, the driver automatically loads your saved configuration from this file.
 
+### Wireless tablet size (`wireless_tablet_size`)
+
+The wireless add-on is one receiver (product id 132) on every tablet size, and it cannot detect which tablet it is paired to. The driver therefore does not guess: the setting names the paired tablet explicitly — `small` (788), `medium` (789), or `large` (791) — under `motion_and_thresholds.wireless_tablet_size` in `user.cfg`, or via the Pen tab's **Wireless Tablet Size** choice in the GUI. While a wireless receiver is connected and no size is chosen, the driver prints a loud notice (console) and shows a red notice row (GUI) naming the three options; until a size is chosen the mapping uses the medium extents as a labeled fallback, never as a silent default. The old key name `wireless_pen_size` (pre-rename configs) is still read and migrated with a notice; the new key wins if both are present. A size change takes effect at the next device reconnect.
+
 ### Command line options
 
 Start the driver with `python touch_controller.py [options]`:

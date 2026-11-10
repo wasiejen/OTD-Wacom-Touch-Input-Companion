@@ -505,22 +505,28 @@ DEVICE_ALIAS_PREFIX = "device_alias_"
 DEVICE_SETTINGS_PREFIX = "device_settings_"
 DEVICE_IDENTITY_HASH_LENGTH = 12
 
-# Wireless pen size lane (U344 goal 2): the wireless add-on is the same
-# receiver (product id 132) on ALL tablet sizes, so the paired tablet size
-# is NOT detectable from enumeration. The user config names the size
-# (small/medium/large) and the driver routes id 132 to the matching model
-# table. Default: medium, per the maintainer's observed wireless behavior
-# (behaves like a Medium pad). The constants live above the config class:
-# the module-level DriverConfig instance reads the default at import time.
+# Wireless tablet size lane (U344 goal 2; renamed U386 / TODO #385): the
+# wireless add-on is the same receiver (product id 132) on ALL tablet sizes,
+# so the paired tablet size is NOT detectable from enumeration. The user
+# config names the tablet size (small/medium/large) and the driver routes id
+# 132 to the matching model table. Ruled 2026-11-07: the wireless path has
+# nothing to do with the pen - the receiver connects directly to the tablet -
+# so the old pen wording was renamed to tablet-size wording; the old config
+# key stays readable as a deprecation alias with a loud notice. NO default:
+# unset + non-detecting receiver = loud notice naming the choices, never a
+# silent medium (planner ruling; the medium EXTENTS stay the labeled
+# fallback until a size is chosen). The constants live above the config
+# class: the module-level DriverConfig instance reads them at import time.
 WIRELESS_RECEIVER_PRODUCT_ID = 132
 # Maintainer ruling 2026-11-04 (U370 leg 5): a wireless package carries the
 # SAME coordinates as wired (only fewer bundled fields), so this map selects
 # the model extents preset and NOTHING else -- no separate wireless
 # coordinate scaling exists or should be invented (pinned by
 # test_wireless_size_selects_only_the_model_extents_preset).
-WIRELESS_PEN_SIZES = ("small", "medium", "large")
-WIRELESS_PEN_SIZE_TO_PRODUCT = {"small": 788, "medium": 789, "large": 791}
-WIRELESS_PEN_SIZE_DEFAULT = "medium"
+WIRELESS_TABLET_SIZES = ("small", "medium", "large")
+WIRELESS_TABLET_SIZE_TO_PRODUCT = {"small": 788, "medium": 789, "large": 791}
+WIRELESS_TABLET_SIZE_KEY = "wireless_tablet_size"
+WIRELESS_TABLET_SIZE_LEGACY_KEY = "wireless_pen_size"  # read-only deprecation alias
 
 
 def device_identity_hash(path, serial_number=""):
@@ -554,7 +560,7 @@ class DriverConfig:
         "scroll_deadzone", "scroll_min_sens", "scroll_max_sens",
         "scroll_speed_low", "scroll_speed_high",
         "pen_speed", "pen_pressure_threshold",
-        "dial_step_threshold", "orientation_degrees", "wireless_pen_size",
+        "dial_step_threshold", "orientation_degrees", "wireless_tablet_size",
     )
 
     # Sections the saved file may hold. "devices" is the reserved slot (c):
@@ -661,10 +667,13 @@ class DriverConfig:
         # path; positive degrees turn the input clockwise on screen.
         self.orientation_degrees = 0
 
-        # Wireless pen size (U344 goal 2): the receiver id 132 is shared by
-        # every tablet size, so the user names the size of the tablet the
-        # add-on is paired to; the driver routes 132 to that model table.
-        self.wireless_pen_size = WIRELESS_PEN_SIZE_DEFAULT
+        # Wireless tablet size (U344 goal 2; renamed U386 / TODO #385): the
+        # receiver id 132 is shared by every tablet size, so the user names
+        # the size of the tablet the add-on is paired to; the driver routes
+        # 132 to that model table. NO default (U386 planner ruling): unset
+        # means no explicit choice, and the reader prints a loud notice
+        # naming the choices instead of silently using medium.
+        self.wireless_tablet_size = None
         
         # Gesture Thresholds
         self.max_tap_duration = 0.250       # Seconds
@@ -931,19 +940,53 @@ class DriverConfig:
             errors.append("'motion_and_thresholds' must be a JSON object, "
                           f"got {self._describe(motion)}")
         else:
+            # U386 / TODO #385: 'wireless_pen_size' was renamed to
+            # 'wireless_tablet_size' (ruling 2026-11-07: the wireless path
+            # connects to the tablet, not the pen). The old key stays
+            # readable as a deprecation alias; the loud notice names the new
+            # key, and when both keys are present the new one wins.
+            has_new_wireless_key = WIRELESS_TABLET_SIZE_KEY in motion
             for index, (key, val) in enumerate(motion.items()):
                 ref = self._error_reference(raw_text, key, index)
+                if key == WIRELESS_TABLET_SIZE_LEGACY_KEY:
+                    if val is None:
+                        normalized = None
+                    elif isinstance(val, str) and val.strip().lower() in WIRELESS_TABLET_SIZES:
+                        normalized = val.strip().lower()
+                    else:
+                        errors.append(f"'motion_and_thresholds.{key}' needs one of "
+                                      f"{'/'.join(WIRELESS_TABLET_SIZES)} or null, "
+                                      f"got {self._describe(val)} ({ref}) "
+                                      f"[renamed to '{WIRELESS_TABLET_SIZE_KEY}']")
+                        continue
+                    if has_new_wireless_key:
+                        warnings.append(
+                            f"legacy key '{key}' ({ref}): renamed to "
+                            f"'{WIRELESS_TABLET_SIZE_KEY}'; the new key is present, "
+                            f"so the legacy value {val!r} is ignored "
+                            f"(update your settings file)")
+                    else:
+                        warnings.append(
+                            f"legacy key '{key}' ({ref}): renamed to "
+                            f"'{WIRELESS_TABLET_SIZE_KEY}'; value {normalized!r} "
+                            f"migrated (update your settings file - the old key "
+                            f"will stop being read in a future version)")
+                        validated["motion"][WIRELESS_TABLET_SIZE_KEY] = normalized
+                    continue
                 if key not in self.MOTION_KEYS:
                     warnings.append(f"unknown motion key '{key}' ({ref}) ignored")
                     continue
-                if key == "wireless_pen_size":
-                    # U344 goal 2: a NAME, not a number — accepted values
-                    # are small/medium/large, case and space tolerant.
-                    if isinstance(val, str) and val.strip().lower() in WIRELESS_PEN_SIZES:
+                if key == WIRELESS_TABLET_SIZE_KEY:
+                    # U344 goal 2 + U386: a NAME, not a number -- accepted
+                    # values are small/medium/large, case and space
+                    # tolerant, or null for the explicit "not chosen" state.
+                    if val is None:
+                        validated["motion"][key] = None
+                    elif isinstance(val, str) and val.strip().lower() in WIRELESS_TABLET_SIZES:
                         validated["motion"][key] = val.strip().lower()
                     else:
                         errors.append(f"'motion_and_thresholds.{key}' needs one of "
-                                      f"{'/'.join(WIRELESS_PEN_SIZES)}, "
+                                      f"{'/'.join(WIRELESS_TABLET_SIZES)} or null, "
                                       f"got {self._describe(val)} ({ref})")
                     continue
                 number = self._coerce_number(val)
@@ -1285,16 +1328,27 @@ def pen_specs_for_product(product_id, cfg=None):
     A product with a table entry routes to its own model. The wireless
     receiver (id 132) has no table entry: its paired tablet size is not
     detectable, so the user-config size names the model (named routing
-    line, default medium). Any other id with no entry prints ONE
+    line). U386 / TODO #385: NO silent default -- with the size unset
+    (or no config passed at all) a LOUD notice names the three choices,
+    the config lane, and the GUI lane, and labels the medium extents a
+    FALLBACK, not a default. Any other id with no entry prints ONE
     byte-stable named fallback line and uses the Medium defaults.
     """
     specs = PEN_SPECS_BY_PRODUCT.get(product_id)
     if specs is None:
-        if product_id == WIRELESS_RECEIVER_PRODUCT_ID and cfg is not None:
-            size = getattr(cfg, "wireless_pen_size", WIRELESS_PEN_SIZE_DEFAULT)
-            model = WIRELESS_PEN_SIZE_TO_PRODUCT.get(size, 789)
-            print(f"pen_specs= wireless_size={size} product={product_id} using={model}")
-            return PEN_SPECS_BY_PRODUCT[model]
+        if product_id == WIRELESS_RECEIVER_PRODUCT_ID:
+            size = getattr(cfg, "wireless_tablet_size", None) if cfg is not None else None
+            if size in WIRELESS_TABLET_SIZES:
+                model = WIRELESS_TABLET_SIZE_TO_PRODUCT[size]
+                print(f"pen_specs= wireless_tablet_size={size} product={product_id} using={model}")
+                return PEN_SPECS_BY_PRODUCT[model]
+            print("!! WIRELESS TABLET SIZE NOT SET: receiver id 132 cannot detect its paired tablet.\n"
+                  "!! choose one: small (788) | medium (789) | large (791) - GUI Pen tab "
+                  "\"Wireless Tablet Size\", or \"motion_and_thresholds.wireless_tablet_size\" "
+                  "in the config file.\n"
+                  "!! using MEDIUM extents (789) until a size is chosen: FALLBACK, not a default.\n"
+                  "pen_specs= wireless_tablet_size=unset product=132 using=789 fallback=not_chosen")
+            return PEN_SPECS_DEFAULT
         print(f"pen_specs= no-table product={product_id} using=medium")
         return PEN_SPECS_DEFAULT
     return specs
@@ -2374,6 +2428,15 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
     binding offers read_timeout, otherwise non-blocking reads with an idle
     backoff that never sleeps between reports. Pause/stop still take effect
     within one poll tick while the device is silent.
+
+    Config-fork refresh contract (U386 / TODO #386): a manager spawn passes
+    the connection's own config fork as cfg. The GUI "Apply Live" mutates
+    that same object in place (apply_settings_to_config), so every per-report
+    read of cfg here sees the applied values without a restart. The
+    module-global fallback below serves only a no-manager caller (probe and
+    tests). Known connect-time read: the Pen extents table (pen_specs) is
+    resolved once at thread start, so a wireless size change needs a device
+    reconnect (GUI notice states it; U386 leg 2).
     """
     interface_num = device_info.get('interface_number', -1)
     path = device_info.get('path')
@@ -2664,11 +2727,13 @@ class DeviceManagerThread(threading.Thread):
                     t_pen = threading.Thread(
                         target=run_interface,
                         args=("Pen", pen_dev, t_state, a_dispatch, self.touch_enabled_event, self.stop_event),
+                        kwargs={"cfg": conn_config},
                         daemon=True
                     )
                     t_touch = threading.Thread(
                         target=run_interface,
                         args=("Touch", touch_dev, t_state, a_dispatch, self.touch_enabled_event, self.stop_event),
+                        kwargs={"cfg": conn_config},
                         daemon=True
                     )
 
@@ -2701,6 +2766,7 @@ class DeviceManagerThread(threading.Thread):
                             target=run_interface,
                             args=("Buttons", buttons_dev, t_state, a_dispatch,
                                   self.touch_enabled_event, self.stop_event),
+                            kwargs={"cfg": conn_config},
                             daemon=True
                         )
                         threads['Buttons'] = t_buttons
