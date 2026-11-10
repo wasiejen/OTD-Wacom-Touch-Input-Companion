@@ -4,6 +4,17 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261111-2355:
+
+  - RENAMED the device-alias CLI lane `--save-as <alias>` to
+    `--save-device <alias>` (U413 / cli-flag-naming proposal, maintainer
+    approved option 2): the flag is now self-documenting and the path lane
+    `--save-as <path>` keeps working exactly as shipped. A bare-name
+    `--save-as kitchen` still saves under the alias but prints a
+    deprecation notice naming `--save-device`; `--save-device` accepts the
+    `=` form and the single-dash spelling. README and tests
+    (`tests/test_cli_device_lanes.py`, 5 new pins) updated.
+
 261111-1815:
 
   - FIXED unreachable top/bottom display bands for absolute pen mode on hosts

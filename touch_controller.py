@@ -485,7 +485,8 @@ def snapshot_device_sections(config, section_names=DEVICE_SECTION_KEYS):
     """Snapshot the named sections of a live config instance as plain dicts.
 
     Only DEVICE_SECTION_KEYS are readable; the result is what a device entry
-    or the '--save-as <alias>' lane stores.
+    or the '--save-device <alias>' lane stores (U413; the old bare-name
+    '--save-as <alias>' spelling still routes here, with a notice).
     """
     sections = {}
     for name in section_names:
