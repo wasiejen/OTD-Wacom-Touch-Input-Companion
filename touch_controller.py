@@ -2857,8 +2857,10 @@ def resolve_config_paths(args):
 
 
 # CLI device lanes (U88 Part C): config-file maintenance without the driver.
-# '--list', '--restore-with <name>' and '--save-as <alias>' run against the
-# loaded config and exit; the manager thread and the GUI stay untouched.
+# '--list', '--restore-with <name>' and '--save-device <alias>' (U413; the
+# alias lane of '--save-as', kept working with a deprecation note) run
+# against the loaded config and exit; the manager thread and the GUI stay
+# untouched.
 
 def looks_like_path(value):
     """True when a '--save-as' value names a file instead of a device alias.
@@ -2873,10 +2875,13 @@ def resolve_cli_lanes(args):
     """Pull the device-lane start arguments out of a raw argv slice.
 
     '--list' takes no value; '--restore-with <name>' names one stored device
-    and '--save-as <alias>' stores the current settings under a new alias.
-    A '--save-as' value that looks like a path keeps the Part A save-path
-    lane: the option and its value pass through into ``path_args`` untouched.
-    Accepts the '=' form and the '-restore-with' spelling. Returns
+    and '--save-device <alias>' (U413, cli-flag-naming ruling option 2)
+    stores the current settings under a new alias. A '--save-as <bare-name>'
+    still routes to the alias lane but adds a deprecation note naming
+    '--save-device'; a '--save-as' value that looks like a path keeps the
+    Part A save-path lane: the option and its value pass through into
+    ``path_args`` untouched. Accepts the '=' form and the single-dash
+    spellings ('-save-device' etc.). Returns
     (list_devices, restore_with, save_as_alias, notes, path_args);
     ``path_args`` keeps every token the path and flag parsers should still see.
     """
@@ -2910,6 +2915,22 @@ def resolve_cli_lanes(args):
             index += 1
             continue
 
+        if option in ("--save-device", "-save-device"):
+            # U413 (cli-flag-naming ruling, option 2): the device-alias lane
+            # lives here now; the value is an alias by definition, so the
+            # path shake rule does not apply to this flag.
+            value = inline_value
+            paired = not value and index + 1 < len(args)
+            if paired:
+                value = args[index + 1]
+            if not value:
+                notes.append(f"[Start Parameter] {name} needs a device alias - ignored")
+                index += 1
+                continue
+            save_as_alias = value
+            index += 2 if paired else 1
+            continue
+
         if option in ("--save-as", "-save-as"):
             value = inline_value
             paired = not value and index + 1 < len(args)
@@ -2917,6 +2938,12 @@ def resolve_cli_lanes(args):
                 value = args[index + 1]
             if value and not looks_like_path(value):
                 save_as_alias = value
+                # Deprecation (U413 ruling): the alias lane moved to
+                # '--save-device'; bare-name values still route, loudly.
+                notes.append(
+                    f"[Start Parameter] '--save-as {value}' used the device-alias "
+                    f"lane - deprecated, use '--save-device {value}'; "
+                    f"'--save-as <path>' keeps the save-file lane")
                 index += 2 if paired else 1
                 continue
             path_args.append(arg)
