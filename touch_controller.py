@@ -1510,7 +1510,7 @@ def _get_system_metrics(index):
 # Junk guard: no real display mode is this small (the smallest shipped is
 # 320x200), while a headless or service-session host can report positive
 # nonsense -- a 3 x 3 pair was measured on this project's test host. Junk
-# extents route the mapping to the documented isotropic_unmeasured lane
+# extents route the mapping to the documented stretch_unmeasured lane
 # instead of letting it map against a bogus aspect.
 MIN_DESKTOP_PX = 256
 
@@ -1843,17 +1843,24 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
             bands = ((metrics[2] - used_w) / 2.0, (metrics[3] - used_h) / 2.0)
             mode = "isotropic"
         else:
-            # Degraded lane (no usable desktop metrics): equal FRACTIONS of
-            # the screen per mm -- the box aspect stays true and px/mm parity
-            # only holds for a square-aspect desktop. Named in the log line.
-            scale = PEN_VIRTUAL_RESOLUTION / max(extent_w, extent_h)
-            offset_x = (PEN_VIRTUAL_RESOLUTION - scale * extent_w) / 2
-            offset_y = (PEN_VIRTUAL_RESOLUTION - scale * extent_h) / 2
-            nx = min(max(int(offset_x + (x - left) * scale + 1e-9), 0),
+            # Degraded lane (no usable desktop metrics), U411 / TODO #401
+            # planner ruling (C) 2026-11-11: this branch ran the old
+            # equal-FRACTION normalized math (scale 65535/max-extent,
+            # centered), which left a 18.75 % dead band per end of a 16:10
+            # pad on ANY desktop -- the maintainer's unreachable
+            # top/bottom sixths (diag mode was isotropic_unmeasured). The
+            # lane now reuses the SHIPPED stretch full-fill math (identical
+            # expressions to the opt-in branch above): the full declared
+            # range reaches the full 0..65535 on both axes; anisotropy is
+            # accepted for this host class until the host-measurement probe
+            # (TODO #412) makes the measured isotropic lane reachable.
+            # The `pen_stretch_full_desktop` toggle above keeps override
+            # authority. Named `stretch_unmeasured` in the diag line.
+            nx = min(max(int((x - left) * PEN_VIRTUAL_RESOLUTION / extent_w + 1e-9), 0),
                      PEN_VIRTUAL_RESOLUTION)
-            ny = min(max(int(offset_y + (y - top) * scale + 1e-9), 0),
+            ny = min(max(int((y - top) * PEN_VIRTUAL_RESOLUTION / extent_h + 1e-9), 0),
                      PEN_VIRTUAL_RESOLUTION)
-            mode = "isotropic_unmeasured"
+            mode = "stretch_unmeasured"
         if pen_mapping_diag_enabled() and not state.pen_abs_map_logged:
             state.pen_abs_map_logged = True
             _log_pen_mapping_diagnostic(state, config, pen_specs, metrics, mode,
