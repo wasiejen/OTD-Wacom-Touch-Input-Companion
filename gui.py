@@ -9,9 +9,25 @@ from pystray import MenuItem as item
 from touch_controller import (
     ORIENTATION_MAX_DEGREES,
     TOUCH_ACTION_CHOICES,
+    WIRELESS_RECEIVER_PRODUCT_ID,
+    WIRELESS_TABLET_SIZES,
     rotate_point,
     snapshot_device_sections,
 )
+
+# Wireless tablet size GUI lane (U386 / TODO #385). The combo offers the
+# explicit unset label plus the tablet-size vocabulary; the notice text is
+# the loud GUI face of the planner ruling (unset + non-detecting receiver
+# id 132 = never a silent default). WIRELESS_SIZE_NOTICE_TEXT is pinned
+# byte-exact by tests/test_wireless_tablet_size.py.
+WIRELESS_SIZE_UNSET_LABEL = "(unset)"
+WIRELESS_SIZE_NOTICE_TEXT = (
+    "Wireless tablet size NOT SET: the receiver (id 132) cannot detect its "
+    "paired tablet. Choose small (788) / medium (789) / large (791) below - "
+    "until chosen the driver maps the MEDIUM extents (789). A size change "
+    "applies at the next device reconnect."
+)
+_KEEP_WIRELESS_SIZE = object()  # apply_settings_to_config sentinel: leave the attr
 
 
 class ToolTip:
@@ -312,12 +328,22 @@ class OrientationWidget(tk.Canvas):
 
 def apply_settings_to_config(config, numeric_values, accel_toggles, feature_toggles,
                              action_mappings, pen_button_actions=None, pen_absolute_mode=None,
-                             button_actions=None, button_toggles=None):
+                             button_actions=None, button_toggles=None,
+                             wireless_tablet_size=_KEEP_WIRELESS_SIZE):
     """Apply a complete settings set to config, or apply nothing at all.
 
     numeric_values are raw entry strings; they are validated before the first
     mutation, so one bad entry cannot leave config half-applied.
+    wireless_tablet_size (U386 / TODO #385) is the Pen-tab combo choice: one
+    of WIRELESS_TABLET_SIZES, None for the explicit unset, or the sentinel
+    default to leave the attribute untouched.
     """
+    if wireless_tablet_size is not _KEEP_WIRELESS_SIZE and wireless_tablet_size is not None \
+            and wireless_tablet_size not in WIRELESS_TABLET_SIZES:
+        raise ValueError(f"Field 'wireless_tablet_size' needs one of "
+                         f"{'/'.join(WIRELESS_TABLET_SIZES)} or unset: "
+                         f"{wireless_tablet_size!r}")
+
     parsed = parse_numeric_values(numeric_values)
 
     if "orientation_degrees" in parsed:
@@ -331,6 +357,9 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
 
     for key, val in parsed.items():
         setattr(config, key, val)
+
+    if wireless_tablet_size is not _KEEP_WIRELESS_SIZE:
+        config.wireless_tablet_size = wireless_tablet_size
 
     config.sync_sensitivities()
 
@@ -844,7 +873,41 @@ class SettingsWindow(tk.Toplevel):
 
         movement_frame.columnconfigure(1, weight=1)
 
-        # --- 2. Pen Button Mapping Frame ---
+        # --- 2. Wireless Tablet Size Frame (U386 / TODO #385) ---
+        # The wireless receiver (id 132) shares one product id across every
+        # tablet size and cannot detect its paired tablet, so the size is a
+        # user choice with NO silent default (planner ruling): an unset size
+        # shows the loud notice below while a receiver connection is live.
+        wireless_frame = ttk.LabelFrame(
+            scroll_frame, text=" Wireless Tablet Size (receiver id 132) ", padding=10)
+        wireless_frame.pack(fill="x", padx=10, pady=8, expand=True)
+
+        self.wireless_size_notice = tk.Label(
+            wireless_frame, text="", wraplength=400, justify="left",
+            foreground="#a00000")
+        self.wireless_size_notice.grid(row=0, column=0, columnspan=2,
+                                       sticky="w", pady=(0, 6))
+
+        size_lbl = ttk.Label(wireless_frame, text="Tablet size:")
+        size_lbl.grid(row=1, column=0, sticky="w", pady=4)
+        self.wireless_size_combo = ttk.Combobox(
+            wireless_frame, values=(WIRELESS_SIZE_UNSET_LABEL,) + WIRELESS_TABLET_SIZES,
+            state="readonly", width=12)
+        self.wireless_size_combo.set(
+            getattr(self.config, "wireless_tablet_size", None) or WIRELESS_SIZE_UNSET_LABEL)
+        self.wireless_size_combo.grid(row=1, column=1, sticky="e", pady=4)
+
+        wireless_tip = ("Extents preset for the tablet behind the wireless receiver "
+                        "(product id 132, paired size not detectable): small = 788, "
+                        "medium = 789, large = 791. Unset shows a loud notice - there "
+                        "is no silent default. A change applies at the next device "
+                        "reconnect.")
+        ToolTip(size_lbl, wireless_tip)
+        ToolTip(self.wireless_size_combo, wireless_tip)
+        self._refresh_wireless_notice()
+        wireless_frame.columnconfigure(1, weight=1)
+
+        # --- 3. Pen Button Mapping Frame ---
         button_frame = ttk.LabelFrame(scroll_frame, text=" Pen Button Mapping ", padding=10)
         button_frame.pack(fill="x", padx=10, pady=8, expand=True)
 
@@ -872,6 +935,31 @@ class SettingsWindow(tk.Toplevel):
 
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
+
+    def _wireless_receiver_live(self):
+        """True when a wireless receiver (product id 132) connection is live."""
+        device_info = getattr(self, "device_info", None)
+        if device_info is None:
+            return False
+        conns = []
+        conn = device_info.get("connection")
+        if conn is not None:
+            conns.append(conn)
+        manager = device_info.get("manager")
+        if manager is not None:
+            conns.extend(manager.list_connections())
+        return any(c.get("product_id") == WIRELESS_RECEIVER_PRODUCT_ID for c in conns)
+
+    def _refresh_wireless_notice(self):
+        """Show the loud unset notice while a receiver is live and the size is unset.
+
+        U386 / TODO #385 planner ruling: the non-detecting receiver must
+        never run on a silent default; the notice names all three choices.
+        """
+        unset = getattr(self.config, "wireless_tablet_size", None) is None
+        show = unset and self._wireless_receiver_live()
+        self.wireless_size_notice.configure(
+            text=WIRELESS_SIZE_NOTICE_TEXT if show else "")
 
     def _build_buttons_tab(self):
         canvas = tk.Canvas(self.tab_buttons, borderwidth=0)
@@ -1147,6 +1235,15 @@ class SettingsWindow(tk.Toplevel):
             })
             touch_vars = getattr(self, "touch_vars", {})
             button_toggles.update({touch_key: var.get() for touch_key, var in touch_vars.items()})
+            # U386 / TODO #385: the wireless tablet size rides the same apply
+            # lane; the unset label means the explicit unset, not "keep".
+            wireless_combo = getattr(self, "wireless_size_combo", None)
+            if wireless_combo is None:
+                wireless_tablet_size = _KEEP_WIRELESS_SIZE
+            elif wireless_combo.get() == WIRELESS_SIZE_UNSET_LABEL:
+                wireless_tablet_size = None
+            else:
+                wireless_tablet_size = wireless_combo.get()
 
             # 2. Validate everything, then apply all-or-nothing
             apply_settings_to_config(
@@ -1155,11 +1252,17 @@ class SettingsWindow(tk.Toplevel):
                 pen_absolute_mode=pen_absolute_mode,
                 button_actions=button_actions,
                 button_toggles=button_toggles,
+                wireless_tablet_size=wireless_tablet_size,
             )
         except ValueError as e:
             messagebox.showerror("Invalid Input", f"Please enter valid numeric values.\nDetails: {e}")
             return False
 
+        # Refresh only when the window actually built the wireless lane:
+        # duck-typed apply_settings callers (FakeWindow pins) carry neither
+        # the combo nor the notice.
+        if wireless_combo is not None:
+            self._refresh_wireless_notice()
         ToastNotification(self, "Success", "Settings applied directly to driver!", timeout_ms=1500)
         return True
 

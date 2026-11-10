@@ -452,11 +452,11 @@ def test_wireless_size_selects_only_the_model_extents_preset(config, state, disp
                                                              stub_send_input):
     # Maintainer ruling 2026-11-04 (U370 leg 5): a wireless package carries
     # the SAME coordinates as wired (only fewer bundled fields), so
-    # wireless_pen_size selects the model extents preset and NOTHING else
+    # wireless_tablet_size selects the model extents preset and NOTHING else
     # -- no separate wireless coordinate scaling exists. The routed dict is
     # the model table object itself, and the wireless-routed mapping emits
     # byte-identical events to the wired 791 lane for the same coordinate.
-    config.wireless_pen_size = "large"
+    config.wireless_tablet_size = "large"
     routed = pen_specs_for_product(132, config)
     assert routed is touch_controller.PEN_SPECS_BY_PRODUCT[791]
     update_pen_cursor(state, dispatcher, config, routed, 65024, 40640,
@@ -469,32 +469,38 @@ def test_wireless_size_selects_only_the_model_extents_preset(config, state, disp
     assert wireless_event == stub_send_input[-1]
 
 
-def test_wireless_receiver_id_prints_the_named_fallback_line(capsys):
-    # 132 is the wireless receiver id: no table entry, so it falls back to
-    # Medium with ONE byte-stable named line per call.
+def test_wireless_receiver_id_without_config_prints_the_unset_notice(capsys):
+    # 132 is the wireless receiver id: no table entry, and U386 / TODO #385
+    # removed the silent medium -- with no config (no explicit choice) the
+    # loud unset notice names the choices and the MEDIUM extents stay the
+    # labeled FALLBACK. The byte-exact block is pinned in
+    # tests/test_wireless_tablet_size.py; this lane pins the shape.
     assert pen_specs_for_product(132) is touch_controller.PEN_SPECS_DEFAULT
-    assert capsys.readouterr().out == "pen_specs= no-table product=132 using=medium\n"
+    out = capsys.readouterr().out
+    assert "WIRELESS TABLET SIZE NOT SET" in out
+    assert out.endswith(
+        "pen_specs= wireless_tablet_size=unset product=132 using=789 fallback=not_chosen\n")
 
 
 def test_wireless_size_from_config_routes_the_receiver(capsys, config):
-    # U344 goal 2: the wireless addon carries receiver id 132 on ALL tablet
-    # sizes, so the size is not detectable. The user config names it; the
-    # default is medium (his observed wireless behavior: behaves like a
-    # Medium pad) and the named line reports the routing byte-exactly.
-    assert config.wireless_pen_size == "medium"
+    # U344 goal 2 + U386 / TODO #385: the wireless addon carries receiver id
+    # 132 on ALL tablet sizes, so the size is not detectable and the user
+    # config names it EXPLICITLY -- there is no default (unset = loud
+    # notice), and the named line reports the routing byte-exactly.
     capsys.readouterr()  # drain the fixture's config-load banner
+    config.wireless_tablet_size = "medium"
     assert pen_specs_for_product(132, config) is touch_controller.PEN_SPECS_BY_PRODUCT[789]
-    assert capsys.readouterr().out == "pen_specs= wireless_size=medium product=132 using=789\n"
+    assert capsys.readouterr().out == "pen_specs= wireless_tablet_size=medium product=132 using=789\n"
 
 
 def test_wireless_size_large_and_small_select_their_tables(capsys, config):
     capsys.readouterr()  # drain the fixture's config-load banner
-    config.wireless_pen_size = "large"
+    config.wireless_tablet_size = "large"
     assert pen_specs_for_product(132, config) is touch_controller.PEN_SPECS_BY_PRODUCT[791]
-    assert capsys.readouterr().out == "pen_specs= wireless_size=large product=132 using=791\n"
-    config.wireless_pen_size = "small"
+    assert capsys.readouterr().out == "pen_specs= wireless_tablet_size=large product=132 using=791\n"
+    config.wireless_tablet_size = "small"
     assert pen_specs_for_product(132, config) is touch_controller.PEN_SPECS_BY_PRODUCT[788]
-    assert capsys.readouterr().out == "pen_specs= wireless_size=small product=132 using=788\n"
+    assert capsys.readouterr().out == "pen_specs= wireless_tablet_size=small product=132 using=788\n"
 
 
 def test_unknown_product_with_config_keeps_the_no_table_line(capsys, config):
@@ -508,29 +514,31 @@ def test_unknown_product_with_config_keeps_the_no_table_line(capsys, config):
 def test_wireless_size_round_trips_through_the_config_file(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     cfg = DriverConfig()
-    cfg.wireless_pen_size = "large"
+    cfg.wireless_tablet_size = "large"
     path = tmp_path / "user.cfg"
     cfg.save_to_file(str(path))
     fresh = DriverConfig()
     assert fresh.load_from_file(str(path)) is True
-    assert fresh.wireless_pen_size == "large"
+    assert fresh.wireless_tablet_size == "large"
 
 
 def test_wireless_size_is_validated_and_normalized(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     path = tmp_path / "size.cfg"
     path.write_text(json.dumps(
-        {"motion_and_thresholds": {"wireless_pen_size": " Large "}}))
+        {"motion_and_thresholds": {"wireless_tablet_size": " Large "}}))
     cfg = DriverConfig()
     assert cfg.load_from_file(str(path)) is True
-    assert cfg.wireless_pen_size == "large"
+    assert cfg.wireless_tablet_size == "large"
 
     bad = tmp_path / "bad.cfg"
     bad.write_text(json.dumps(
-        {"motion_and_thresholds": {"wireless_pen_size": "huge"}}))
+        {"motion_and_thresholds": {"wireless_tablet_size": "huge"}}))
     cfg2 = DriverConfig()
     assert cfg2.load_from_file(str(bad)) is False
-    assert cfg2.wireless_pen_size == "medium"
+    # U386 / TODO #385: no silent medium anymore -- the rejected load leaves
+    # the explicit-unset state in place.
+    assert cfg2.wireless_tablet_size is None
 
 
 def test_wireless_thread_resolves_the_size_from_config(fake_hid, stub_send_input,
@@ -542,7 +550,7 @@ def test_wireless_thread_resolves_the_size_from_config(fake_hid, stub_send_input
     enabled = threading.Event()
     enabled.set()
     stop = threading.Event()
-    config.wireless_pen_size = "large"
+    config.wireless_tablet_size = "large"
 
     thread = threading.Thread(
         target=touch_controller.run_interface,
@@ -559,7 +567,7 @@ def test_wireless_thread_resolves_the_size_from_config(fake_hid, stub_send_input
     thread.join(timeout=0.5)
 
     out = capsys.readouterr().out
-    assert "pen_specs= wireless_size=large product=132 using=791" in out
+    assert "pen_specs= wireless_tablet_size=large product=132 using=791" in out
     assert not thread.is_alive()
 
 
