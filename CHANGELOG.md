@@ -4,6 +4,28 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261111-1815:
+
+  - FIXED unreachable top/bottom display bands for absolute pen mode on hosts
+    without usable desktop metrics (U411 / #401; root cause adjudicated with
+    diag-line forensics, fix per planner ruling route C): the degraded
+    metrics-less mapping lane kept the old equal-FRACTION normalized math --
+    it placed the 16:10 Large pad's short axis onto a 62.5 % center band of
+    the 0..65535 space Windows stretches to the desktop, so the top and
+    bottom ~1/8 of the screen were unreachable (maintainer diag at the
+    previous tip: `mode=isotropic_unmeasured screen=na monitors=17`). That
+    lane now runs the SHIPPED stretch full-fill math (identical expressions
+    to the opt-in `pen_stretch_full_desktop` branch): the full declared
+    digitizer range reaches the full virtual desktop on both axes; the
+    mapping diagnostic names this branch `stretch_unmeasured`. The opt-in
+    stretch toggle keeps override authority; hosts with readable desktop
+    metrics keep the isotropic centered lane unchanged. Accepted trade for
+    this host class: per-axis (anisotropic) mapping until a host-measurement
+    probe (TODO #412) makes the measured isotropic lane reachable.
+    `tests/test_pen_absolute_isotropy.py` pins full-range reach on a mocked
+    metrics-less host; the old pin that LOCKED the band was deliberately
+    re-pinned (ruling cited in the commit).
+
 261110-1604:
 
   - FIXED "Apply Live" never reaching the running readers (U386 / #386;
