@@ -221,3 +221,61 @@ def test_path_hint_accepts_separators_and_extensions():
     assert looks_like_path("saved.cfg") is True
     assert looks_like_path("kitchen") is False
     assert looks_like_path("Kitchen Intuos") is False
+
+
+# --- U413 / --save-device alias lane (cli-flag-naming proposal, option 2) -----
+# Ruling (proposals/approved/2026-10-31_cli-flag-naming.md): the alias lane of
+# the overloaded --save-as moves to '--save-device <alias>'; the path lane of
+# --save-as stays exactly as shipped; a bare-name --save-as still routes to the
+# alias lane but prints a deprecation notice naming --save-device.
+
+DEPRECATION_NOTE = ("[Start Parameter] '--save-as kitchen' used the device-alias "
+                    "lane - deprecated, use '--save-device kitchen'; "
+                    "'--save-as <path>' keeps the save-file lane")
+
+
+def test_save_device_alias_lane_pins_each_spelling():
+    # RED-before (tip b753da6): unknown token -> alias None, token leaked
+    # to path_args.
+    _, _, alias, _, path_args = resolve_cli_lanes(["--save-device", "kitchen", "-wireless"])
+    assert alias == "kitchen"
+    assert path_args == ["-wireless"]
+    _, _, alias, _, path_args = resolve_cli_lanes(["--save-device=kitchen"])
+    assert alias == "kitchen"
+    assert path_args == []
+    _, _, alias, _, path_args = resolve_cli_lanes(["-save-device", "kitchen"])
+    assert alias == "kitchen"
+    assert path_args == []
+
+
+def test_save_device_missing_value_is_noted():
+    _, _, alias, notes, path_args = resolve_cli_lanes(["--save-device"])
+    assert alias is None
+    assert notes == ["[Start Parameter] --save-device needs a device alias - ignored"]
+    assert path_args == []
+
+
+def test_save_as_absolute_path_form_keeps_the_path_lane():
+    # "path lane unaffected" guard (green on the pre-change tree by design --
+    # a regression guard, not a discriminator).
+    _, _, alias, _, path_args = resolve_cli_lanes(
+        ["--save-as", "C:/x/y.json", "-wireless"])
+    assert alias is None
+    assert path_args == ["--save-as", "C:/x/y.json", "-wireless"]
+    load, save, _, other = resolve_config_paths(path_args)
+    assert save == "C:/x/y.json"
+    assert other == ["-wireless"]
+
+
+def test_save_as_bare_name_still_aliases_with_deprecation_notice():
+    # RED-before: routes correctly but the deprecation note does not exist.
+    _, _, alias, notes, path_args = resolve_cli_lanes(["--save-as", "kitchen"])
+    assert alias == "kitchen"
+    assert path_args == []
+    assert DEPRECATION_NOTE in notes
+
+
+def test_save_as_inline_bare_name_also_notices_deprecation():
+    _, _, alias, notes, _ = resolve_cli_lanes(["--save-as=kitchen"])
+    assert alias == "kitchen"
+    assert DEPRECATION_NOTE in notes

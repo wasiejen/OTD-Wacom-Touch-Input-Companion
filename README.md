@@ -125,12 +125,14 @@ Start the driver with `python touch_controller.py [options]`:
 | `--save-as <path>` | save to `<path>` while loading from `--config` |
 | `--list` | print every stored device entry (alias + identity key) and exit |
 | `--restore-with <name>` | apply one device's saved values, then re-save the live values |
-| `--save-as <alias>` | write the current settings under a new device alias and exit |
+| `--save-device <alias>` | write the current settings under a new device alias and exit |
 
-`--list`, `--restore-with` and `--save-as <alias>` are maintenance lanes: they run
-against the config file and exit without starting the driver or the GUI. A
-`--save-as` value that looks like a file path (a `/` or `\` separator or a file
-extension) keeps the save-file lane; any other value names a device alias.
+`--list`, `--restore-with` and `--save-device <alias>` are maintenance lanes: they run
+against the config file and exit without starting the driver or the GUI. The
+old bare-name alias spelling `--save-as <alias>` still routes to the same lane
+but prints a deprecation notice naming `--save-device`; a `--save-as` value that
+looks like a file path (a `/` or `\` separator or a file extension) keeps the
+save-file lane and is unchanged.
 `--restore-with` takes a device alias or its 12-character identity key; the
 named device's saved values become the live values, and that device's entry is
 then rewritten with the live state.
