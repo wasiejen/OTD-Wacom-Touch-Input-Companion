@@ -33,6 +33,26 @@ def _model(metrics=SCREEN, records=None, rect=RECT):
                               CANVAS[0], CANVAS[1], BOX_MM[0], BOX_MM[1], rect)
 
 
+def test_apply_scale_resizes_footprint_at_fixed_center():
+    # U424r3 R3-L3 (#424 item 3b): sensitivity is an editable handle on
+    # the footprint. RED-before cc392fc: AttributeError apply_scale.
+    m = _model()
+    cx = m.rect[0] + m.rect[2] / 2
+    cy = m.rect[1] + m.rect[3] / 2
+    m.apply_scale(2.0)
+    assert m.rect[2] == pytest.approx(2.0 * BOX_MM[0], rel=1e-9)
+    assert m.rect[3] == pytest.approx(2.0 * BOX_MM[1], rel=1e-9)
+    assert (m.rect[0] + m.rect[2] / 2, m.rect[1] + m.rect[3] / 2) == \
+        pytest.approx((cx, cy))
+
+
+def test_apply_scale_clamps_inside_the_desktop():
+    m = _model()
+    m.apply_scale(1000.0)  # absurd px/mm -> clamp to the desktop width
+    assert m.rect[2] == pytest.approx(SCREEN[2])
+    assert m.rect[0] == pytest.approx(0.0)
+
+
 def test_aspect_lock_helper_rederives_rh():
     assert pen_area_rect_aspect_lock([0, 0, 1000, 7], 325.12, 203.2) == \
         [0, 0, 1000, 625]

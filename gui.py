@@ -529,6 +529,21 @@ class PenAreaCanvasModel:
         self.rect = [rx, ry, rw, rh]
         return list(self.rect)
 
+    def apply_scale(self, px_mm):
+        """Resize the footprint to the wanted sensitivity px/mm, keeping its
+        CENTER (U424r3 R3-L3, #424 item 3b; protocol DECISION: s is the
+        derived handle s = rw_px / box_mm_w - aspect-lock makes one scalar
+        suffice; footprint semantics and the pen math are unchanged)."""
+        cx = self.rect[0] + self.rect[2] / 2
+        cy = self.rect[1] + self.rect[3] / 2
+        w = min(max(float(px_mm) * self.box_mm[0], self.MIN_RECT_PX),
+                self.desktop_w)
+        h = min(w * self.box_mm[1] / self.box_mm[0], self.desktop_h)
+        rx = min(max(cx - w / 2.0, 0.0), self.desktop_w - w)
+        ry = min(max(cy - h / 2.0, 0.0), self.desktop_h - h)
+        self.rect = [rx, ry, w, h]
+        return list(self.rect)
+
     def monitor_canvas_rects(self):
         """Monitor outline boxes in canvas px, origin = virtual-desktop origin.
 
@@ -611,9 +626,13 @@ class PenAreaEditor(ttk.Frame):
     CANVAS_H = 120.0
     HANDLE = 8
 
-    def __init__(self, parent, config, device_info, **kwargs):
+    def __init__(self, parent, config, device_info, on_change=None, **kwargs):
         super().__init__(parent, **kwargs)
         self.config = config
+        # U424r3 R3-L3 (#424 item 3a): the window hooks this to sync the
+        # numeric fields when the model moves (drag/resize) - the sync is
+        # bidirectional.
+        self.on_change = on_change
         conn = (device_info or {}).get("connection") or {}
         # U416 / #406 defect: the model ALWAYS builds (the canvas is
         # editable everywhere); device identity names the lane, so it is
@@ -728,6 +747,8 @@ class PenAreaEditor(ttk.Frame):
                                event.y - self._drag_anchor[1])
             self._drag_anchor = (event.x, event.y)
         self._redraw()
+        if self.on_change is not None:
+            self.on_change()
 
     def _redraw(self):
         self.canvas.delete("all")
@@ -1323,6 +1344,9 @@ class SettingsWindow(tk.Toplevel):
             self.rect_entries[f"{key}_mm"].delete(0, tk.END)
             self.rect_entries[f"{key}_mm"].insert(
                 0, f"{rect[i] * pen_mm_per_px(dpi, axis):.1f}")
+        self.rect_entries["s_px"].delete(0, tk.END)
+        self.rect_entries["s_px"].insert(
+            0, f"{rect[2] / model.box_mm[0]:.4f}")
 
     def _apply_rect_field(self, source_key):
         # Ruling 2: px and mm entries are bidirectional, aspect-locked
@@ -1338,6 +1362,11 @@ class SettingsWindow(tk.Toplevel):
             raw = float(entry.get().strip().replace(",", "."))
         except ValueError:
             self._sync_rect_entries()  # revert the bad edit
+            return
+        if field == "s":  # sensitivity handle (U424r3 R3-L3)
+            model.apply_scale(raw)
+            editor._redraw()
+            self._sync_rect_entries()
             return
         dpi = virtual_desktop_dpi()
         axis = 1 if field in ("y", "h") else 0
@@ -1461,8 +1490,19 @@ class SettingsWindow(tk.Toplevel):
             mm_entry.bind("<FocusOut>", lambda e, k=f"{field_key}_mm": self._apply_rect_field(k))
             self.rect_entries[f"{field_key}_px"] = px_entry
             self.rect_entries[f"{field_key}_mm"] = mm_entry
+        # U424r3 R3-L3 (#424 item 3b): editable SENSITIVITY (px/mm) - the
+        # derived handle s = rw/box_mm_w; editing it resizes the footprint
+        # at fixed center (protocol DECISION: no schema change).
+        ttk.Label(fields_frame, text="Sensitivity (px/mm):").grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 0))
+        s_entry = ttk.Entry(fields_frame, width=9)
+        s_entry.grid(row=3, column=2, padx=4, pady=(4, 0))
+        s_entry.bind("<Return>", lambda e: self._apply_rect_field("s_px"))
+        s_entry.bind("<FocusOut>", lambda e: self._apply_rect_field("s_px"))
+        self.rect_entries["s_px"] = s_entry
         self.pen_area_editor = PenAreaEditor(self.pen_rect_panel, self.config,
-                                             self.device_info)
+                                             self.device_info,
+                                             on_change=self._sync_rect_entries)
         self.pen_area_editor.pack(fill="x", pady=(6, 0))
         self._sync_rect_entries()
         self._sync_mode_panels()

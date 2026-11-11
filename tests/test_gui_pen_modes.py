@@ -186,6 +186,43 @@ def test_rect_panel_keeps_its_place_across_mode_cycles(modes_cfg, tk_root, monke
     assert order1.index(win._pen_wireless_frame._name) == idx_wireless
 
 
+# --- U424r3 R3-L3 (#424 round-3 item 3): bidirectional sync + px/mm handle ---
+
+
+def test_sensitivity_field_echoes_and_edits_the_footprint(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before cc392fc: KeyError 's_px' (no sensitivity field).
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    model = win.pen_area_editor.model
+    box_w = model.box_mm[0]
+    s0 = model.rect[2] / box_w
+    assert float(win.rect_entries["s_px"].get()) == pytest.approx(s0, rel=1e-3)
+    cx = model.rect[0] + model.rect[2] / 2
+    cy = model.rect[1] + model.rect[3] / 2
+    win.rect_entries["s_px"].delete(0, tk.END)
+    win.rect_entries["s_px"].insert(0, "0.5")
+    win._apply_rect_field("s_px")
+    assert model.rect[2] == pytest.approx(0.5 * box_w, rel=1e-6)
+    assert (model.rect[0] + model.rect[2] / 2,
+            model.rect[1] + model.rect[3] / 2) == pytest.approx((cx, cy))
+    # and the echo follows the edit
+    assert float(win.rect_entries["s_px"].get()) == pytest.approx(0.5, rel=1e-3)
+
+
+def test_rect_drag_updates_the_numeric_fields(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # Item 3a: drag/resize -> fields (one-way today). Driven through the
+    # editor's own event handlers (no Tk event pump needed).
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    editor = win.pen_area_editor
+    model = editor.model
+    press = type("E", (), {"x": 5.0, "y": 5.0})()
+    editor._press(press)
+    editor._motion(type("E", (), {"x": 105.0, "y": 55.0})())
+    assert float(win.rect_entries["x_px"].get()) == pytest.approx(model.rect[0], abs=1)
+    assert float(win.rect_entries["y_px"].get()) == pytest.approx(model.rect[1], abs=1)
+    assert float(win.rect_entries["s_px"].get()) == pytest.approx(
+        model.rect[2] / model.box_mm[0], rel=1e-3)
+
+
 # --- U424r3 R3-L2 (#424 round-3 item 2): Apply Live = single apply path ----
 
 
