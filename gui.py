@@ -947,6 +947,13 @@ class SettingsWindow(tk.Toplevel):
                     combo, action_display_value(config.action_mapping.get(key), options))
         orientation_widget = getattr(self, "orientation_widget", None)
         if orientation_widget is not None and hasattr(orientation_widget, "draw_degrees"):
+            # U415 / #407: the live-apply refresh re-resolves the drawing SIZE
+            # too (a Pen-tab wireless size change lands without a window
+            # rebuild - same #386 apply-live shape as the orientation angle).
+            conn = (getattr(self, "device_info", None) or {}).get("connection") or {}
+            orientation_widget.size = resolve_drawing_size(
+                conn.get("product_id"),
+                getattr(config, "wireless_tablet_size", None))
             orientation_widget.draw_degrees(config.orientation_degrees)
 
     def assign_alias(self):

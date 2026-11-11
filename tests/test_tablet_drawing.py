@@ -101,20 +101,22 @@ def _all_drawn_features(layout):
 
 
 def _fits_canvas(scale, layout):
+    # Drawn geometry: a feature at mm (x, y) with mm radius r spans
+    # (|x| + r) * scale canvas px (the widget scales the radius too).
     half_w, half_h = CANVAS_W / 2, CANVAS_H / 2
     for x, y, radius in _all_drawn_features(layout):
-        edge_x = abs(x) * scale + radius
-        edge_y = abs(y) * scale + radius
-        if edge_x > half_w or edge_y > half_h:
+        if (abs(x) + radius) * scale > half_w or (abs(y) + radius) * scale > half_h:
             return False
     return True
 
 
+@pytest.mark.parametrize("size", ("small", "medium", "large"))
 @pytest.mark.parametrize("degrees", (0, 45, 90, 137, 180, 225, 270, 315))
-def test_view_scale_fits_the_drawing_at_every_angle(degrees):
+def test_view_scale_fits_the_drawing_at_every_angle_and_size(degrees, size):
     # The U74d bug: scale fixed on the UNROTATED height, so at 90 deg the
-    # drawing escaped the canvas. The view scale must refit per angle.
-    drawing = TABLET_DRAWINGS["medium"]
+    # drawing escaped the canvas. The view scale must refit per angle --
+    # U415 STEP-1 P2-2: for EVERY table size, not just medium.
+    drawing = TABLET_DRAWINGS[size]
     layout = tablet_pictogram_layout(degrees, drawing["body_mm"][0],
                                      drawing["body_mm"][1],
                                      digitizer=drawing["digitizer_mm"])
@@ -125,6 +127,20 @@ def test_view_scale_fits_the_drawing_at_every_angle(degrees):
     # the canvas half-extent (no shrinking to a dot).
     widest = max(abs(x) + r for x, _, r in _all_drawn_features(layout)) * scale
     assert widest >= 0.6 * min(CANVAS_W, CANVAS_H) / 2
+
+
+@pytest.mark.parametrize("size", ("small", "large"))
+def test_wired_size_combos_keep_the_left_only_strip(size):
+    # U415 STEP-1 P2-1: the ruling's table entries, not just the legacy
+    # default layout, must keep every control left and the pen area right.
+    drawing = TABLET_DRAWINGS[size]
+    layout = tablet_pictogram_layout(0, drawing["body_mm"][0],
+                                     drawing["body_mm"][1],
+                                     digitizer=drawing["digitizer_mm"])
+    assert all(x < 0 for _, x, _ in layout["buttons"])
+    rightmost_button = max(x for _, x, _ in layout["buttons"])
+    pen_left = min(x for x, _ in layout["pen_area"])
+    assert pen_left > rightmost_button + layout["button_radius"]
 
 
 def test_layout_button_labels_do_not_renumber_under_rotation():
@@ -182,6 +198,22 @@ def test_size_variants_produce_different_drawings():
     bodies = {size: layouts[size]["rect"][2][0] - layouts[size]["rect"][0][0]
               for size in layouts}
     assert bodies["small"] < bodies["medium"] < bodies["large"]
+
+
+def test_widget_redraw_picks_up_a_changed_size(tk_root):
+    # U415 STEP-1 P2-3 contract: the live-apply refresh hook sets
+    # widget.size then calls draw_degrees; the redraw must follow the
+    # new size (stale-size drawings kept the old scale until rebuild).
+    widget = OrientationWidget(tk_root, degrees=90, size="medium")
+    widget.size = "small"
+    widget.draw_degrees(90)
+    direct = OrientationWidget(tk_root, degrees=90, size="small")
+    other = OrientationWidget(tk_root, degrees=90, size="large")
+    assert widget._scale == pytest.approx(direct._scale, rel=1e-9)
+    assert widget._scale != pytest.approx(other._scale, rel=0.02)
+    widget.destroy()
+    direct.destroy()
+    other.destroy()
 
 
 def test_widget_size_changes_the_drawing(tk_root):
