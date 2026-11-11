@@ -945,6 +945,7 @@ class SettingsWindow(tk.Toplevel):
             live = self._live_connections()
             conn = live[0] if live else None
             self.device_info["connection"] = conn
+        conn = self._adopt_stale_focus()
         if conn is not None:
             self.config = conn["config"]
         base = self.device_info["base_config"]
@@ -1001,6 +1002,12 @@ class SettingsWindow(tk.Toplevel):
         # U424r3 R3-L5 (#424 item 5): the wireless size lane lives HERE,
         # inside Focused Device, visible only for the receiver (id 132).
         self._build_wireless_lane(frame)
+
+        # U424r4 R4-C (#424 item C): poll the live device list; a swap
+        # while the window is open now reaches the adopt->rebind->sync
+        # chain without waiting for a manual Refresh click.
+        self._device_poll_ms = 5000
+        self.after(self._device_poll_ms, self._device_poll_tick)
         ToolTip(device_btn, "Save ONLY this device's current values under its "
                             "identity key; the main Save button stays global.")
         frame.columnconfigure(3, weight=1)
@@ -1057,6 +1064,34 @@ class SettingsWindow(tk.Toplevel):
                 getattr(self.config, "wireless_tablet_size", None)
                 or WIRELESS_SIZE_UNSET_LABEL)
         self._refresh_wireless_notice()
+
+    def _adopt_stale_focus(self):
+        """U424r4 R4-C (#424 item C): a stored focus that is no longer in
+        the live list (cabled unplugged, tray bundle stale at reopen) is
+        ADOPTED-REPLACED by the first live device - mirroring the
+        U383 dropped-focus adoption, but at build time too, so a
+        cabled->wireless swap can never leave a dead focus hiding the
+        wireless picker. Returns the (possibly new) focused connection."""
+        conn = self.device_info.get("connection")
+        live = self._live_connections()
+        if live and conn is not None and not any(conn is c for c in live):
+            conn = live[0]
+            self.device_info["connection"] = conn
+            sync_lane = getattr(self, "_sync_wireless_lane", None)
+            if sync_lane is not None:  # mid-build the lane does not exist yet
+                sync_lane()
+        return conn
+
+    def _device_poll_tick(self):
+        """U424r4 R4-C: the missed hook - device swaps while the window is
+        open produced NO event anywhere; this poll re-runs the (already
+        complete) refresh->adopt->rebind->lane-sync chain periodically."""
+        if not self.winfo_exists():
+            return
+        try:
+            self._refresh_device_combo()
+        finally:
+            self.after(self._device_poll_ms, self._device_poll_tick)
 
     def _live_connections(self):
         """The running device list; the focused connection when no manager is wired."""
