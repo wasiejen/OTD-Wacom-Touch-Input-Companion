@@ -105,6 +105,36 @@ def test_legacy_key_migrates_with_loud_notice(capsys, cfg, tmp_path):
     assert pen_specs_for_product(WIRELESS_RECEIVER_ID, cfg) is PEN_SPECS_BY_PRODUCT[791]
 
 
+def test_legacy_key_notice_repeats_every_startup_until_the_key_is_gone(capsys, cfg, tmp_path):
+    """#422 residual mock pin: the old key is only removed when the user
+    saves; every startup that still READS the old key must announce it."""
+    path = write_cfg(tmp_path / "oldrepeat.cfg", {"wireless_pen_size": "large"})
+    capsys.readouterr()
+    assert cfg.load_from_file(path) is True
+    assert "legacy key 'wireless_pen_size'" in capsys.readouterr().out
+    assert cfg.load_from_file(path) is True  # startup again, file untouched
+    assert "legacy key 'wireless_pen_size'" in capsys.readouterr().out
+    cfg.save_to_file(path)  # save REMOVES the legacy key (migration lands)
+    with open(path, encoding="utf-8") as f:
+        assert "wireless_pen_size" not in json.load(f)["motion_and_thresholds"]
+    assert cfg.load_from_file(path) is True
+    assert "legacy key 'wireless_pen_size'" not in capsys.readouterr().out
+
+
+def test_unset_receiver_extent_selection_has_no_silent_path(capsys, cfg):
+    # #422 residual mock pin (the maintainer's `declared=44704x27940` diag):
+    # the ONLY receiver-unset extents outcome is the MEDIUM *FALLBACK*
+    # reached through the loud notice - never a silent pick. Pin the exact
+    # fallback extents too, so a silent default that skips the notice and
+    # returns these same extents still fails (notice text is the contract).
+    capsys.readouterr()
+    spec = pen_specs_for_product(WIRELESS_RECEIVER_ID, cfg)
+    out = capsys.readouterr().out
+    assert (spec["max_x"], spec["max_y"]) == (44704, 27940)
+    assert out == UNSET_NOTICE
+    assert "FALLBACK" in out or "NOT SET" in out
+
+
 def test_legacy_key_bad_value_errors_naming_the_new_key(capsys, cfg, tmp_path):
     capsys.readouterr()
     path = write_cfg(tmp_path / "oldbad.cfg", {"wireless_pen_size": "huge"})
