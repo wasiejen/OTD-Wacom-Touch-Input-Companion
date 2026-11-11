@@ -4,6 +4,23 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261113-0000:
+
+  - ROUND-3 FIXES for the pen movement UI (U424r3 / TODO #424): the Speed
+    field now shows only in Relative mode; switching modes keeps the
+    panels in their original place (no more jumping to the tab bottom).
+    The "Save Pen Area" button is gone - Apply now stores the pen-area
+    rectangle like every other setting ("Remove Rect" stays and does not
+    switch modes). Dragging or resizing the rectangle now updates the
+    numeric x/y/w/h fields (they were one-way before), and a new
+    Sensitivity (px/mm) field lets you set the pen-area scale directly -
+    the rectangle resizes around its center at the pen-box aspect. The
+    pixel values are labeled honestly: they are DPI-scaled desktop pixels
+    (the exact space the pen injection uses), millimetres are physical.
+    The Wireless Tablet Size picker moved from the Pen tab into the
+    Focused Device section and now only appears while the wireless
+    receiver (id 132) is the focused device.
+
 261112-1200:
 
   - TRI-MODAL pen movement (U424 / TODO #424): the Pen tab now offers ONE
