@@ -4,6 +4,19 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261113-1500:
+
+  - ROUND-4 FIXES for the pen movement UI (U424r4 / TODO #424): the
+    editor canvas now centers the drawn screens with equal margins (no
+    more dead strip beside them). Changing tablet orientation (and
+    pressing Apply) now re-syncs the pen-area editor: the millimetre
+    readout, the sensitivity value and future edit aspects follow the
+    rotated pen box while your stored rectangle stays exactly where the
+    pen maps it. The Wireless Tablet Size picker is picked up
+    automatically after a cabled<->wireless swap (window open or
+    reopened). The "Remove Rect" button was removed - the mode radios
+    already cover mode changes.
+
 261113-0000:
 
   - ROUND-3 FIXES for the pen movement UI (U424r3 / TODO #424): the Speed

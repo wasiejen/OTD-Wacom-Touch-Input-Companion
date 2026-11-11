@@ -52,11 +52,12 @@ def modes_cfg(monkeypatch, tmp_path):
     return DriverConfig()
 
 
-def make_window(root, cfg, monkeypatch, tmp_path, product_id=791):
+def make_window(root, cfg, monkeypatch, tmp_path, product_id=791, connection=None):
     monkeypatch.setattr(gui, "messagebox", StubBox())
     monkeypatch.setattr(gui, "ToastNotification", lambda *args, **kwargs: None)
-    device_info = {"connection": {"config": cfg, "identity": "0123456789ab",
-                                  "product_id": product_id},
+    device_info = {"connection": connection if connection is not None else
+                   {"config": cfg, "identity": "0123456789ab",
+                    "product_id": product_id},
                    "base_config": cfg, "manager": None}
     win = gui.SettingsWindow(root, TabletState(), cfg, device_info)
     CONSTRUCTED.append(win)
@@ -303,8 +304,10 @@ def test_save_pen_area_button_gone_remove_rect_stays(modes_cfg, tk_root, monkeyp
                 texts.append(str(child.cget("text")))
             except tk.TclError:
                 pass
+    # U424r4 R4-D (#424 item D): BOTH editor buttons are gone - Apply is
+    # the only apply path and the mode radios cover every mode change.
     assert "Save Pen Area" not in texts
-    assert "Remove Rect" in texts
+    assert "Remove Rect" not in texts
 
 
 def test_apply_writes_the_rect_entry_like_other_settings(modes_cfg, tk_root, monkeypatch, tmp_path):
@@ -317,14 +320,89 @@ def test_apply_writes_the_rect_entry_like_other_settings(modes_cfg, tk_root, mon
     assert frac == pytest.approx([0.0, 0.0, 0.5, 0.5])
 
 
-def test_remove_rect_does_not_switch_modes(modes_cfg, tk_root, monkeypatch, tmp_path):
-    # Panel semantics: Remove drops the entry, the mode stays 1:1.
+# --- U424r4 R4-B (#424 round-4 item B): orientation sync (pen path wins) ---
+
+
+def test_orientation_apply_reorients_editor_box_not_the_footprint(
+        modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before c8189e8: box stayed the 0-deg layout after applying 90.
+    from touch_controller import pen_specs_for_product, rotated_pen_box_mm
     win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
-    assert win.apply_settings() is True  # seed an entry via Apply
-    assert win.pen_area_editor.remove_entry() is True
-    assert modes_cfg.pen_mode == "rect_1to1"
-    assert win.pen_rect_panel.winfo_manager() == "pack"
-    assert not modes_cfg.pen_area_maps.get("0123456789ab", {}).get("entries")
+    model = win.pen_area_editor.model
+    specs = pen_specs_for_product(791, modes_cfg)
+    assert model.box_mm == pytest.approx(rotated_pen_box_mm(specs, 0))
+    footprint_px = list(model.rect)
+    win.entries["orientation_degrees"].delete(0, tk.END)
+    win.entries["orientation_degrees"].insert(0, "90")
+    assert win.apply_settings() is True
+    assert modes_cfg.orientation_degrees == 90
+    # Editor agrees with the pen: rotated box mm...
+    assert model.box_mm == pytest.approx(rotated_pen_box_mm(specs, 90))
+    assert model.box_mm[0] == pytest.approx(rotated_pen_box_mm(specs, 0)[1])
+    # ...and the SAME rect px footprint the pen maps (pen path wins).
+    assert model.rect == footprint_px
+    # Sensitivity echo follows the new box (w axis).
+    assert float(win.rect_entries["s_px"].get()) == pytest.approx(
+        model.rect[2] / model.box_mm[0], rel=1e-3)
+
+
+def test_editor_built_after_orientation_shows_rotated_box(modes_cfg, tk_root, monkeypatch, tmp_path):
+    from touch_controller import pen_specs_for_product, rotated_pen_box_mm
+    modes_cfg.orientation_degrees = 180
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    specs = pen_specs_for_product(791, modes_cfg)
+    assert win.pen_area_editor.model.box_mm == pytest.approx(
+        rotated_pen_box_mm(specs, 180))
+
+
+# --- U424r4 R4-C (#424 round-4 item C): cabled->wireless switch pickup ---
+
+
+def _live_pair(cfg, product_id):
+    return {"config": cfg, "identity": f"0123456789{product_id}",
+            "product_id": product_id}
+
+
+def test_build_adopts_live_wireless_when_stored_focus_is_dead(
+        modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before 1234b34: _build_device_bar trusted the tray's stale
+    # (dead cabled) connection dict -> picker hidden though wireless
+    # was live. Reopen-after-swap path.
+    import gui as gui_mod
+    cabled = _live_pair(modes_cfg, 791)
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path,
+                      connection=cabled)
+    wireless = _live_pair(modes_cfg, 132)
+    monkeypatch.setattr(win, "_live_connections", lambda: [wireless])
+    win._adopt_stale_focus()
+    assert win.device_info["connection"] is wireless
+    assert win._pen_wireless_frame.winfo_manager() == "grid"
+
+
+def test_window_open_switch_refresh_adopts_wireless_shows_picker(
+        modes_cfg, tk_root, monkeypatch, tmp_path):
+    # Window open during the swap: refresh adopts wireless -> rebind ->
+    # lane visible (the missed-hook fix also rides the 5 s poll).
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)  # 791
+    assert win._pen_wireless_frame.winfo_manager() == ""
+    wireless = _live_pair(modes_cfg, 132)
+    monkeypatch.setattr(win, "_live_connections", lambda: [wireless])
+    monkeypatch.setattr(gui, "ToastNotification", lambda *a, **k: None)
+    win._refresh_device_combo()
+    assert win.device_info["connection"] is wireless
+    assert win._pen_wireless_frame.winfo_manager() == "grid"
+
+
+def test_device_poll_reschedules(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before 1234b34: no poll existed (_device_poll_ms missing).
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    assert win._device_poll_ms == 5000
+    scheduled = []
+    monkeypatch.setattr(win, "after",
+                        lambda ms, fn, *a: scheduled.append((ms, fn)))
+    monkeypatch.setattr(win, "_refresh_device_combo", lambda: None)
+    win._device_poll_tick()
+    assert scheduled and scheduled[0][0] == 5000
 
 
 def test_subset_checkboxes_seed_from_the_stored_subset(modes_cfg, tk_root, monkeypatch, tmp_path):

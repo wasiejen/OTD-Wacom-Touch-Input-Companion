@@ -65,17 +65,51 @@ def test_model_scale_and_canvas_rect_round_trip():
     scale = min(320.0 / 3440, 120.0 / 1440)
     assert model.scale == pytest.approx(scale)
     x0, y0, x1, y1 = model.rect_canvas()
-    assert (x0 / scale, y0 / scale) == pytest.approx((RECT[0], RECT[1]))
+    # U424r4 R4-A re-pin: canvas coords carry the centering offset now.
+    assert ((x0 - model.offset_x) / scale,
+            (y0 - model.offset_y) / scale) == pytest.approx((RECT[0], RECT[1]))
     assert ((x1 - x0) / scale, (y1 - y0) / scale) == pytest.approx((RECT[2], RECT[3]))
 
 
 def test_model_monitor_outlines_use_records_and_origin():
+    # U424r4 R4-A re-pin: outlines carry the CENTERING offset now.
     model = _model(ORIGIN_SCREEN, RECORDS_DUO)
     boxes = model.monitor_canvas_rects()
     scale = min(320.0 / 4880, 120.0 / 2560)
     assert len(boxes) == 2
-    assert boxes[0][0] == pytest.approx((0 - (-1440)) * scale)
-    assert boxes[1][0] == pytest.approx((3440 - (-1440)) * scale)
+    assert boxes[0][0] == pytest.approx((0 - (-1440)) * scale + model.offset_x)
+    assert boxes[1][0] == pytest.approx((3440 - (-1440)) * scale + model.offset_x)
+
+
+# --- U424r3 R4-A (#424 round-4 item A): drawn union centered in canvas ---
+
+def _drawn_bbox(model):
+    xs0, ys0, xs1, ys1 = [], [], [], []
+    for x0, y0, x1, y1 in model.monitor_canvas_rects():
+        xs0.append(x0); ys0.append(y0); xs1.append(x1); ys1.append(y1)
+    return min(xs0), min(ys0), max(xs1), max(ys1)
+
+
+def test_drawn_union_centered_equal_margins_three_layouts():
+    # RED-before 69315c3: content started at canvas origin -> the slack
+    # margin was dead space on ONE side (his "dead area left of screens").
+    layouts = (
+        (SCREEN, RECORDS),                       # wide single
+        ((0, 0, 4880, 2560), RECORDS_DUO),       # dual, unequal heights
+        ((0, 0, 1440, 2560),                     # one pivoted (tall)
+         ["\\\\.\\DISPLAY1|0|0|1440x2560"]),
+    )
+    for metrics, records in layouts:
+        m = PenAreaCanvasModel(metrics, records, 320.0, 120.0,
+                               BOX_MM[0], BOX_MM[1])
+        bx0, by0, bx1, by1 = _drawn_bbox(m)
+        assert bx0 == pytest.approx(320.0 - bx1), (metrics, records)  # L == R
+        # Equal margins on the slack axis: the drawn union's own box
+        # (not the per-monitor bbox, which touches only what fits) sits
+        # inside the centered desktop content frame.
+        content_w = m.desktop_w * m.scale
+        assert bx1 - bx0 == pytest.approx(content_w, abs=1.5)
+        assert m.offset_x == pytest.approx((320.0 - content_w) / 2.0)
 
 
 def test_model_drag_clamps_to_desktop():
@@ -154,7 +188,7 @@ def test_widget_editable_without_identity_save_refuses(root, widget_config, monk
     widget.model.move_by(100000, 0)
     assert widget.model.rect[0] == 3440 - widget.model.rect[2]  # drag clamped
     assert widget.persist_entry() is False
-    assert widget.remove_entry() is False
+    # U424r4 R4-D: remove_entry deleted with the Remove Rect button.
     assert widget_config.pen_area_maps == {}
 
 

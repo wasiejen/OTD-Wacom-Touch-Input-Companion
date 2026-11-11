@@ -495,7 +495,15 @@ class PenAreaCanvasModel:
         self.desktop_w, self.desktop_h = float(width), float(height)
         self.records = [str(rec) for rec in records]
         self.box_mm = (float(box_mm_w), float(box_mm_h))
+        self.canvas_w, self.canvas_h = float(canvas_w), float(canvas_h)
         self.scale = min(canvas_w / self.desktop_w, canvas_h / self.desktop_h)
+        # U424r4 R4-A (#424 item A): the drawn screen union is CENTERED
+        # in the canvas - slack lives as equal margins, not as dead area
+        # on one side. Every canvas-space conversion adds the offsets;
+        # drag deltas are offset-free, so the datum stays the desktop
+        # origin.
+        self.offset_x = (self.canvas_w - self.desktop_w * self.scale) / 2.0
+        self.offset_y = (self.canvas_h - self.desktop_h * self.scale) / 2.0
         if rect_px is None:
             start_w = min(self.desktop_w * 2.0 / 3.0,
                           self.desktop_h * self.box_mm[0] / self.box_mm[1])
@@ -552,26 +560,31 @@ class PenAreaCanvasModel:
         desktop rectangle instead of staying black.
         """
         if not self.records:
-            return [(0.0, 0.0, self.desktop_w * self.scale,
-                     self.desktop_h * self.scale)]
+            return [(self.offset_x, self.offset_y,
+                     self.offset_x + self.desktop_w * self.scale,
+                     self.offset_y + self.desktop_h * self.scale)]
         boxes = []
         for record in self.records:
             left, top, width, height = self.parse_record(record)
-            x0 = (left - self.origin_x) * self.scale
-            y0 = (top - self.origin_y) * self.scale
+            x0 = (left - self.origin_x) * self.scale + self.offset_x
+            y0 = (top - self.origin_y) * self.scale + self.offset_y
             boxes.append((x0, y0, x0 + width * self.scale, y0 + height * self.scale))
         return boxes
 
     def rect_canvas(self):
-        """The rect in canvas px (origin-relative datum times the view scale)."""
+        """The rect in canvas px (origin-relative datum times the view
+        scale, plus the centering offset - U424r4 R4-A)."""
         rx, ry, rw, rh = self.rect
         s = self.scale
-        return (rx * s, ry * s, (rx + rw) * s, (ry + rh) * s)
+        ox, oy = self.offset_x, self.offset_y
+        return (rx * s + ox, ry * s + oy,
+                (rx + rw) * s + ox, (ry + rh) * s + oy)
 
     def handle_canvas(self):
         """Lower-right corner handle position in canvas px."""
         rx, ry, rw, rh = self.rect
-        return ((rx + rw) * self.scale, (ry + rh) * self.scale)
+        return ((rx + rw) * self.scale + self.offset_x,
+                (ry + rh) * self.scale + self.offset_y)
 
     def move_by(self, delta_canvas_x, delta_canvas_y):
         """Drag the whole rect by a canvas-px delta; clamp inside the desktop."""
@@ -589,7 +602,7 @@ class PenAreaCanvasModel:
         clamped axis would leave the desktop, so the aspect never breaks.
         """
         rx, ry = self.rect[0], self.rect[1]
-        wanted = handle_canvas_x / self.scale - rx
+        wanted = (handle_canvas_x - self.offset_x) / self.scale - rx
         max_w = min(self.desktop_w - rx,
                     (self.desktop_h - ry) * self.box_mm[0] / self.box_mm[1])
         locked = pen_area_rect_aspect_lock(
@@ -678,10 +691,9 @@ class PenAreaEditor(ttk.Frame):
         self.readout_label.grid(row=1, column=0, columnspan=2, sticky="w")
         # U424r3 R3-L2 (#424 item 2): no "Save Pen Area" - Apply Live
         # persists the rect (persist_entry, driven by the window's Apply).
-        # "Remove Rect" stays here, inside the 1:1 panel, and never
-        # switches modes.
-        ttk.Button(self, text="Remove Rect", command=self.remove_entry).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        # U424r4 R4-D (#424 item D): "Remove Rect" REMOVED too - a
+        # modeless state change with no feedback; the mode radios already
+        # cover switching away from 1:1.
         self._drag_anchor = None
         self._drag_mode = "rect"
         self.canvas.bind("<ButtonPress-1>", self._press)
@@ -699,6 +711,23 @@ class PenAreaEditor(ttk.Frame):
         fx, fy, fw, fh = entry["rect_frac"]
         return [fx * bounds_w, fy * bounds_h, fw * bounds_w, fh * bounds_h]
 
+    def reorient(self, pen_specs, orientation_degrees):
+        """Follow a tablet-orientation change (U424r4 R4-B / #424 item B).
+
+        PEN PATH WINS: the pen maps the STORED rect as the footprint and
+        fills it with the ROTATED extents (touch_controller
+        pen_area_norm_projection + update_pen_cursor), so the editor
+        keeps the rect px footprint EXACTLY and only updates its box_mm
+        - the mm readout, the sensitivity (w-axis) echo and the aspect
+        for future edits then match what the pen will do. No silent
+        footprint change, ever.
+        """
+        if self.model is None:
+            return
+        box = rotated_pen_box_mm(pen_specs, orientation_degrees)
+        self.model.box_mm = (float(box[0]), float(box[1]))
+        self._redraw()
+
     def persist_entry(self):
         """Write the model rect (FRACTIONS) under the current key.
 
@@ -715,19 +744,6 @@ class PenAreaEditor(ttk.Frame):
         self.config.set_pen_area_entry(
             self.identity, key, self.model.records,
             [rx / w, ry / h, rw / w, rh / h])
-        reset_pen_area_key_cache()
-        return True
-
-    def remove_entry(self):
-        """Drop this display configuration's entry (back to the default)."""
-        if self.model is None or self.identity is None:
-            return False
-        key = display_key_for_records(self.model.records)
-        lane = self.config.pen_area_maps.get(self.identity)
-        if lane:
-            lane["entries"] = [e for e in lane.get("entries", [])
-                                if e.get("display_key") != key]
-        self.config.save_to_file()
         reset_pen_area_key_cache()
         return True
 
@@ -915,6 +931,7 @@ class SettingsWindow(tk.Toplevel):
             live = self._live_connections()
             conn = live[0] if live else None
             self.device_info["connection"] = conn
+        conn = self._adopt_stale_focus()
         if conn is not None:
             self.config = conn["config"]
         base = self.device_info["base_config"]
@@ -971,6 +988,12 @@ class SettingsWindow(tk.Toplevel):
         # U424r3 R3-L5 (#424 item 5): the wireless size lane lives HERE,
         # inside Focused Device, visible only for the receiver (id 132).
         self._build_wireless_lane(frame)
+
+        # U424r4 R4-C (#424 item C): poll the live device list; a swap
+        # while the window is open now reaches the adopt->rebind->sync
+        # chain without waiting for a manual Refresh click.
+        self._device_poll_ms = 5000
+        self.after(self._device_poll_ms, self._device_poll_tick)
         ToolTip(device_btn, "Save ONLY this device's current values under its "
                             "identity key; the main Save button stays global.")
         frame.columnconfigure(3, weight=1)
@@ -1027,6 +1050,34 @@ class SettingsWindow(tk.Toplevel):
                 getattr(self.config, "wireless_tablet_size", None)
                 or WIRELESS_SIZE_UNSET_LABEL)
         self._refresh_wireless_notice()
+
+    def _adopt_stale_focus(self):
+        """U424r4 R4-C (#424 item C): a stored focus that is no longer in
+        the live list (cabled unplugged, tray bundle stale at reopen) is
+        ADOPTED-REPLACED by the first live device - mirroring the
+        U383 dropped-focus adoption, but at build time too, so a
+        cabled->wireless swap can never leave a dead focus hiding the
+        wireless picker. Returns the (possibly new) focused connection."""
+        conn = self.device_info.get("connection")
+        live = self._live_connections()
+        if live and conn is not None and not any(conn is c for c in live):
+            conn = live[0]
+            self.device_info["connection"] = conn
+            sync_lane = getattr(self, "_sync_wireless_lane", None)
+            if sync_lane is not None:  # mid-build the lane does not exist yet
+                sync_lane()
+        return conn
+
+    def _device_poll_tick(self):
+        """U424r4 R4-C: the missed hook - device swaps while the window is
+        open produced NO event anywhere; this poll re-runs the (already
+        complete) refresh->adopt->rebind->lane-sync chain periodically."""
+        if not self.winfo_exists():
+            return
+        try:
+            self._refresh_device_combo()
+        finally:
+            self.after(self._device_poll_ms, self._device_poll_tick)
 
     def _live_connections(self):
         """The running device list; the focused connection when no manager is wired."""
@@ -1147,6 +1198,25 @@ class SettingsWindow(tk.Toplevel):
                 conn.get("product_id"),
                 getattr(config, "wireless_tablet_size", None))
             orientation_widget.draw_degrees(config.orientation_degrees)
+        reorient = getattr(self, "_reorient_pen_editor", None)
+        if reorient is not None:
+            reorient()
+
+    def _reorient_pen_editor(self):
+        """Re-sync the rect editor to the current product + orientation
+        (U424r4 R4-B). Called from the rebind loop AND the Apply success
+        path - the pen reads config live, so the editor must too."""
+        editor = getattr(self, "pen_area_editor", None)
+        if editor is None:
+            return
+        conn = (getattr(self, "device_info", None) or {}).get("connection") or {}
+        editor.reorient(pen_specs_for_product(conn.get("product_id"),
+                                              self.config),
+                        self.config.orientation_degrees)
+        # The numeric echo (mm rows unchanged by box, but the sensitivity
+        # w-axis basis and any future edit follow the new box) must
+        # refresh with it.
+        self._sync_rect_entries()
 
     def assign_alias(self):
         """Name the focused device: stores the alias under its identity key (U87 a)."""
@@ -1952,6 +2022,11 @@ class SettingsWindow(tk.Toplevel):
         editor = getattr(self, "pen_area_editor", None)
         if editor is not None:
             editor.persist_entry()
+        # U424r4 R4-B: editor follows an applied orientation change;
+        # duck-typed apply harnesses carry neither the editor nor the hook.
+        reorient = getattr(self, "_reorient_pen_editor", None)
+        if reorient is not None:
+            reorient()
 
         # Refresh only when the window actually built the wireless lane:
         # duck-typed apply_settings callers (FakeWindow pins) carry neither
