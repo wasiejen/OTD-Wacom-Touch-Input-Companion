@@ -1622,6 +1622,82 @@ def monitor_count():
     return _get_system_metrics(SM_CMONITORS)
 
 
+# Metrics readout diagnostic (U412 / TODO #412): opt-in ONE startup line
+# naming the raw SM_*VIRTUALSCREEN returns (UNsanitized - junk pass-through
+# is the point), SM_CMONITORS, the ctypes call path, the monitor count and
+# the EnumDisplayMonitors union rect. Data for the #412 measured-fit ruling;
+# no mapping change, default OFF prints nothing.
+
+METRICS_DIAG_ENV = "WTD_METRICS_DIAG"
+METRICS_DIAG_INDICES = (SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+                        SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_CMONITORS)
+
+
+def metrics_diag_enabled():
+    """True when the env gate names the readout (WTD_METRICS_DIAG=1)."""
+    return os.environ.get(METRICS_DIAG_ENV, "").strip() == "1"
+
+
+def raw_system_metrics():
+    """Raw GetSystemMetrics returns for the diag indices, None on raise.
+
+    Deliberately bypasses the MIN_DESKTOP_PX junk guard (virtual_desktop_
+    metrics): the readout must show the raw values a host really returns.
+    """
+    values = []
+    for index in METRICS_DIAG_INDICES:
+        try:
+            values.append(ctypes.windll.user32.GetSystemMetrics(index))
+        except Exception:
+            values.append(None)
+    return values
+
+
+def union_rect_from_records(records):
+    """Bounding (left, top, width, height) of parsed monitor records.
+
+    Tolerates malformed rows (skipped); returns None when nothing parses.
+    """
+    boxes = []
+    for record in records:
+        parts = record.split("|")
+        try:
+            left, top = int(parts[1]), int(parts[2])
+            width_txt, height_txt = parts[3].split("x")
+            width, height = int(width_txt), int(height_txt)
+        except (IndexError, ValueError):
+            continue
+        boxes.append((left, top, left + width, top + height))
+    if not boxes:
+        return None
+    left = min(box[0] for box in boxes)
+    top = min(box[1] for box in boxes)
+    right = max(box[2] for box in boxes)
+    bottom = max(box[3] for box in boxes)
+    return (left, top, right - left, bottom - top)
+
+
+def metrics_readout_line():
+    """The byte-stable one-line readout (U412)."""
+    x, y, w, h, monitors = raw_system_metrics()
+    records = monitor_records()
+    union = union_rect_from_records(records)
+    if union is None:
+        union_text = "none"
+    else:
+        union_text = "%d,%d,%dx%d" % union
+    return ("wtd_metrics_diag SM_XVIRTUALSCREEN=%s SM_YVIRTUALSCREEN=%s "
+            "SM_CXVIRTUALSCREEN=%s SM_CYVIRTUALSCREEN=%s SM_CMONITORS=%s "
+            "call=user32.GetSystemMetrics monitors=%d union=%s"
+            % (x, y, w, h, monitors, len(records), union_text))
+
+
+def log_metrics_diagnostic():
+    """Print the readout once when the env gate is on; silent otherwise."""
+    if metrics_diag_enabled():
+        print(metrics_readout_line())
+
+
 # --- display identity (U414 / #406, approved proposal §2) ---------------------
 # The pen-area map stores one rectangle per display configuration. The
 # configuration identity is a sha1 over the sorted monitor records of
@@ -3335,6 +3411,10 @@ def main():
     config_path, save_path, path_notes, other_args = resolve_config_paths(path_args)
     for note in path_notes:
         print(note)
+
+    # U412 / TODO #412: opt-in startup metrics readout (env WTD_METRICS_DIAG=1),
+    # silent by default; diagnostic only, no mapping is consulted or changed.
+    log_metrics_diagnostic()
 
     for arg in other_args:
         if "-DEBUG" in arg.upper():
