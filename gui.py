@@ -286,23 +286,30 @@ def tablet_pictogram_layout(degrees, width=PICTOGRAM_WIDTH, height=PICTOGRAM_HEI
                             digitizer=None):
     """Rotated tablet pictogram geometry, centered at the origin (U74 d, U415).
 
-    Unrotated layout: body rectangle spanning +-width/2 x +-height/2; the
-    express-key strip LEFT ONLY (U415 fix: the old graphic mirrored an
-    empty column right); the digitizer (pen-area) rect right of the strip,
-    vertically centered; the central round on the middle axis with the
-    dial ring around it; keys 1-4 above and 5-8 mirrored below, numbered
-    top-to-bottom. Every point rotates clockwise by degrees with the same
-    matrix the input transform uses, so widget and cursor mapping stay
-    consistent. Return adds `pen_area` (4 digitizer corners) over U74 d.
+    Unrotated layout (U416 re-measured against the product PNG, STEP-0):
+    body rectangle spanning +-width/2 x +-height/2; the express-key strip
+    LEFT ONLY; the dial ring + central round SIT IN THE STRIP (same column
+    as the keys, vertically centered between the groups - NOT at the body
+    center, that was the U415 defect); keys 1-4 tightly above the ring and
+    5-8 tightly below (numbered top-to-bottom, all circles inside the
+    body); the digitizer (pen-area) rect right of the strip. Every point
+    rotates clockwise by degrees with the same matrix the input transform
+    uses, so widget and cursor mapping stay consistent. Return keys:
+    rect, pen_area, strip_right, seam, center (body center), ring_center
+    (dial center, in the strip), dial_radius, button_radius, buttons.
     """
     half_w, half_h = width / 2, height / 2
     strip_w, digitizer_w, digitizer_h, right_margin = _drawing_layout_rects(
         width, height, digitizer)
-    dial_radius = half_h * 0.32
-    button_radius = half_h * 0.08
-    inner_offset = half_h * 0.42
-    step = half_h * 0.19
+    # Ratios from images/wacom_intuos_pro_medium.png (viewed 2026-11-12):
+    # ring outer ~0.24 of body half-height, tight 3-px-ish gaps, key pitch
+    # 0.155, key circles fully inside the body edge (0.925 + r = 1.0).
+    dial_radius = half_h * 0.24
+    button_radius = half_h * 0.075
+    step = half_h * 0.155
+    inner_offset = dial_radius + half_h * 0.06 + button_radius
     column_x = -half_w + strip_w / 2
+    ring_x, ring_y = column_x, 0.0
     pen_left = -half_w + strip_w
     pen_right = half_w - right_margin
 
@@ -327,8 +334,9 @@ def tablet_pictogram_layout(degrees, width=PICTOGRAM_WIDTH, height=PICTOGRAM_HEI
     return {
         "rect": [rotated(x, y) for x, y in corners],
         "pen_area": [rotated(x, y) for x, y in pen_corners],
-        "strip_right": -half_w + strip_w,
+        "strip_right": strip_w - half_w,
         "center": rotated(0, 0),
+        "ring_center": rotated(ring_x, ring_y),
         "dial_radius": dial_radius,
         "button_radius": button_radius,
         "buttons": buttons,
@@ -422,15 +430,17 @@ class OrientationWidget(tk.Canvas):
         self.create_line(seam_x, seam_top, seam_x, seam_bottom,
                          fill="#5a5a5a")
 
-        cx, cy = self._canvas_point(*layout["center"])
+        # Dial ring + central round IN THE STRIP (U416 / PNG): same column
+        # as the keys, centered between the groups.
+        cx, cy = self._canvas_point(*layout["ring_center"])
         dial = layout["dial_radius"] * scale
         self.create_oval(cx - dial, cy - dial, cx + dial, cy + dial,
                          outline="#6a9fd8")
         central = layout["button_radius"] * 1.2 * scale
         self.create_oval(cx - central, cy - central, cx + central, cy + central,
                          fill="#2e5a86", outline="#6a9fd8")
-        self.create_text(cx, cy, text="central", fill="#e0e0e0",
-                         font=("Segoe UI", 7))
+        self.create_text(cx, cy, text="central", fill="#c8c8c8",
+                         font=("Segoe UI", 6))
 
         button = layout["button_radius"] * scale
         for number, x, y in layout["buttons"]:

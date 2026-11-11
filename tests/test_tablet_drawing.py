@@ -216,6 +216,53 @@ def test_widget_redraw_picks_up_a_changed_size(tk_root):
     other.destroy()
 
 
+# --- U416 L1 (#407 defect round 1, maintainer eyes on the PNG) -------------
+# The PNG layout (STEP-0, image viewed 2026-11-12): ring + central button
+# SIT IN THE LEFT STRIP (same column as the keys), vertically centered
+# between the two groups; the 4+4 groups sit CLOSE to the ring. The U415
+# table put the ring at the BODY center (defect 1) with groups spreading
+# outward from it (defect 2). RED-before 8abfb9e: the current table fails
+# the ring-in-strip and the inside-body pins.
+
+
+def _medium_layout(degrees=0):
+    drawing = TABLET_DRAWINGS["medium"]
+    return tablet_pictogram_layout(degrees, drawing["body_mm"][0],
+                                   drawing["body_mm"][1],
+                                   digitizer=drawing["digitizer_mm"])
+
+
+def test_ring_center_sits_in_the_left_strip_not_the_tablet_center():
+    layout = _medium_layout(0)
+    by_number = {n: (x, y) for n, x, y in layout["buttons"]}
+    ring_x, ring_y = layout["ring_center"]
+    # Same column as the keys (within one key diameter), and left of the
+    # pen area (the body center is inside the pen area -> RED before).
+    assert abs(ring_x - by_number[4][0]) < 2 * layout["button_radius"]
+    assert ring_x < min(x for x, _ in layout["pen_area"]) - layout["button_radius"]
+
+
+def test_ring_centered_between_the_two_tight_groups():
+    layout = _medium_layout(0)
+    by_number = {n: (x, y) for n, x, y in layout["buttons"]}
+    ring_x, ring_y = layout["ring_center"]
+    assert ring_y == pytest.approx((by_number[4][1] + by_number[5][1]) / 2)
+    # Groups CLOSE to the ring: gap from key4's edge to the ring's outer
+    # edge, in units of the key pitch, stays small (< 2 pitches).
+    pitch = by_number[2][1] - by_number[1][1]
+    gap = (ring_y - by_number[4][1]) - layout["dial_radius"] - layout["button_radius"]
+    assert 0 <= gap < 2 * pitch
+
+
+def test_all_key_circles_stay_inside_the_body_outline():
+    # U415 carried P2-4 (outer keys overhang the body edge): fixed with
+    # this round's group spacing. RED-before: |y|+r = 1.07*half_h failed.
+    layout = _medium_layout(0)
+    half_h = layout["rect"][2][1]
+    assert all(abs(y) + layout["button_radius"] <= half_h
+               for _, _, y in layout["buttons"])
+
+
 def test_widget_size_changes_the_drawing(tk_root):
     small = OrientationWidget(tk_root, degrees=0, size="small")
     large = OrientationWidget(tk_root, degrees=0, size="large")
