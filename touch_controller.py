@@ -505,6 +505,10 @@ def snapshot_device_sections(config, section_names=DEVICE_SECTION_KEYS):
 DEVICE_ALIAS_PREFIX = "device_alias_"
 DEVICE_SETTINGS_PREFIX = "device_settings_"
 DEVICE_IDENTITY_HASH_LENGTH = 12
+# Pen-area map lane (U414 / #406, approved design proposal §2): per-device
+# list of user rectangles, one entry per display configuration, keyed by a
+# sha1 display key. {"entries": [{"display_key", "monitors", "rect_px"}]}
+PEN_AREA_MAP_PREFIX = "pen_area_map_"
 
 # Wireless tablet size lane (U344 goal 2; renamed U386 / TODO #385): the
 # wireless add-on is the same receiver (product id 132) on ALL tablet sizes,
@@ -604,7 +608,34 @@ class DriverConfig:
             return DEVICE_ALIAS_PREFIX
         if section.startswith(DEVICE_SETTINGS_PREFIX):
             return DEVICE_SETTINGS_PREFIX
+        if section.startswith(PEN_AREA_MAP_PREFIX):
+            return PEN_AREA_MAP_PREFIX
         return None
+
+    @staticmethod
+    def _validated_pen_area_entry(entry):
+        """Return the normalized pen-area entry, or an error string (U414 lane).
+
+        Schema (approved proposal §2): display_key non-empty str, monitors
+        list of str, rect_px [rx, ry, rw, rh] with positive rw/rh.
+        """
+        if not isinstance(entry, dict):
+            return "must be an object"
+        display_key = entry.get("display_key")
+        if not isinstance(display_key, str) or not display_key:
+            return "needs a non-empty 'display_key' string"
+        monitors = entry.get("monitors")
+        if not isinstance(monitors, list) or not all(isinstance(m, str) for m in monitors):
+            return "needs a 'monitors' list of strings"
+        rect_px = entry.get("rect_px")
+        if (not isinstance(rect_px, (list, tuple)) or len(rect_px) != 4
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                           for v in rect_px)):
+            return "rect_px must be [rx, ry, rw, rh] numbers"
+        if rect_px[2] <= 0 or rect_px[3] <= 0:
+            return "rect_px needs positive width and height"
+        return {"display_key": display_key, "monitors": list(monitors),
+                "rect_px": [int(v) for v in rect_px]}
 
     @staticmethod
     def _error_reference(raw_text, key, item_index):
@@ -626,6 +657,8 @@ class DriverConfig:
         # each keyed by the device identity hash of its interface.
         self.device_aliases = {}
         self.device_settings = {}
+        # Pen-area map lanes (U414 / #406): identity -> {"entries": [...]}.
+        self.pen_area_maps = {}
 
         # Motion Parameters
         
@@ -912,6 +945,9 @@ class DriverConfig:
             data[f"{DEVICE_ALIAS_PREFIX}{identity}"] = alias
         for identity, sections in self.device_settings.items():
             data[f"{DEVICE_SETTINGS_PREFIX}{identity}"] = sections
+        # Pen-area map lanes (U414 / #406), flat keys beside the device lanes.
+        for identity, lane in self.pen_area_maps.items():
+            data[f"{PEN_AREA_MAP_PREFIX}{identity}"] = lane
         with open(filepath, "w") as f:
             json.dump(data, f, indent=4)
         print(f"[Config] Saved settings to '{filepath}'")
@@ -1067,6 +1103,7 @@ class DriverConfig:
         # device_settings_<hash> carries the per-device sections.
         aliases = {}
         settings = {}
+        pen_area_maps = {}
         lane_seen = False
         for index, (key, value) in enumerate(data.items()):
             lane = self._device_lane_key(key)
@@ -1081,6 +1118,22 @@ class DriverConfig:
                                   f"got {self._describe(value)} ({ref})")
                 else:
                     aliases[identity] = value
+            elif lane == PEN_AREA_MAP_PREFIX:
+                # U414 / #406 lane: {"entries": [entry, ...]}; an entry whose
+                # shape is wrong is named, the other entries still load.
+                if not isinstance(value, dict) or not isinstance(value.get("entries"), list):
+                    errors.append(f"'{key}' needs an object with an 'entries' list, "
+                                  f"got {self._describe(value)} ({ref})")
+                    continue
+                valid_entries = []
+                for entry_index, entry in enumerate(value["entries"]):
+                    result = self._validated_pen_area_entry(entry)
+                    if isinstance(result, str):
+                        errors.append(f"'{key}' entry {entry_index + 1}: {result} ({ref})")
+                    else:
+                        valid_entries.append(result)
+                if valid_entries:
+                    pen_area_maps[identity] = {"entries": valid_entries}
             else:
                 if not isinstance(value, dict):
                     errors.append(f"'{key}' needs a settings object, "
@@ -1100,6 +1153,8 @@ class DriverConfig:
         if lane_seen:
             validated["aliases"] = aliases
             validated["settings"] = settings
+            if pen_area_maps:
+                validated["pen_area_maps"] = pen_area_maps
 
         return validated, warnings, errors
 
@@ -1141,6 +1196,8 @@ class DriverConfig:
             self.device_aliases = validated["aliases"]
         if "settings" in validated:
             self.device_settings = validated["settings"]
+        if "pen_area_maps" in validated:
+            self.pen_area_maps = validated["pen_area_maps"]
 
         self.sync_sensitivities()
         print(f"[Config] Successfully loaded settings from '{filepath}'")
@@ -1258,6 +1315,29 @@ class DriverConfig:
         for name, value in sections.items():
             entry[name] = value
         self.device_settings[identity] = entry
+
+    def set_pen_area_entry(self, identity, display_key, monitors, rect_px):
+        """Store the pen-area rectangle for one display configuration (U414 / #406).
+
+        The entry for the current `display_key` is replaced; entries of other
+        configurations stay (proposal §2: the GUI saves the current
+        configuration's entry only). Does not save the file.
+        Raises ValueError when the entry shape fails the load schema.
+        """
+        # U414 STEP-1 P2-3: validate on the WRITE side too (same schema as
+        # load); a caller with a malformed rect fails loudly here instead of
+        # saving garbage that the next load would reject.
+        entry = self._validated_pen_area_entry({"display_key": display_key,
+                                                "monitors": monitors,
+                                                "rect_px": rect_px})
+        if isinstance(entry, str):
+            raise ValueError(f"pen-area entry rejected: {entry}")
+        lane = self.pen_area_maps.setdefault(identity, {"entries": []})
+        for position, existing in enumerate(lane["entries"]):
+            if existing.get("display_key") == display_key:
+                lane["entries"][position] = entry
+                return
+        lane["entries"].append(entry)
 
 
 config = DriverConfig()
@@ -1542,6 +1622,160 @@ def monitor_count():
     return _get_system_metrics(SM_CMONITORS)
 
 
+# --- display identity (U414 / #406, approved proposal §2) ---------------------
+# The pen-area map stores one rectangle per display configuration. The
+# configuration identity is a sha1 over the sorted monitor records of
+# EnumDisplayMonitors/GetMonitorInfoW, in the same process-DPI awareness
+# space as the virtual metrics read above (virtual_desktop_metrics docstring).
+
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+class _MONITORINFOEXW(ctypes.Structure):
+    _fields_ = [("cb", ctypes.c_ulong),
+                ("rcMonitor", _RECT),
+                ("rcWork", _RECT),
+                ("dwFlags", ctypes.c_ulong),
+                ("szDevice", ctypes.c_wchar * 32)]
+
+
+def monitor_records():
+    """One record per monitor '<szDevice>|<left>|<top>|<W>x<H>', [] on failure.
+
+    U414 (#406): callers treat an empty list as 'no display identity' and
+    fall back to the isotropic default; the walk never raises.
+    """
+    records = []
+
+    def _callback(h_monitor, _hdc, _rect, _lparam):
+        info = _MONITORINFOEXW()
+        info.cb = ctypes.sizeof(_MONITORINFOEXW)
+        if not ctypes.windll.user32.GetMonitorInfoW(h_monitor, ctypes.byref(info)):
+            return True
+        left, top, right, bottom = (info.rcMonitor.left, info.rcMonitor.top,
+                                    info.rcMonitor.right, info.rcMonitor.bottom)
+        records.append(f"{info.szDevice}|{left}|{top}|{right - left}x{bottom - top}")
+        return True
+
+    try:
+        # U414 STEP-1 P2-2: pin the signatures so monitor handles keep their
+        # full 64-bit width on Win64 (default int coercion would truncate).
+        get_info = ctypes.windll.user32.GetMonitorInfoW
+        get_info.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFOEXW)]
+        get_info.restype = ctypes.c_bool
+        enum_monitors = ctypes.windll.user32.EnumDisplayMonitors
+        enum_monitors.argtypes = [ctypes.c_void_p, ctypes.POINTER(_RECT),
+                                  ctypes.c_void_p, ctypes.c_long]
+        enum_monitors.restype = ctypes.c_bool
+        proc = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
+                                  ctypes.POINTER(_RECT), ctypes.c_void_p)(_callback)
+        enum_monitors(None, None, proc, 0)
+    except Exception:
+        return []
+    return records
+
+
+def display_key_for_records(records):
+    """Display configuration identity: sha1 hex over sorted records joined by newlines."""
+    return hashlib.sha1("\n".join(sorted(records)).encode("utf-8")).hexdigest()
+
+
+def select_pen_area_entry(lane, display_key):
+    """First entry whose display_key matches exactly; None when none does.
+
+    U414 load rule: exact full-configuration match only; a stale entry for a
+    different monitor set is never selected (the isotropic default takes
+    over), even though the entry stays stored for the next return."""
+    if not isinstance(lane, dict):
+        return None
+    for entry in lane.get("entries", []):
+        if isinstance(entry, dict) and entry.get("display_key") == display_key:
+            return entry
+    return None
+
+
+def current_pen_area_entry(config, identity):
+    """The stored pen-area rectangle for the live display configuration, else None."""
+    records = monitor_records()
+    if not records:
+        return None
+    return select_pen_area_entry(config.pen_area_maps.get(identity),
+                                 display_key_for_records(records))
+
+
+# Consumer-side selection for the per-report pen path (U414 / #406). The
+# monitor walk is memoized behind a short TTL so a running reader does not
+# enumerate displays every report; a GUI save takes effect within the TTL
+# (the #386 Apply Live shape for this feature).
+
+PEN_AREA_KEY_TTL_SECONDS = 2.0
+_pen_area_key_cache = {"key": None, "at": None}
+
+
+def reset_pen_area_key_cache():
+    """Empty the display-key TTL cache (test seam and post-change hook)."""
+    _pen_area_key_cache["key"] = None
+    _pen_area_key_cache["at"] = None
+
+
+def cached_display_key(now=None):
+    """Display key with a TTL; None (enumeration failed) is cached too."""
+    if now is None:
+        now = time.monotonic()
+    if (_pen_area_key_cache["at"] is not None
+            and now - _pen_area_key_cache["at"] < PEN_AREA_KEY_TTL_SECONDS):
+        return _pen_area_key_cache["key"]
+    records = monitor_records()
+    key = display_key_for_records(records) if records else None
+    _pen_area_key_cache["key"] = key
+    _pen_area_key_cache["at"] = now
+    return key
+
+
+def select_live_pen_area_rect(config, identity):
+    """The rect for the live identity + display configuration, else None."""
+    if identity is None:
+        return None
+    key = cached_display_key()
+    if key is None:
+        return None
+    entry = select_pen_area_entry(config.pen_area_maps.get(identity), key)
+    if entry is None:
+        return None
+    return list(entry["rect_px"])
+
+
+def pen_area_rect_aspect_lock(rect_px, box_mm_w, box_mm_h):
+    """Return the rect with rh re-derived so rw/rh == box_mm_w/box_mm_h.
+
+    U414 / #406: the editor handle and the default rect both run through
+    here, so isotropy holds BY CONSTRUCTION in the pen_area lane (L2's
+    px/mm pin depends on this aspect); rx/ry/rw are passed through.
+    """
+    rx, ry, rw, _ = rect_px
+    return [rx, ry, rw, int(round(rw * box_mm_h / box_mm_w))]
+
+
+def pen_area_norm_projection(rect_px, extent_w, extent_h, screen_w, screen_h):
+    """Normalized-space offset/scale of the pen-area rect (proposal §2 formula).
+
+    off_x = rx * 65535 / screen_w places the box edge at rect px rx;
+    scale_x = rw * 65535 / (extent_w * screen_w) spans rw px for the full
+    rotated count extent; same per axis for y.
+
+    Datum (U414 STEP-2 P1): rx/ry are pixels RELATIVE TO THE VIRTUAL
+    DESKTOP ORIGIN - the (left, top) of the metrics bounding rect, i.e.
+    MOUSEEVENTF_VIRTUALDESK's own zero - not absolute screen coordinates.
+    """
+    rx, ry, rw, rh = rect_px
+    return (rx * PEN_VIRTUAL_RESOLUTION / screen_w,
+            rw * PEN_VIRTUAL_RESOLUTION / (extent_w * screen_w),
+            ry * PEN_VIRTUAL_RESOLUTION / screen_h,
+            rh * PEN_VIRTUAL_RESOLUTION / (extent_h * screen_h))
+
+
 PEN_MAP_DIAG_ENV = "WTD_PEN_MAP_DIAG"
 
 
@@ -1661,6 +1895,9 @@ class TabletState:
         # U376 diagnostic lane: the wired product id of this connection and
         # the one-shot flag for the named mapping-snapshot line.
         self.pen_product_id = None
+        # Identity key of the connected pen interface (U414 / #406): the
+        # pen_area_map lane lookup key, set once per pen connection.
+        self.pen_identity = None
         self.pen_abs_map_logged = False
 
         # Touch button/dial tracking (U71): last-seen byte 4 press bitmask,
@@ -1770,9 +2007,13 @@ def _log_pen_mapping_diagnostic(state, config, pen_specs, metrics, mode,
     itself is untouched by this line.
     """
     box_mm_w, box_mm_h = rotated_pen_box_mm(pen_specs, config.orientation_degrees)
-    if px_mm is not None:
+    if px_mm is not None and bands is not None:
         scales = "px_mm_x=%.4f px_mm_y=%.4f band_x=%.2f_px band_y=%.2f_px" % (
             px_mm[0], px_mm[1], bands[0], bands[1])
+    elif px_mm is not None:
+        # U414 pen_area lane: a user-placed rect has no contain-fit band.
+        scales = "px_mm_x=%.4f px_mm_y=%.4f band_x=na band_y=na" % (
+            px_mm[0], px_mm[1])
     else:
         scales = "px_mm_x=na px_mm_y=na band_x=na band_y=na"
     monitors = monitor_count()
@@ -1788,12 +2029,17 @@ def _log_pen_mapping_diagnostic(state, config, pen_specs, metrics, mode,
 
 
 def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
-                      screen_metrics=None):
+                      screen_metrics=None, pen_area_rect=None):
     """Move the pointer: absolute maps the digitizer to the virtual desktop,
     relative sends scaled deltas with a fractional accumulator.
 
     screen_metrics (U376): synthetic (left, top, width_px, height_px) desktop
     extents for the tests; None resolves them from the system metrics.
+    pen_area_rect (U414 / #406): [rx, ry, rw, rh] virtual-desktop px from
+    the per-configuration lane (resolved by the caller only on an exact
+    display-key match), measured from the virtual-desktop origin like
+    `pen_area_norm_projection`'s datum contract; None runs the pre-U414
+    lanes byte-unchanged.
     """
     ad = action_dispatch
     absolute = config.feature_toggles.get("pen_absolute_mode", True)
@@ -1824,6 +2070,25 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
                     pen_specs, config.orientation_degrees)
                 px_mm = (metrics[2] / box_mm_w, metrics[3] / box_mm_h)
                 bands = (0.0, 0.0)
+        elif pen_area_rect is not None and metrics is not None:
+            # Pen-area rect lane (U414 / #406, proposal §2): the rotated
+            # digitizer box maps onto the user's virtual-desktop rectangle,
+            # so the writing app that owns that region gets the full pen
+            # travel at one px/mm scale (isotropy by the aspect-locked rect;
+            # px_mm below reports the pair from the ROTATED mm box). The
+            # stretch toggle above keeps override authority; no match or
+            # junk metrics falls through to the U376 default.
+            box_mm_w, box_mm_h = rotated_pen_box_mm(
+                pen_specs, config.orientation_degrees)
+            off_x, scale_x, off_y, scale_y = pen_area_norm_projection(
+                pen_area_rect, extent_w, extent_h, metrics[2], metrics[3])
+            nx = min(max(int(off_x + (x - left) * scale_x + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
+            ny = min(max(int(off_y + (y - top) * scale_y + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
+            px_mm = (pen_area_rect[2] / box_mm_w, pen_area_rect[3] / box_mm_h)
+            bands = None
+            mode = "pen_area"
         elif metrics is not None:
             # Isotropic centered default (U376 fix of the U344 lane): ONE
             # px-per-mm scale from the desktop fit plus a centering offset, so
@@ -1962,7 +2227,9 @@ def process_pen_report(report, state, action_dispatch, config, pen_specs,
     state.pen_buttons = new_buttons
 
     update_pen_cursor(state, ad, config, grown_specs, x, y,
-                      screen_metrics=screen_metrics)
+                      screen_metrics=screen_metrics,
+                      pen_area_rect=select_live_pen_area_rect(config,
+                                                              state.pen_identity))
     update_pen_pressure_button(state, ad, config)
 
 def decode_button_report(report):
@@ -2464,6 +2731,11 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
             pen_specs = pen_specs_for_product(product_id, cfg)
             # U376: the named mapping diagnostic names the product it resolved.
             state.pen_product_id = product_id
+            # U414 / #406: pen_area_map lane key for this interface (same
+            # inputs as the manager's device_identity_hash sites).
+            state.pen_identity = device_identity_hash(
+                device_info.get("path") or b"",
+                device_info.get("serial_number") or "")
             print(f"{header} Init report not sent: upstream sends FeatureInitReport "
                   "'02 08' at device open; requirement unknown (pen data reads without it).")
 
