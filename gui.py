@@ -647,8 +647,15 @@ class PenAreaEditor(ttk.Frame):
         self.canvas = tk.Canvas(self, width=int(self.CANVAS_W),
                                 height=int(self.CANVAS_H), bg="#262626",
                                 borderwidth=1, highlightthickness=0)
-        self.canvas.grid(row=0, column=0, columnspan=2, pady=(0, 4))
-        self.readout_label = ttk.Label(self, text=self.model.readout())
+        # U424 L3 (#424 canvas jitter): the canvas is pinned to the west
+        # cell edge and the readout label carries a FIXED character width,
+        # so the rect-dependent readout can never resize the row and
+        # slide the fixed-size canvas left/right on redraw. The view
+        # transform itself derives from the screen bounds ONCE (model
+        # __init__: scale from desktop dims only, never from the rect).
+        self.canvas.grid(row=0, column=0, columnspan=2, pady=(0, 4), sticky="w")
+        self.readout_label = ttk.Label(self, text=self.model.readout(),
+                                       width=72, anchor="w")
         self.readout_label.grid(row=1, column=0, columnspan=2, sticky="w")
         ttk.Button(self, text="Save Pen Area", command=self.save_entry).grid(
             row=2, column=0, sticky="w", pady=(4, 0))

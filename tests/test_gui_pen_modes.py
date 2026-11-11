@@ -145,6 +145,29 @@ def test_numeric_fields_echo_the_stored_rect_on_open(modes_cfg, tk_root, monkeyp
     assert float(win.rect_entries["w_px"].get()) == pytest.approx(1720.0, abs=1)
 
 
+def test_editor_view_stays_put_across_edge_rect_moves(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # U424 L3 (#424 canvas jitter): the view transform must derive from
+    # the SCREEN BOUNDS once, and the canvas must not slide when the
+    # rect's readout text changes width. RED-before 0e28886: the frame
+    # request width oscillated with the rect position (rect-dependent
+    # label text width re-centered the fixed-size canvas in its cell).
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    editor = win.pen_area_editor
+    model = editor.model
+    scale0 = model.scale
+    x0 = model.monitor_canvas_rects()[0][0]
+    w0 = editor.winfo_reqwidth()
+    rw, rh = model.rect[2], model.rect[3]
+    model.rect = [0.0, 0.0, rw, rh]
+    editor._redraw()
+    assert editor.winfo_reqwidth() == w0, "view row resized by left-edge readout"
+    model.rect = [model.desktop_w - rw, model.desktop_h - rh, rw, rh]
+    editor._redraw()
+    assert editor.winfo_reqwidth() == w0, "view row resized by far-edge readout"
+    assert model.scale == scale0
+    assert model.monitor_canvas_rects()[0][0] == x0
+
+
 def test_virtual_desktop_dpi_helper_returns_positive_pair(modes_cfg):
     dpi = gui.virtual_desktop_dpi()
     assert isinstance(dpi, tuple) and len(dpi) == 2
