@@ -712,6 +712,23 @@ class PenAreaEditor(ttk.Frame):
         fx, fy, fw, fh = entry["rect_frac"]
         return [fx * bounds_w, fy * bounds_h, fw * bounds_w, fh * bounds_h]
 
+    def reorient(self, pen_specs, orientation_degrees):
+        """Follow a tablet-orientation change (U424r4 R4-B / #424 item B).
+
+        PEN PATH WINS: the pen maps the STORED rect as the footprint and
+        fills it with the ROTATED extents (touch_controller
+        pen_area_norm_projection + update_pen_cursor), so the editor
+        keeps the rect px footprint EXACTLY and only updates its box_mm
+        - the mm readout, the sensitivity (w-axis) echo and the aspect
+        for future edits then match what the pen will do. No silent
+        footprint change, ever.
+        """
+        if self.model is None:
+            return
+        box = rotated_pen_box_mm(pen_specs, orientation_degrees)
+        self.model.box_mm = (float(box[0]), float(box[1]))
+        self._redraw()
+
     def persist_entry(self):
         """Write the model rect (FRACTIONS) under the current key.
 
@@ -1160,6 +1177,25 @@ class SettingsWindow(tk.Toplevel):
                 conn.get("product_id"),
                 getattr(config, "wireless_tablet_size", None))
             orientation_widget.draw_degrees(config.orientation_degrees)
+        reorient = getattr(self, "_reorient_pen_editor", None)
+        if reorient is not None:
+            reorient()
+
+    def _reorient_pen_editor(self):
+        """Re-sync the rect editor to the current product + orientation
+        (U424r4 R4-B). Called from the rebind loop AND the Apply success
+        path - the pen reads config live, so the editor must too."""
+        editor = getattr(self, "pen_area_editor", None)
+        if editor is None:
+            return
+        conn = (getattr(self, "device_info", None) or {}).get("connection") or {}
+        editor.reorient(pen_specs_for_product(conn.get("product_id"),
+                                              self.config),
+                        self.config.orientation_degrees)
+        # The numeric echo (mm rows unchanged by box, but the sensitivity
+        # w-axis basis and any future edit follow the new box) must
+        # refresh with it.
+        self._sync_rect_entries()
 
     def assign_alias(self):
         """Name the focused device: stores the alias under its identity key (U87 a)."""
@@ -1965,6 +2001,11 @@ class SettingsWindow(tk.Toplevel):
         editor = getattr(self, "pen_area_editor", None)
         if editor is not None:
             editor.persist_entry()
+        # U424r4 R4-B: editor follows an applied orientation change;
+        # duck-typed apply harnesses carry neither the editor nor the hook.
+        reorient = getattr(self, "_reorient_pen_editor", None)
+        if reorient is not None:
+            reorient()
 
         # Refresh only when the window actually built the wireless lane:
         # duck-typed apply_settings callers (FakeWindow pins) carry neither

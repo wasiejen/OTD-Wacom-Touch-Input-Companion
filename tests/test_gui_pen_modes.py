@@ -327,6 +327,41 @@ def test_remove_rect_does_not_switch_modes(modes_cfg, tk_root, monkeypatch, tmp_
     assert not modes_cfg.pen_area_maps.get("0123456789ab", {}).get("entries")
 
 
+# --- U424r4 R4-B (#424 round-4 item B): orientation sync (pen path wins) ---
+
+
+def test_orientation_apply_reorients_editor_box_not_the_footprint(
+        modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before c8189e8: box stayed the 0-deg layout after applying 90.
+    from touch_controller import pen_specs_for_product, rotated_pen_box_mm
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    model = win.pen_area_editor.model
+    specs = pen_specs_for_product(791, modes_cfg)
+    assert model.box_mm == pytest.approx(rotated_pen_box_mm(specs, 0))
+    footprint_px = list(model.rect)
+    win.entries["orientation_degrees"].delete(0, tk.END)
+    win.entries["orientation_degrees"].insert(0, "90")
+    assert win.apply_settings() is True
+    assert modes_cfg.orientation_degrees == 90
+    # Editor agrees with the pen: rotated box mm...
+    assert model.box_mm == pytest.approx(rotated_pen_box_mm(specs, 90))
+    assert model.box_mm[0] == pytest.approx(rotated_pen_box_mm(specs, 0)[1])
+    # ...and the SAME rect px footprint the pen maps (pen path wins).
+    assert model.rect == footprint_px
+    # Sensitivity echo follows the new box (w axis).
+    assert float(win.rect_entries["s_px"].get()) == pytest.approx(
+        model.rect[2] / model.box_mm[0], rel=1e-3)
+
+
+def test_editor_built_after_orientation_shows_rotated_box(modes_cfg, tk_root, monkeypatch, tmp_path):
+    from touch_controller import pen_specs_for_product, rotated_pen_box_mm
+    modes_cfg.orientation_degrees = 180
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    specs = pen_specs_for_product(791, modes_cfg)
+    assert win.pen_area_editor.model.box_mm == pytest.approx(
+        rotated_pen_box_mm(specs, 180))
+
+
 def test_subset_checkboxes_seed_from_the_stored_subset(modes_cfg, tk_root, monkeypatch, tmp_path):
     # U424 UNIT VERDICT P1 (RED-before 62483be: vars were hardcoded True,
     # the UI lied about a stored restriction and one click silently
