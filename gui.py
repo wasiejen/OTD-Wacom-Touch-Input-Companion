@@ -335,36 +335,73 @@ def tablet_pictogram_layout(degrees, width=PICTOGRAM_WIDTH, height=PICTOGRAM_HEI
     }
 
 
+def pictogram_view_scale(layout, canvas_w, canvas_h, safety=0.93):
+    """Canvas px per mm that fits the ROTATED layout inside the canvas (U415).
+
+    The U74d defect: the widget scale was fixed on the UNROTATED height, so
+    at 90 deg the drawing left the drawing area. The view scale is refit
+    from the rotated bounding box of EVERY drawn feature (frame corners,
+    digitizer corners, button circles, dial ring), times a small safety
+    margin for text extents.
+    """
+    features = ([(x, y, 0.0) for x, y in layout["rect"]]
+                + [(x, y, 0.0) for x, y in layout["pen_area"]]
+                + [(x, y, layout["button_radius"]) for _, x, y in layout["buttons"]]
+                + [(*layout["center"], layout["dial_radius"])])
+    extents_x = max(abs(x) + radius for x, _, radius in features)
+    extents_y = max(abs(y) + radius for _, y, radius in features)
+    return min(canvas_w / 2 / extents_x, canvas_h / 2 / extents_y) * safety
+
+
 class OrientationWidget(tk.Canvas):
-    """Orientation pictogram (U74 d): a generalized tablet drawn in Tk, no image
-    file. Rectangle, central round with dial ring, express keys numbered
-    1-4 above and 5-8 mirrored below; the drawing rotates clockwise with the
-    orientation angle so the button mapping stays visible.
+    """Orientation pictogram (U74 d, redrawn in U415): the tablet as a
+    tkinter-native DRAWING (no image file; the product PNG is construction
+    reference only). Body outline, left-only express-key strip, the digitizer
+    (pen-area) rect, central dial ring + round, keys 1-4 above and 5-8
+    mirrored below; the whole drawing rotates clockwise with the orientation
+    angle and REFITS its scale per angle (the old fit used the unrotated
+    height and escaped the canvas at 90 deg). Key labels do not renumber.
     """
     CANVAS_WIDTH = 220
     CANVAS_HEIGHT = 150
-    SCALE = 0.82
 
-    def __init__(self, parent, degrees=0, **kwargs):
+    def __init__(self, parent, degrees=0, size="medium", **kwargs):
         super().__init__(parent, width=self.CANVAS_WIDTH, height=self.CANVAS_HEIGHT,
                          background="#2b2b2b", highlightthickness=1,
                          highlightbackground="#666", **kwargs)
+        self.size = size
+        self.degrees = degrees
         self.draw_degrees(degrees)
 
     def _canvas_point(self, x, y):
-        scale = self.CANVAS_HEIGHT / PICTOGRAM_HEIGHT * self.SCALE
-        return (self.CANVAS_WIDTH / 2 + x * scale,
-                self.CANVAS_HEIGHT / 2 + y * scale)
+        return (self.CANVAS_WIDTH / 2 + x * self._scale,
+                self.CANVAS_HEIGHT / 2 + y * self._scale)
 
     def draw_degrees(self, degrees):
-        """Redraw the pictogram at the given angle."""
-        layout = tablet_pictogram_layout(degrees)
-        scale = self.CANVAS_HEIGHT / PICTOGRAM_HEIGHT * self.SCALE
+        """Redraw the pictogram at the given angle for the widget's size."""
+        self.degrees = degrees
+        drawing = TABLET_DRAWINGS.get(self.size, TABLET_DRAWINGS["medium"])
+        body_w, body_h = drawing["body_mm"]
+        layout = tablet_pictogram_layout(degrees, body_w, body_h,
+                                         digitizer=drawing["digitizer_mm"])
+        self._scale = pictogram_view_scale(layout, self.CANVAS_WIDTH,
+                                           self.CANVAS_HEIGHT)
+        scale = self._scale
         self.delete("all")
 
         self.create_polygon(*[p for corner in layout["rect"]
                               for p in self._canvas_point(*corner)],
                             fill="#3a3a3a", outline="#8a8a8a")
+
+        # Pen-area (digitizer) rect right of the strip + the strip seam.
+        self.create_polygon(*[p for corner in layout["pen_area"]
+                              for p in self._canvas_point(*corner)],
+                            fill="#31435a", outline="#6a9fd8")
+        seam_x, seam_top = self._canvas_point(
+            layout["strip_right"], -body_h / 2)
+        _, seam_bottom = self._canvas_point(layout["strip_right"], body_h / 2)
+        self.create_line(seam_x, seam_top, seam_x, seam_bottom,
+                         fill="#5a5a5a")
 
         cx, cy = self._canvas_point(*layout["center"])
         dial = layout["dial_radius"] * scale

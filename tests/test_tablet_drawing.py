@@ -9,10 +9,13 @@ ImportError on TABLET_DRAWINGS / the new layout keys.
 
 import pytest
 
+import gui
 from gui import (
     PICTOGRAM_HEIGHT,
     PICTOGRAM_WIDTH,
     TABLET_DRAWINGS,
+    OrientationWidget,
+    pictogram_view_scale,
     tablet_pictogram_layout,
 )
 from touch_controller import PEN_SPECS_BY_PRODUCT, WIRELESS_TABLET_SIZES
@@ -76,3 +79,73 @@ def test_layout_pen_area_and_buttons_rotate_with_the_angle():
     quarter = tablet_pictogram_layout(90)
     for corner, rotated in zip(zero["pen_area"], quarter["pen_area"]):
         assert rotated == pytest.approx(rotate_point(*corner, 90, 0, 0))
+
+
+# --- L2: rotation keeps the drawing inside the canvas (his open defect) -----
+
+CANVAS_W = OrientationWidget.CANVAS_WIDTH
+CANVAS_H = OrientationWidget.CANVAS_HEIGHT
+
+
+def _all_drawn_features(layout):
+    """(cx, cy, radius) for every item the widget draws (headless mirror)."""
+    features = [(x, y, 0.0) for x, y in layout["rect"]]
+    features += [(x, y, 0.0) for x, y in layout["pen_area"]]
+    cx, cy = layout["center"]
+    features.append((cx, cy, layout["dial_radius"]))
+    features.append((cx, cy, layout["button_radius"] * 1.2))
+    for _, x, y in layout["buttons"]:
+        features.append((x, y, layout["button_radius"]))
+    return features
+
+
+def _fits_canvas(scale, layout):
+    half_w, half_h = CANVAS_W / 2, CANVAS_H / 2
+    for x, y, radius in _all_drawn_features(layout):
+        edge_x = abs(x) * scale + radius
+        edge_y = abs(y) * scale + radius
+        if edge_x > half_w or edge_y > half_h:
+            return False
+    return True
+
+
+@pytest.mark.parametrize("degrees", (0, 45, 90, 137, 180, 225, 270, 315))
+def test_view_scale_fits_the_drawing_at_every_angle(degrees):
+    # The U74d bug: scale fixed on the UNROTATED height, so at 90 deg the
+    # drawing escaped the canvas. The view scale must refit per angle.
+    drawing = TABLET_DRAWINGS["medium"]
+    layout = tablet_pictogram_layout(degrees, drawing["body_mm"][0],
+                                     drawing["body_mm"][1],
+                                     digitizer=drawing["digitizer_mm"])
+    scale = pictogram_view_scale(layout, CANVAS_W, CANVAS_H)
+    assert _fits_canvas(scale, layout)
+    assert scale > 0
+    # And the fit is not degenerate: the widest extent reaches >= 60% of
+    # the canvas half-extent (no shrinking to a dot).
+    widest = max(abs(x) + r for x, _, r in _all_drawn_features(layout)) * scale
+    assert widest >= 0.6 * min(CANVAS_W, CANVAS_H) / 2
+
+
+def test_layout_button_labels_do_not_renumber_under_rotation():
+    for degrees in (0, 90, 180, 270, 137):
+        layout = tablet_pictogram_layout(degrees)
+        assert sorted(n for n, _, _ in layout["buttons"]) == list(range(1, 9))
+
+
+@pytest.fixture(scope="module")
+def tk_root():
+    import tkinter as tk
+    root = tk.Tk()
+    root.withdraw()
+    yield root
+    root.destroy()
+
+
+def test_widget_bbox_stays_inside_canvas_at_90_degrees(tk_root):
+    widget = OrientationWidget(tk_root, degrees=0)
+    widget.draw_degrees(90)
+    bbox = widget.bbox("all")
+    assert bbox is not None
+    assert 0 <= bbox[0] and bbox[2] <= CANVAS_W
+    assert 0 <= bbox[1] and bbox[3] <= CANVAS_H
+    widget.destroy()
