@@ -335,6 +335,25 @@ def tablet_pictogram_layout(degrees, width=PICTOGRAM_WIDTH, height=PICTOGRAM_HEI
     }
 
 
+TABLET_SIZE_BY_PRODUCT = {788: "small", 789: "medium", 791: "large"}
+
+
+def resolve_drawing_size(product_id=None, wireless_tablet_size=None):
+    """Which tablet drawing to show (U415 / #407 ruling: size-driven).
+
+    Wired products map directly; the wireless receiver (132) cannot detect
+    its tablet, so the user's Pen-tab choice drives the drawing and an
+    unset choice falls back to the driver's medium mapping (mirrors the
+    U386 mapping default). Unknown/missing falls back to medium.
+    """
+    if product_id in TABLET_SIZE_BY_PRODUCT:
+        return TABLET_SIZE_BY_PRODUCT[product_id]
+    if product_id == WIRELESS_RECEIVER_PRODUCT_ID and wireless_tablet_size \
+            in WIRELESS_TABLET_SIZES:
+        return wireless_tablet_size
+    return "medium"
+
+
 def pictogram_view_scale(layout, canvas_w, canvas_h, safety=0.93):
     """Canvas px per mm that fits the ROTATED layout inside the canvas (U415).
 
@@ -1022,8 +1041,15 @@ class SettingsWindow(tk.Toplevel):
             preset_btn.pack(side="left", padx=(3, 0))
             ToolTip(preset_btn, f"Set the orientation preset {preset} degrees.")
 
+        # U415 / #407: the drawing is sized by the SELECTED tablet size (the
+        # receiver lane falls back through the user's Pen-tab choice).
+        # Plain (no-device) windows carry no device_info: the drawing then
+        # falls back to medium, the driver's own default size.
+        conn = (getattr(self, "device_info", None) or {}).get("connection") or {}
         self.orientation_widget = OrientationWidget(
-            orient_frame, degrees=self.config.orientation_degrees)
+            orient_frame, degrees=self.config.orientation_degrees,
+            size=resolve_drawing_size(conn.get("product_id"),
+                                      getattr(self.config, "wireless_tablet_size", None)))
         self.orientation_widget.grid(row=1, column=0, columnspan=4, pady=(6, 0))
         orient_frame.columnconfigure(1, weight=1)
 

@@ -16,6 +16,7 @@ from gui import (
     TABLET_DRAWINGS,
     OrientationWidget,
     pictogram_view_scale,
+    resolve_drawing_size,
     tablet_pictogram_layout,
 )
 from touch_controller import PEN_SPECS_BY_PRODUCT, WIRELESS_TABLET_SIZES
@@ -149,3 +150,48 @@ def test_widget_bbox_stays_inside_canvas_at_90_degrees(tk_root):
     assert 0 <= bbox[0] and bbox[2] <= CANVAS_W
     assert 0 <= bbox[1] and bbox[3] <= CANVAS_H
     widget.destroy()
+
+
+# --- L3: the drawing is sized by the SELECTED tablet size (#407 ruling) -----
+
+
+def test_resolve_drawing_size_maps_products_and_wireless_choice():
+    assert resolve_drawing_size(788) == "small"
+    assert resolve_drawing_size(789) == "medium"
+    assert resolve_drawing_size(791) == "large"
+    # Wireless receiver 132 cannot detect its tablet: the user's chosen
+    # size drives the drawing; unset falls back to the driver's medium.
+    assert resolve_drawing_size(132, "small") == "small"
+    assert resolve_drawing_size(132, "large") == "large"
+    assert resolve_drawing_size(132, None) == "medium"
+    assert resolve_drawing_size(None) == "medium"
+    assert resolve_drawing_size(9999, "nonsense") == "medium"
+
+
+def test_size_variants_produce_different_drawings():
+    layouts = {}
+    for size in ("small", "medium", "large"):
+        drawing = TABLET_DRAWINGS[size]
+        layouts[size] = tablet_pictogram_layout(0, drawing["body_mm"][0],
+                                                drawing["body_mm"][1],
+                                                digitizer=drawing["digitizer_mm"])
+    pen_w = {size: max(x for x, _ in layouts[size]["pen_area"])
+            - min(x for x, _ in layouts[size]["pen_area"])
+            for size in layouts}
+    assert pen_w["small"] < pen_w["medium"] < pen_w["large"]
+    bodies = {size: layouts[size]["rect"][2][0] - layouts[size]["rect"][0][0]
+              for size in layouts}
+    assert bodies["small"] < bodies["medium"] < bodies["large"]
+
+
+def test_widget_size_changes_the_drawing(tk_root):
+    small = OrientationWidget(tk_root, degrees=0, size="small")
+    large = OrientationWidget(tk_root, degrees=0, size="large")
+    box_small, box_large = small.bbox("all"), large.bbox("all")
+    assert box_small is not None and box_large is not None
+    # The fit keeps both inside the canvas, but the drawn proportions
+    # differ: the larger body needs a smaller mm scale -> compare the
+    # scale the widgets computed, not the canvas bbox (both fill it).
+    assert small._scale != pytest.approx(large._scale, rel=0.05)
+    small.destroy()
+    large.destroy()
