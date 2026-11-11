@@ -4,6 +4,16 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261112-0220:
+
+  - ADDED the opt-in `WTD_METRICS_DIAG=1` startup readout (U412 / #412):
+    one line naming the raw `SM_*VIRTUALSCREEN` returns (junk passes
+    through unsanitized - that is the probe), `SM_CMONITORS`, the ctypes
+    call path, the `EnumDisplayMonitors` monitor count and union rect.
+    Diagnostic only: no mapping is consulted or changed; OFF by default
+    prints nothing. Data for the pending measured-fit ruling on hosts
+    whose virtual-screen metrics read junk.
+
 261112-0130:
 
   - ADDED pen-area rectangle mapping (U414 / #406, option A): the Pen tab
