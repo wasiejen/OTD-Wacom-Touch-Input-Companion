@@ -241,5 +241,11 @@ def test_widget_loads_stored_fraction_back_into_model_px(root, widget_config, mo
     key = touch_controller.display_key_for_records(RECORDS)
     frac = widget_config.pen_area_maps["0123456789ab"]["entries"][0]["rect_frac"]
     reopened = gui.PenAreaEditor(root, widget_config, device_info)
-    assert reopened.model.rect == pytest.approx([frac[0] * 3440, frac[1] * 1440,
-                                                 frac[2] * 3440, frac[3] * 1440])
+    # U424r5 R5-E: the reopened model RE-DERIVES a mismatched stored
+    # rect to the box aspect (center + sensitivity kept where the union
+    # fits; here the taller re-derived rect rides the top edge).
+    box0 = reopened.model.box_mm
+    assert reopened.model.rect[2] / reopened.model.rect[3] == pytest.approx(
+        box0[0] / box0[1], rel=1e-6)
+    assert reopened.model.rect[2] == pytest.approx(1720.0, rel=1e-6)  # s kept
+    assert reopened.model.rect[1] == pytest.approx(0.0)  # center clamped
