@@ -263,6 +263,37 @@ def test_all_key_circles_stay_inside_the_body_outline():
                for _, _, y in layout["buttons"])
 
 
+# --- U416 L2 (#407 defect 3): the strip seam line must ROTATE -------------
+# At 90 deg the pen-area/strip delineation line stayed put (drawn from
+# UNROTATED corners). RED-before eb75009: KeyError 'seam' (layout has no
+# rotated seam) and the Tk orientation check fails on the vertical line.
+
+
+@pytest.mark.parametrize("degrees", (0, 90, 180, 270))
+def test_layout_seam_endpoints_rotate_with_the_angle(degrees):
+    from touch_controller import rotate_point
+    layout = _medium_layout(degrees)
+    drawing = TABLET_DRAWINGS["medium"]
+    half_w, half_h = drawing["body_mm"][0] / 2, drawing["body_mm"][1] / 2
+    raw = [(layout["strip_right"], -half_h), (layout["strip_right"], half_h)]
+    got = layout["seam"]
+    assert len(got) == 2
+    for (rx, ry), (gx, gy) in zip(raw, got):
+        assert (gx, gy) == pytest.approx(rotate_point(rx, ry, degrees, 0, 0))
+
+
+def test_widget_seam_line_follows_the_rotation(tk_root):
+    widget = OrientationWidget(tk_root, degrees=0)
+    at_zero = widget.coords("penarea_seam")
+    widget.draw_degrees(90)
+    at_90 = widget.coords("penarea_seam")
+    assert at_zero, "seam line must carry tag penarea_seam"
+    # 0 deg: the seam is vertical (dx ~ 0); 90 deg: horizontal (dy ~ 0).
+    assert abs(at_zero[2] - at_zero[0]) < 0.1 * abs(at_zero[3] - at_zero[1])
+    assert abs(at_90[3] - at_90[1]) < 0.1 * abs(at_90[2] - at_90[0])
+    widget.destroy()
+
+
 def test_widget_size_changes_the_drawing(tk_root):
     small = OrientationWidget(tk_root, degrees=0, size="small")
     large = OrientationWidget(tk_root, degrees=0, size="large")

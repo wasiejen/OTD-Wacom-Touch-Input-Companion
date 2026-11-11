@@ -329,10 +329,12 @@ def tablet_pictogram_layout(degrees, width=PICTOGRAM_WIDTH, height=PICTOGRAM_HEI
                (half_w, half_h), (-half_w, half_h)]
     pen_corners = [(pen_left, -digitizer_h / 2), (pen_right, -digitizer_h / 2),
                    (pen_right, digitizer_h / 2), (pen_left, digitizer_h / 2)]
+    seam_raw = [(strip_w - half_w, -half_h), (strip_w - half_w, half_h)]
     buttons = [(number, *rotated(column_x, offset))
                 for number, offset in offsets.items()]
     return {
         "rect": [rotated(x, y) for x, y in corners],
+        "seam": [rotated(x, y) for x, y in seam_raw],
         "pen_area": [rotated(x, y) for x, y in pen_corners],
         "strip_right": strip_w - half_w,
         "center": rotated(0, 0),
@@ -424,11 +426,13 @@ class OrientationWidget(tk.Canvas):
         self.create_polygon(*[p for corner in layout["pen_area"]
                               for p in self._canvas_point(*corner)],
                             fill="#31435a", outline="#6a9fd8")
-        seam_x, seam_top = self._canvas_point(
-            layout["strip_right"], -body_h / 2)
-        _, seam_bottom = self._canvas_point(layout["strip_right"], body_h / 2)
-        self.create_line(seam_x, seam_top, seam_x, seam_bottom,
-                         fill="#5a5a5a")
+        # U416 / #407 defect 3: the seam is a LAYOUT element now - both
+        # endpoints go through the rotation transform like everything else
+        # (it used to be drawn from unrotated corners and stayed vertical).
+        (sx1, sy1), (sx2, sy2) = (self._canvas_point(*end)
+                                  for end in layout["seam"])
+        self.create_line(sx1, sy1, sx2, sy2, fill="#5a5a5a",
+                         tags="penarea_seam")
 
         # Dial ring + central round IN THE STRIP (U416 / PNG): same column
         # as the keys, centered between the groups.
