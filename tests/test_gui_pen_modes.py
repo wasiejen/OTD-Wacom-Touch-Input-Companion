@@ -186,6 +186,43 @@ def test_rect_panel_keeps_its_place_across_mode_cycles(modes_cfg, tk_root, monke
     assert order1.index(win._pen_wireless_frame._name) == idx_wireless
 
 
+# --- U424r3 R3-L2 (#424 round-3 item 2): Apply Live = single apply path ----
+
+
+def test_save_pen_area_button_gone_remove_rect_stays(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before 6c10b03: the editor still rendered "Save Pen Area".
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    texts = []
+    for child in win.pen_area_editor.winfo_children():
+        if hasattr(child, "cget"):
+            try:
+                texts.append(str(child.cget("text")))
+            except tk.TclError:
+                pass
+    assert "Save Pen Area" not in texts
+    assert "Remove Rect" in texts
+
+
+def test_apply_writes_the_rect_entry_like_other_settings(modes_cfg, tk_root, monkeypatch, tmp_path):
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    model = win.pen_area_editor.model
+    model.rect = [0.0, 0.0, model.desktop_w / 2, model.desktop_h / 2]
+    assert win.apply_settings() is True
+    entries = modes_cfg.pen_area_maps["0123456789ab"]["entries"]
+    frac = entries[0]["rect_frac"]
+    assert frac == pytest.approx([0.0, 0.0, 0.5, 0.5])
+
+
+def test_remove_rect_does_not_switch_modes(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # Panel semantics: Remove drops the entry, the mode stays 1:1.
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    assert win.apply_settings() is True  # seed an entry via Apply
+    assert win.pen_area_editor.remove_entry() is True
+    assert modes_cfg.pen_mode == "rect_1to1"
+    assert win.pen_rect_panel.winfo_manager() == "pack"
+    assert not modes_cfg.pen_area_maps.get("0123456789ab", {}).get("entries")
+
+
 def test_subset_checkboxes_seed_from_the_stored_subset(modes_cfg, tk_root, monkeypatch, tmp_path):
     # U424 UNIT VERDICT P1 (RED-before 62483be: vars were hardcoded True,
     # the UI lied about a stored restriction and one click silently

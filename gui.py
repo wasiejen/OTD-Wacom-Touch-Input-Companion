@@ -657,10 +657,12 @@ class PenAreaEditor(ttk.Frame):
         self.readout_label = ttk.Label(self, text=self.model.readout(),
                                        width=72, anchor="w")
         self.readout_label.grid(row=1, column=0, columnspan=2, sticky="w")
-        ttk.Button(self, text="Save Pen Area", command=self.save_entry).grid(
-            row=2, column=0, sticky="w", pady=(4, 0))
+        # U424r3 R3-L2 (#424 item 2): no "Save Pen Area" - Apply Live
+        # persists the rect (persist_entry, driven by the window's Apply).
+        # "Remove Rect" stays here, inside the 1:1 panel, and never
+        # switches modes.
         ttk.Button(self, text="Remove Rect", command=self.remove_entry).grid(
-            row=2, column=1, sticky="e", pady=(4, 0))
+            row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self._drag_anchor = None
         self._drag_mode = "rect"
         self.canvas.bind("<ButtonPress-1>", self._press)
@@ -678,8 +680,14 @@ class PenAreaEditor(ttk.Frame):
         fx, fy, fw, fh = entry["rect_frac"]
         return [fx * bounds_w, fy * bounds_h, fw * bounds_w, fh * bounds_h]
 
-    def save_entry(self):
-        """Store the model rect (as FRACTIONS) under the current key (L1)."""
+    def persist_entry(self):
+        """Write the model rect (FRACTIONS) under the current key.
+
+        U414 L1; U424r3 R3-L2: driven by the window's Apply Live (the old
+        standalone "Save Pen Area" button was removed). No file write here
+        - persistence follows Save like every other setting; the key cache
+        reset keeps the running reader live.
+        """
         if self.model is None or self.identity is None:
             return False
         key = display_key_for_records(self.model.records)
@@ -688,7 +696,6 @@ class PenAreaEditor(ttk.Frame):
         self.config.set_pen_area_entry(
             self.identity, key, self.model.records,
             [rx / w, ry / h, rw / w, rh / h])
-        self.config.save_to_file()
         reset_pen_area_key_cache()
         return True
 
@@ -1850,6 +1857,14 @@ class SettingsWindow(tk.Toplevel):
         except ValueError as e:
             messagebox.showerror("Invalid Input", f"Please enter valid numeric values.\nDetails: {e}")
             return False
+
+        # U424r3 R3-L2 (#424 item 2): Apply Live is the SINGLE apply path -
+        # the 1:1 rect rides it like every other setting (the editor's old
+        # "Save Pen Area" button is gone). Duck-typed callers without the
+        # editor lane are skipped.
+        editor = getattr(self, "pen_area_editor", None)
+        if editor is not None:
+            editor.persist_entry()
 
         # Refresh only when the window actually built the wireless lane:
         # duck-typed apply_settings callers (FakeWindow pins) carry neither
