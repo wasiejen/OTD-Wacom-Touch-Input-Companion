@@ -143,6 +143,12 @@ def test_numeric_fields_echo_the_stored_rect_on_open(modes_cfg, tk_root, monkeyp
     win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
     assert float(win.rect_entries["x_px"].get()) == pytest.approx(860.0, abs=1)
     assert float(win.rect_entries["w_px"].get()) == pytest.approx(1720.0, abs=1)
+    # U424r3 STEP-3 P2-1 close: an OLD stored entry also echoes its
+    # effective sensitivity s = rw/box_mm_w on open (direct, not
+    # composition).
+    model = win.pen_area_editor.model
+    assert float(win.rect_entries["s_px"].get()) == pytest.approx(
+        model.rect[2] / model.box_mm[0], rel=1e-3)
 
 
 # --- U424r3 R3-L1 (#424 round-3 item 1): contextual fields + stable place ---

@@ -1425,6 +1425,12 @@ class SettingsWindow(tk.Toplevel):
         except ValueError:
             self._sync_rect_entries()  # revert the bad edit
             return
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            # U424r3 reviewer P2-2: float() accepts literal "nan"/"inf";
+            # non-finite entries revert like any bad edit (never reach the
+            # model).
+            self._sync_rect_entries()
+            return
         if field == "s":  # sensitivity handle (U424r3 R3-L3)
             model.apply_scale(raw)
             editor._redraw()
