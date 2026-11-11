@@ -82,6 +82,28 @@ def test_readout_names_exceptions_as_none(windll_table, monkeypatch):
     assert "monitors=0 union=none" in line
 
 
+def test_startup_main_wires_the_readout(windll_table, monkeypatch, capsys, tmp_path):
+    # U412 STEP-1 P2-1: pin the main() startup hook (a mutation deleting the
+    # log_metrics_diagnostic() call must fail here, not ship green).
+    windll_table({76: 0, 77: 0, 7: 0, 8: 0, 2: 17})
+    monkeypatch.setattr(touch_controller, "monitor_records", lambda: list(RECORDS_DUO))
+    monkeypatch.setenv(METRICS_DIAG_ENV, "1")
+    class _BoomManager:
+        def __init__(self, *args, **kwargs):
+            raise RuntimeError("stop after the readout")
+
+    monkeypatch.setattr(touch_controller, "DeviceManagerThread", _BoomManager)
+    monkeypatch.chdir(tmp_path)
+    capsys.readouterr()
+    try:
+        touch_controller.main()
+    except Exception:
+        pass  # stubbed-lane failure after the readout is irrelevant here
+    out = capsys.readouterr().out
+    assert "wtd_metrics_diag" in out and "SM_CMONITORS=17" in out
+    assert out.count("wtd_metrics_diag") == 1
+
+
 def test_union_rect_math_including_negative_origin():
     # Pivoted-duo shape: left monitor at a negative virtual origin.
     records = ["\\\\.\\DISPLAY2|-1440|0|1440x2560", "\\\\.\\DISPLAY1|0|0|3440x1440"]

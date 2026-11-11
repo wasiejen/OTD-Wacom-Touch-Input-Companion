@@ -1635,7 +1635,9 @@ METRICS_DIAG_INDICES = (SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 
 def metrics_diag_enabled():
     """True when the env gate names the readout (WTD_METRICS_DIAG=1)."""
-    return os.environ.get(METRICS_DIAG_ENV, "").strip() == "1"
+    # Same accept shape as the pen-map gate (exact "1", no strip) - one
+    # vocabulary for the two opt-in diagnostics (U412 STEP-1 P2-2).
+    return os.environ.get(METRICS_DIAG_ENV, "") == "1"
 
 
 def raw_system_metrics():
