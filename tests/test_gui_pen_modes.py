@@ -304,8 +304,10 @@ def test_save_pen_area_button_gone_remove_rect_stays(modes_cfg, tk_root, monkeyp
                 texts.append(str(child.cget("text")))
             except tk.TclError:
                 pass
+    # U424r4 R4-D (#424 item D): BOTH editor buttons are gone - Apply is
+    # the only apply path and the mode radios cover every mode change.
     assert "Save Pen Area" not in texts
-    assert "Remove Rect" in texts
+    assert "Remove Rect" not in texts
 
 
 def test_apply_writes_the_rect_entry_like_other_settings(modes_cfg, tk_root, monkeypatch, tmp_path):
@@ -316,16 +318,6 @@ def test_apply_writes_the_rect_entry_like_other_settings(modes_cfg, tk_root, mon
     entries = modes_cfg.pen_area_maps["0123456789ab"]["entries"]
     frac = entries[0]["rect_frac"]
     assert frac == pytest.approx([0.0, 0.0, 0.5, 0.5])
-
-
-def test_remove_rect_does_not_switch_modes(modes_cfg, tk_root, monkeypatch, tmp_path):
-    # Panel semantics: Remove drops the entry, the mode stays 1:1.
-    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
-    assert win.apply_settings() is True  # seed an entry via Apply
-    assert win.pen_area_editor.remove_entry() is True
-    assert modes_cfg.pen_mode == "rect_1to1"
-    assert win.pen_rect_panel.winfo_manager() == "pack"
-    assert not modes_cfg.pen_area_maps.get("0123456789ab", {}).get("entries")
 
 
 # --- U424r4 R4-B (#424 round-4 item B): orientation sync (pen path wins) ---

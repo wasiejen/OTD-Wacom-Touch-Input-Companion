@@ -691,10 +691,9 @@ class PenAreaEditor(ttk.Frame):
         self.readout_label.grid(row=1, column=0, columnspan=2, sticky="w")
         # U424r3 R3-L2 (#424 item 2): no "Save Pen Area" - Apply Live
         # persists the rect (persist_entry, driven by the window's Apply).
-        # "Remove Rect" stays here, inside the 1:1 panel, and never
-        # switches modes.
-        ttk.Button(self, text="Remove Rect", command=self.remove_entry).grid(
-            row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        # U424r4 R4-D (#424 item D): "Remove Rect" REMOVED too - a
+        # modeless state change with no feedback; the mode radios already
+        # cover switching away from 1:1.
         self._drag_anchor = None
         self._drag_mode = "rect"
         self.canvas.bind("<ButtonPress-1>", self._press)
@@ -745,19 +744,6 @@ class PenAreaEditor(ttk.Frame):
         self.config.set_pen_area_entry(
             self.identity, key, self.model.records,
             [rx / w, ry / h, rw / w, rh / h])
-        reset_pen_area_key_cache()
-        return True
-
-    def remove_entry(self):
-        """Drop this display configuration's entry (back to the default)."""
-        if self.model is None or self.identity is None:
-            return False
-        key = display_key_for_records(self.model.records)
-        lane = self.config.pen_area_maps.get(self.identity)
-        if lane:
-            lane["entries"] = [e for e in lane.get("entries", [])
-                                if e.get("display_key") != key]
-        self.config.save_to_file()
         reset_pen_area_key_cache()
         return True
 

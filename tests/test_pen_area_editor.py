@@ -188,7 +188,7 @@ def test_widget_editable_without_identity_save_refuses(root, widget_config, monk
     widget.model.move_by(100000, 0)
     assert widget.model.rect[0] == 3440 - widget.model.rect[2]  # drag clamped
     assert widget.persist_entry() is False
-    assert widget.remove_entry() is False
+    # U424r4 R4-D: remove_entry deleted with the Remove Rect button.
     assert widget_config.pen_area_maps == {}
 
 
