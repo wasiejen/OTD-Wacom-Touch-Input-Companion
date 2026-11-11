@@ -495,7 +495,15 @@ class PenAreaCanvasModel:
         self.desktop_w, self.desktop_h = float(width), float(height)
         self.records = [str(rec) for rec in records]
         self.box_mm = (float(box_mm_w), float(box_mm_h))
+        self.canvas_w, self.canvas_h = float(canvas_w), float(canvas_h)
         self.scale = min(canvas_w / self.desktop_w, canvas_h / self.desktop_h)
+        # U424r4 R4-A (#424 item A): the drawn screen union is CENTERED
+        # in the canvas - slack lives as equal margins, not as dead area
+        # on one side. Every canvas-space conversion adds the offsets;
+        # drag deltas are offset-free, so the datum stays the desktop
+        # origin.
+        self.offset_x = (self.canvas_w - self.desktop_w * self.scale) / 2.0
+        self.offset_y = (self.canvas_h - self.desktop_h * self.scale) / 2.0
         if rect_px is None:
             start_w = min(self.desktop_w * 2.0 / 3.0,
                           self.desktop_h * self.box_mm[0] / self.box_mm[1])
@@ -552,26 +560,31 @@ class PenAreaCanvasModel:
         desktop rectangle instead of staying black.
         """
         if not self.records:
-            return [(0.0, 0.0, self.desktop_w * self.scale,
-                     self.desktop_h * self.scale)]
+            return [(self.offset_x, self.offset_y,
+                     self.offset_x + self.desktop_w * self.scale,
+                     self.offset_y + self.desktop_h * self.scale)]
         boxes = []
         for record in self.records:
             left, top, width, height = self.parse_record(record)
-            x0 = (left - self.origin_x) * self.scale
-            y0 = (top - self.origin_y) * self.scale
+            x0 = (left - self.origin_x) * self.scale + self.offset_x
+            y0 = (top - self.origin_y) * self.scale + self.offset_y
             boxes.append((x0, y0, x0 + width * self.scale, y0 + height * self.scale))
         return boxes
 
     def rect_canvas(self):
-        """The rect in canvas px (origin-relative datum times the view scale)."""
+        """The rect in canvas px (origin-relative datum times the view
+        scale, plus the centering offset - U424r4 R4-A)."""
         rx, ry, rw, rh = self.rect
         s = self.scale
-        return (rx * s, ry * s, (rx + rw) * s, (ry + rh) * s)
+        ox, oy = self.offset_x, self.offset_y
+        return (rx * s + ox, ry * s + oy,
+                (rx + rw) * s + ox, (ry + rh) * s + oy)
 
     def handle_canvas(self):
         """Lower-right corner handle position in canvas px."""
         rx, ry, rw, rh = self.rect
-        return ((rx + rw) * self.scale, (ry + rh) * self.scale)
+        return ((rx + rw) * self.scale + self.offset_x,
+                (ry + rh) * self.scale + self.offset_y)
 
     def move_by(self, delta_canvas_x, delta_canvas_y):
         """Drag the whole rect by a canvas-px delta; clamp inside the desktop."""
@@ -589,7 +602,7 @@ class PenAreaCanvasModel:
         clamped axis would leave the desktop, so the aspect never breaks.
         """
         rx, ry = self.rect[0], self.rect[1]
-        wanted = handle_canvas_x / self.scale - rx
+        wanted = (handle_canvas_x - self.offset_x) / self.scale - rx
         max_w = min(self.desktop_w - rx,
                     (self.desktop_h - ry) * self.box_mm[0] / self.box_mm[1])
         locked = pen_area_rect_aspect_lock(
