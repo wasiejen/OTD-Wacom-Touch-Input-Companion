@@ -1322,10 +1322,17 @@ class DriverConfig:
         The entry for the current `display_key` is replaced; entries of other
         configurations stay (proposal §2: the GUI saves the current
         configuration's entry only). Does not save the file.
+        Raises ValueError when the entry shape fails the load schema.
         """
+        # U414 STEP-1 P2-3: validate on the WRITE side too (same schema as
+        # load); a caller with a malformed rect fails loudly here instead of
+        # saving garbage that the next load would reject.
+        entry = self._validated_pen_area_entry({"display_key": display_key,
+                                                "monitors": monitors,
+                                                "rect_px": rect_px})
+        if isinstance(entry, str):
+            raise ValueError(f"pen-area entry rejected: {entry}")
         lane = self.pen_area_maps.setdefault(identity, {"entries": []})
-        entry = {"display_key": display_key, "monitors": list(monitors),
-                 "rect_px": [int(v) for v in rect_px]}
         for position, existing in enumerate(lane["entries"]):
             if existing.get("display_key") == display_key:
                 lane["entries"][position] = entry
@@ -1653,9 +1660,18 @@ def monitor_records():
         return True
 
     try:
+        # U414 STEP-1 P2-2: pin the signatures so monitor handles keep their
+        # full 64-bit width on Win64 (default int coercion would truncate).
+        get_info = ctypes.windll.user32.GetMonitorInfoW
+        get_info.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFOEXW)]
+        get_info.restype = ctypes.c_bool
+        enum_monitors = ctypes.windll.user32.EnumDisplayMonitors
+        enum_monitors.argtypes = [ctypes.c_void_p, ctypes.POINTER(_RECT),
+                                  ctypes.c_void_p, ctypes.c_long]
+        enum_monitors.restype = ctypes.c_bool
         proc = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
                                   ctypes.POINTER(_RECT), ctypes.c_void_p)(_callback)
-        ctypes.windll.user32.EnumDisplayMonitors(None, None, proc, 0)
+        enum_monitors(None, None, proc, 0)
     except Exception:
         return []
     return records

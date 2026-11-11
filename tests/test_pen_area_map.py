@@ -77,15 +77,30 @@ def test_same_key_replaces_current_entry_only(cfg):
     assert by_key[KEY_B]["rect_px"] == [0, 0, 100, 62]
 
 
-def test_bad_entry_shape_is_named_and_valid_entries_survive(cfg, capsys):
+def test_bad_entry_shape_is_named_and_valid_entries_survive(cfg):
     data = {
         f"{PEN_AREA_MAP_PREFIX}{IDENTITY}": _lane([
             _entry(KEY_A, MONITORS_A, RECT_A),
             {"display_key": "x", "monitors": "not-a-list", "rect_px": [1, 2]},
         ])
     }
-    _, _, errors = cfg.validate_config_data(data, json.dumps(data))
+    validated, _, errors = cfg.validate_config_data(data, json.dumps(data))
     assert any(f"{PEN_AREA_MAP_PREFIX}{IDENTITY}" in e for e in errors)
+    # U414 STEP-1 P1: the surviving-entry half of the protocol pin -- a
+    # regression that drops the whole lane on one bad entry must fail here.
+    assert validated["pen_area_maps"][IDENTITY]["entries"] == [_entry(KEY_A, MONITORS_A, RECT_A)]
+
+
+def test_set_pen_area_entry_rejects_bad_shape(cfg):
+    # U414 STEP-1 P2-3 (RED-before: the write path validated nothing and
+    # either raised TypeError or stored garbage until the next load).
+    with pytest.raises(ValueError):
+        cfg.set_pen_area_entry(IDENTITY, KEY_A, MONITORS_A, [1, 2])
+    with pytest.raises(ValueError):
+        cfg.set_pen_area_entry(IDENTITY, KEY_A, MONITORS_A, [0, 0, 0, 500])
+    with pytest.raises(ValueError):
+        cfg.set_pen_area_entry(IDENTITY, "", MONITORS_A, RECT_A)
+    assert cfg.pen_area_maps == {}
 
 
 def test_monitor_records_bad_rect_dropped_or_errored(cfg):
