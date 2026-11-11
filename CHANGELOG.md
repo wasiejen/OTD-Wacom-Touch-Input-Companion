@@ -4,6 +4,16 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261113-2100:
+
+  - ROUND-5 FIXES (U424r5 / TODO #424): changing the tablet orientation
+    now re-shapes the pen-area rectangle immediately (centered, same
+    px/mm sensitivity; if the new shape would not fit the screens it is
+    scaled down keeping the aspect) - no grabbing the resize handle
+    needed, and Apply stores the new shape. Setting the wireless tablet
+    size now fully removes the warning row above the picker (no empty
+    gap left behind).
+
 261113-1500:
 
   - ROUND-4 FIXES for the pen movement UI (U424r4 / TODO #424): the
