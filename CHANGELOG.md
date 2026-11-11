@@ -4,6 +4,22 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261112-1200:
+
+  - TRI-MODAL pen movement (U424 / TODO #424): the Pen tab now offers ONE
+    mode selector - Relative | Absolute stretched/full fill | Absolute
+    1:1 pen-area rectangle - instead of the old hidden toggle mix. The
+    stretched mode gained SCREEN CHECKBOXES (default all = every screen,
+    unselected screens become unreachable, the pen fills the selected
+    screens only). The 1:1 panel gained numeric X/Y/W/H fields in PIXELS
+    and MILLIMETRES (editing either updates the other; width locks the
+    pen-box aspect; values clamp inside the display union). The old
+    "Absolute Movement" checkbox and the raw stretch toggle are retired.
+    Mode switches apply live; leaving 1:1 keeps your stored rectangle.
+    Also: the pen-area editor canvas no longer slides when the rectangle
+    moves (readout width fixed), and the wireless startup notice now
+    repeats every session until the old key is saved away.
+
 261112-0440:
 
   - FIXED three graphics defects the maintainer found in the new tablet
