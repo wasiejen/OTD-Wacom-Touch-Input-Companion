@@ -1,11 +1,15 @@
-"""U414 L2 (#406, approved design proposal §2): pen-area rectangle projection.
+"""U414 L2 (#406) + U416 L3 (#406 defect round 1): pen-area rect projection.
 
-The rect lane maps the rotated digitizer box onto a stored virtual-desktop
-rectangle [rx, ry, rw, rh] (px): off_x = rx*65535/screen_w,
-scale_x = rw*65535/(extent_w*screen_w) (§2). Branch order keeps the
-`pen_stretch_full_desktop` toggle first; without a rect (or with junk
-metrics) the pre-U414 lanes run byte-unchanged. RED-before at faadcbd:
-TypeError on the new `pen_area_rect` kwarg / ImportError on the new API.
+The rect lane maps the rotated digitizer box onto a stored FRACTIONAL
+virtual-desktop rectangle rect_frac=[rx, ry, rw, rh] (0..1 of the union
+bounds): off_x = rx*65535, scale_x = rw*65535/extent_w (§2 generalized -
+the normalized 0..65535 space IS the MOUSEEVENTF_VIRTUALDESK space, so the
+pen path needs NO display metrics and runs on junk-metrics hosts).
+`pen_area_norm_projection` stays the general px form (screen dims 1,1 ==
+frac form - pinned). Branch order keeps the `pen_stretch_full_desktop`
+toggle first; with no rect the pre-U414 lanes (isotropic / stretch_un-
+measured) run byte-unchanged. U416 re-pin: RED-before 03c0a40 = the old
+px-kwarg contract (junk-metrics pin used to assert the degraded lane).
 """
 
 import pytest
@@ -30,6 +34,7 @@ SCREEN = (0, 0, 3440, 1440)
 # 16:10 rect consistent with the box aspect (325.12x203.2 mm -> 1.6) and
 # fully inside the synthetic 3440x1440 desktop (500+1920, 120+1200):
 RECT = [500, 120, 1920, 1200]
+RECT_FRAC = [RECT[0] / 3440, RECT[1] / 1440, RECT[2] / 3440, RECT[3] / 1440]
 RECORDS = ["\\\\.\\DISPLAY1|0|0|3440x1440"]
 IDENTITY = "0123456789ab"
 
@@ -61,20 +66,20 @@ def _px(nx, screen_w):
 
 
 def test_rect_corners_land_at_the_rect_bounds(state, config, stub_send_input):
-    nx0, ny0 = _map(state, config, SPEC_791, 0, 0, SCREEN, stub_send_input, RECT)
+    nx0, ny0 = _map(state, config, SPEC_791, 0, 0, SCREEN, stub_send_input, RECT_FRAC)
     stub_send_input.clear()
     nx1, ny1 = _map(state, config, SPEC_791, SPEC_791["max_x"],
-                    SPEC_791["max_y"], SCREEN, stub_send_input, RECT)
+                    SPEC_791["max_y"], SCREEN, stub_send_input, RECT_FRAC)
     assert (_px(nx0, 3440), _px(ny0, 1440)) == (RECT[0], RECT[1])
     assert (_px(nx1, 3440), _px(ny1, 1440)) == (RECT[0] + RECT[2],
                                                 RECT[1] + RECT[3])
 
 
 def test_rect_lane_px_per_mm_equal_both_axes(state, config, stub_send_input):
-    nx0, ny0 = _map(state, config, SPEC_791, 0, 0, SCREEN, stub_send_input, RECT)
+    nx0, ny0 = _map(state, config, SPEC_791, 0, 0, SCREEN, stub_send_input, RECT_FRAC)
     stub_send_input.clear()
     nx1, ny1 = _map(state, config, SPEC_791, SPEC_791["max_x"],
-                    SPEC_791["max_y"], SCREEN, stub_send_input, RECT)
+                    SPEC_791["max_y"], SCREEN, stub_send_input, RECT_FRAC)
     box_mm = touch_controller.rotated_pen_box_mm(SPEC_791, 0)
     scale_x = (_px(nx1, 3440) - _px(nx0, 3440)) / box_mm[0]
     scale_y = (_px(ny1, 1440) - _px(ny0, 1440)) / box_mm[1]
@@ -95,7 +100,7 @@ def test_rect_lane_survives_90deg_rotation(state, config, stub_send_input):
         rx_, ry_ = touch_controller.apply_orientation(
             (dx, dy), config, center)
         nx, ny = _map(state, config, SPEC_791, rx_, ry_, SCREEN,
-                      stub_send_input, RECT)
+                      stub_send_input, RECT_FRAC)
         stub_send_input.clear()
         mapped.add((_px(nx, 3440), _px(ny, 1440)))
     assert mapped == {(RECT[0], RECT[1]), (RECT[0] + RECT[2], RECT[1]),
@@ -105,24 +110,42 @@ def test_rect_lane_survives_90deg_rotation(state, config, stub_send_input):
 
 def test_stretch_toggle_beats_the_rect_lane(state, config, stub_send_input):
     nx0, ny0 = _map(state, config, SPEC_791, 0, 0, SCREEN, stub_send_input,
-                    RECT, stretch=True)
+                    RECT_FRAC, stretch=True)
     assert (nx0, ny0) == (0, 0)
     stub_send_input.clear()
     nx1, ny1 = _map(state, config, SPEC_791, SPEC_791["max_x"],
                     SPEC_791["max_y"], SCREEN, stub_send_input,
-                    RECT, stretch=True)
+                    RECT_FRAC, stretch=True)
     assert (nx1, ny1) == (VIRT, VIRT)
 
 
-def test_rect_with_junk_metrics_keeps_the_degraded_lane(state, config,
-                                                        stub_send_input, monkeypatch):
-    monkeypatch.setattr(touch_controller, "virtual_desktop_metrics", lambda: None)
-    ny_near = _map(state, config, SPEC_791, 0, 0, None, stub_send_input, RECT)[1]
+def test_rect_lane_runs_on_a_metrics_less_host(state, config, stub_send_input):
+    # U416 / #406 defect: the maintainer host answers junk/None for the
+    # virtual-screen metrics. Fractional rects need NO metrics - the pen
+    # box must still land inside the stored rect region (U414's old pin
+    # asserted the degraded full-fill here; the fractional rect replaces
+    # it deliberately - the fix).
+    ny_near = _map(state, config, SPEC_791, 0, 0, None, stub_send_input,
+                   RECT_FRAC)[1]
     stub_send_input.clear()
     ny_far = _map(state, config, SPEC_791, 0, SPEC_791["max_y"], None,
-                  stub_send_input, RECT)[1]
-    # stretch_unmeasured full-fill, NOT a rect projection (near 0, far full).
-    assert (ny_near, ny_far) == (0, VIRT)
+                  stub_send_input, RECT_FRAC)[1]
+    assert (_px(0, 1440), _px(ny_near, 1440), _px(ny_far, 1440)) == \
+        (0, RECT[1], RECT[1] + RECT[3])
+    assert (ny_near, ny_far) != (0, VIRT)  # NOT full-fill
+
+
+def test_metrics_present_and_metrics_absent_project_identically(state, config,
+                                                                stub_send_input):
+    # Fractional rect: the SAME normalized output with and without metrics
+    # (metrics only decorate the diag line), i.e. the normal-host path is
+    # behavior-unchanged and the junk-host path is identical.
+    with_m = _map(state, config, SPEC_791, SPEC_791["max_x"],
+                  SPEC_791["max_y"], SCREEN, stub_send_input, RECT_FRAC)
+    stub_send_input.clear()
+    without_m = _map(state, config, SPEC_791, SPEC_791["max_x"],
+                     SPEC_791["max_y"], None, stub_send_input, RECT_FRAC)
+    assert with_m == without_m
 
 
 def test_no_rect_control_is_the_isotropic_lane(state, config, stub_send_input):
@@ -145,6 +168,15 @@ def test_projection_math_matches_proposal_formula():
     assert scale_y == pytest.approx(RECT[3] * 65535 / (40640 * 1440))
 
 
+def test_frac_projection_is_the_px_form_at_unit_screen_size():
+    # U416: one math function; fractions are the px form with the union
+    # bounds divided out (screen dims 1,1). Round-trip proof.
+    off_x, scale_x, off_y, scale_y = pen_area_norm_projection(
+        RECT_FRAC, 65024, 40640, 1.0, 1.0)
+    px_form = pen_area_norm_projection(RECT, 65024, 40640, 3440, 1440)
+    assert (off_x, scale_x, off_y, scale_y) == pytest.approx(px_form)
+
+
 def test_diag_names_the_pen_area_mode_with_rect_px_mm(state, config,
                                                        stub_send_input,
                                                        capsys, monkeypatch):
@@ -152,7 +184,7 @@ def test_diag_names_the_pen_area_mode_with_rect_px_mm(state, config,
     monkeypatch.setattr(touch_controller, "monitor_count", lambda: 2)
     state.pen_product_id = 791
     capsys.readouterr()
-    _map(state, config, SPEC_791, 0, 0, SCREEN, stub_send_input, RECT)
+    _map(state, config, SPEC_791, 0, 0, SCREEN, stub_send_input, RECT_FRAC)
     out = capsys.readouterr().out
     assert out.startswith("pen_abs_map mode=pen_area product=791")
     assert ("px_mm_x=%.4f px_mm_y=%.4f band_x=na band_y=na\n"
@@ -162,10 +194,10 @@ def test_diag_names_the_pen_area_mode_with_rect_px_mm(state, config,
 def test_live_rect_selection_exact_match_and_none(cfg_state_config, monkeypatch):
     cfg, state = cfg_state_config
     key = display_key_for_records(RECORDS)
-    cfg.set_pen_area_entry(IDENTITY, key, RECORDS, RECT)
+    cfg.set_pen_area_entry(IDENTITY, key, RECORDS, RECT_FRAC)
     state.pen_identity = IDENTITY
     monkeypatch.setattr(touch_controller, "monitor_records", lambda: list(RECORDS))
-    assert select_live_pen_area_rect(cfg, state.pen_identity) == RECT
+    assert select_live_pen_area_rect(cfg, state.pen_identity) == pytest.approx(RECT_FRAC)
     monkeypatch.setattr(touch_controller, "monitor_records",
                         lambda: ["\\\\.\\DISPLAY1|0|0|1920x1080"])
     touch_controller.reset_pen_area_key_cache()
@@ -179,22 +211,25 @@ def cfg_state_config(monkeypatch, tmp_path):
     return DriverConfig(), TabletState()
 
 
-def test_rect_datum_is_virtual_desktop_origin_relative(state, config,
-                                                        stub_send_input):
-    # U414 STEP-2 P1: rx/ry are pixels from the virtual-desktop origin
-    # (metrics left/top), NOT absolute coordinates. On the maintainer's
-    # pivoted layout the virtual origin is (-1440, 0); an implementation
-    # that baked the absolute datum in would land the near corner 1440 px
-    # left of the rect here while the (0,0)-origin tests pass.
+def test_frac_rect_datum_is_virtual_desktop_origin_relative(state, config,
+                                                             stub_send_input):
+    # U414 STEP-2 P1 contract, U416 fractional form: the fraction is of
+    # the union bounds and the normalized space starts AT the virtual
+    # origin (metrics left/top never enter the math). On the maintainer's
+    # pivoted layout the origin is (-1440, 0); the output must be the
+    # SAME normalized corners as the (0,0)-origin run - an absolute-
+    # datum leak would shift them.
     origin_screen = (-1440, 0, 4880, 2560)
     nx0, ny0 = _map(state, config, SPEC_791, 0, 0, origin_screen,
-                    stub_send_input, RECT)
+                    stub_send_input, RECT_FRAC)
     stub_send_input.clear()
     nx1, ny1 = _map(state, config, SPEC_791, SPEC_791["max_x"],
-                    SPEC_791["max_y"], origin_screen, stub_send_input, RECT)
-    assert (_px(nx0, 4880), _px(ny0, 2560)) == (RECT[0], RECT[1])
-    assert (_px(nx1, 4880), _px(ny1, 2560)) == (RECT[0] + RECT[2],
-                                                RECT[1] + RECT[3])
+                    SPEC_791["max_y"], origin_screen, stub_send_input, RECT_FRAC)
+    ref0 = _map(state, config, SPEC_791, 0, 0, SCREEN, stub_send_input, RECT_FRAC)
+    stub_send_input.clear()
+    ref1 = _map(state, config, SPEC_791, SPEC_791["max_x"],
+                SPEC_791["max_y"], SCREEN, stub_send_input, RECT_FRAC)
+    assert (nx0, ny0) == ref0 and (nx1, ny1) == ref1
 
 
 def test_relative_lane_ignores_the_rect(state, config, stub_send_input):
@@ -207,7 +242,7 @@ def test_relative_lane_ignores_the_rect(state, config, stub_send_input):
     # must emit MOVE-only deltas.
     for step in range(6):
         update_pen_cursor(state, dispatcher, config, SPEC_791, 2000 * step,
-                          1500 * step, screen_metrics=SCREEN, pen_area_rect=RECT)
+                          1500 * step, screen_metrics=SCREEN, pen_area_rect=RECT_FRAC)
     assert stub_send_input
     for event in stub_send_input:
         assert event[0] == "mouse"

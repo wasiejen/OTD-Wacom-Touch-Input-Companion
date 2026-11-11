@@ -20,6 +20,7 @@ from touch_controller import (
     rotated_pen_box_mm,
     select_pen_area_entry,
     snapshot_device_sections,
+    union_rect_from_records,
     virtual_desktop_metrics,
     PEN_SPECS_BY_PRODUCT,
 )
@@ -286,23 +287,33 @@ def tablet_pictogram_layout(degrees, width=PICTOGRAM_WIDTH, height=PICTOGRAM_HEI
                             digitizer=None):
     """Rotated tablet pictogram geometry, centered at the origin (U74 d, U415).
 
-    Unrotated layout: body rectangle spanning +-width/2 x +-height/2; the
-    express-key strip LEFT ONLY (U415 fix: the old graphic mirrored an
-    empty column right); the digitizer (pen-area) rect right of the strip,
-    vertically centered; the central round on the middle axis with the
-    dial ring around it; keys 1-4 above and 5-8 mirrored below, numbered
-    top-to-bottom. Every point rotates clockwise by degrees with the same
-    matrix the input transform uses, so widget and cursor mapping stay
-    consistent. Return adds `pen_area` (4 digitizer corners) over U74 d.
+    Unrotated layout (U416 re-measured against the product PNG, STEP-0):
+    body rectangle spanning +-width/2 x +-height/2; the express-key strip
+    LEFT ONLY; the dial ring + central round SIT IN THE STRIP (same column
+    as the keys, vertically centered between the groups - NOT at the body
+    center, that was the U415 defect); keys 1-4 tightly above the ring and
+    5-8 tightly below (numbered top-to-bottom, all circles inside the
+    body); the digitizer (pen-area) rect right of the strip. Every point
+    rotates clockwise by degrees with the same matrix the input transform
+    uses, so widget and cursor mapping stay consistent. Return keys:
+    rect, pen_area, strip_right, seam, center (body center), ring_center
+    (dial center, in the strip), dial_radius, button_radius, buttons.
     """
     half_w, half_h = width / 2, height / 2
     strip_w, digitizer_w, digitizer_h, right_margin = _drawing_layout_rects(
         width, height, digitizer)
-    dial_radius = half_h * 0.32
-    button_radius = half_h * 0.08
-    inner_offset = half_h * 0.42
-    step = half_h * 0.19
+    # Ratios from images/wacom_intuos_pro_medium.png (viewed 2026-11-12):
+    # tight groups (key pitch 0.155, inner gap 0.06), key circles fully
+    # inside the body edge, ring ~0.24 of half-height BUT CAPPED to the
+    # strip (U416 reviewer P1: the strip is narrower than the body height
+    # on every size, and on `large` a height-sized ring crossed the body
+    # and the seam - the ring must fit the STRIP it lives in).
+    dial_radius = min(half_h * 0.24, strip_w / 2 - half_h * 0.02)
+    button_radius = half_h * 0.075
+    step = half_h * 0.155
+    inner_offset = dial_radius + half_h * 0.06 + button_radius
     column_x = -half_w + strip_w / 2
+    ring_x, ring_y = column_x, 0.0
     pen_left = -half_w + strip_w
     pen_right = half_w - right_margin
 
@@ -322,13 +333,16 @@ def tablet_pictogram_layout(degrees, width=PICTOGRAM_WIDTH, height=PICTOGRAM_HEI
                (half_w, half_h), (-half_w, half_h)]
     pen_corners = [(pen_left, -digitizer_h / 2), (pen_right, -digitizer_h / 2),
                    (pen_right, digitizer_h / 2), (pen_left, digitizer_h / 2)]
+    seam_raw = [(strip_w - half_w, -half_h), (strip_w - half_w, half_h)]
     buttons = [(number, *rotated(column_x, offset))
                 for number, offset in offsets.items()]
     return {
         "rect": [rotated(x, y) for x, y in corners],
+        "seam": [rotated(x, y) for x, y in seam_raw],
         "pen_area": [rotated(x, y) for x, y in pen_corners],
-        "strip_right": -half_w + strip_w,
+        "strip_right": strip_w - half_w,
         "center": rotated(0, 0),
+        "ring_center": rotated(ring_x, ring_y),
         "dial_radius": dial_radius,
         "button_radius": button_radius,
         "buttons": buttons,
@@ -366,7 +380,9 @@ def pictogram_view_scale(layout, canvas_w, canvas_h, safety=0.93):
     features = ([(x, y, 0.0) for x, y in layout["rect"]]
                 + [(x, y, 0.0) for x, y in layout["pen_area"]]
                 + [(x, y, layout["button_radius"]) for _, x, y in layout["buttons"]]
-                + [(*layout["center"], layout["dial_radius"])])
+                # U416 P2-2: the DRAWN ring sits at ring_center (the old
+                # body-center reference was stale and unbounded the fit).
+                + [(*layout["ring_center"], layout["dial_radius"])])
     extents_x = max(abs(x) + radius for x, _, radius in features)
     extents_y = max(abs(y) + radius for _, y, radius in features)
     return min(canvas_w / 2 / extents_x, canvas_h / 2 / extents_y) * safety
@@ -416,21 +432,27 @@ class OrientationWidget(tk.Canvas):
         self.create_polygon(*[p for corner in layout["pen_area"]
                               for p in self._canvas_point(*corner)],
                             fill="#31435a", outline="#6a9fd8")
-        seam_x, seam_top = self._canvas_point(
-            layout["strip_right"], -body_h / 2)
-        _, seam_bottom = self._canvas_point(layout["strip_right"], body_h / 2)
-        self.create_line(seam_x, seam_top, seam_x, seam_bottom,
-                         fill="#5a5a5a")
+        # U416 / #407 defect 3: the seam is a LAYOUT element now - both
+        # endpoints go through the rotation transform like everything else
+        # (it used to be drawn from unrotated corners and stayed vertical).
+        (sx1, sy1), (sx2, sy2) = (self._canvas_point(*end)
+                                  for end in layout["seam"])
+        self.create_line(sx1, sy1, sx2, sy2, fill="#5a5a5a",
+                         tags="penarea_seam")
 
-        cx, cy = self._canvas_point(*layout["center"])
+        # Dial ring + central round IN THE STRIP (U416 / PNG): same column
+        # as the keys, centered between the groups.
+        cx, cy = self._canvas_point(*layout["ring_center"])
         dial = layout["dial_radius"] * scale
         self.create_oval(cx - dial, cy - dial, cx + dial, cy + dial,
                          outline="#6a9fd8")
-        central = layout["button_radius"] * 1.2 * scale
+        # U416 P2-3 (PNG): the central button carries NO text (the label
+        # sprawled across the small round); keep it a plain filled round,
+        # capped inside the ring.
+        central = min(layout["button_radius"] * 1.2,
+                      layout["dial_radius"] * 0.55) * scale
         self.create_oval(cx - central, cy - central, cx + central, cy + central,
                          fill="#2e5a86", outline="#6a9fd8")
-        self.create_text(cx, cy, text="central", fill="#e0e0e0",
-                         font=("Segoe UI", 7))
 
         button = layout["button_radius"] * scale
         for number, x, y in layout["buttons"]:
@@ -477,7 +499,15 @@ class PenAreaCanvasModel:
         return int(parts[1]), int(parts[2]), int(width_txt), int(height_txt)
 
     def monitor_canvas_rects(self):
-        """Monitor outline boxes in canvas px, origin = virtual-desktop origin."""
+        """Monitor outline boxes in canvas px, origin = virtual-desktop origin.
+
+        U416: with no usable records (fallback bounds) it returns ONE box
+        covering the bounds, so the canvas shows the single virtual-
+        desktop rectangle instead of staying black.
+        """
+        if not self.records:
+            return [(0.0, 0.0, self.desktop_w * self.scale,
+                     self.desktop_h * self.scale)]
         boxes = []
         for record in self.records:
             left, top, width, height = self.parse_record(record)
@@ -537,8 +567,13 @@ class PenAreaEditor(ttk.Frame):
     the per-display-configuration `pen_area_map_<identity>` lane. Save
     re-resolves the running reader's display key immediately
     (`reset_pen_area_key_cache`), the #386 Apply Live shape for this
-    feature. Without display geometry or device identity the widget stays
-    inert and the isotropic default keeps running.
+    feature. U416 (maintainer black-canvas host): the editor ALWAYS builds
+    - bounds from vetted metrics, else the monitor-record union, else one
+    pad-aspect fallback rectangle; device identity gates SAVE only, never
+    editing. Fallback hosts share the empty-records display key; entries
+    live in per-identity lanes so different pads cannot collide, and a
+    pad-orientation flip between fallback sessions reinterprets fractions
+    under the flipped box aspect (rare, self-healing on next save).
     """
 
     CANVAS_W = 320.0
@@ -549,26 +584,40 @@ class PenAreaEditor(ttk.Frame):
         super().__init__(parent, **kwargs)
         self.config = config
         conn = (device_info or {}).get("connection") or {}
+        # U416 / #406 defect: the model ALWAYS builds (the canvas is
+        # editable everywhere); device identity names the lane, so it is
+        # required at SAVE time only, never for editing. Bounds resolve
+        # in order: vetted virtual metrics -> EnumDisplayMonitors union ->
+        # single fallback rectangle at the pad's aspect (fractions are
+        # load-stable across fallback sessions via the empty-records key).
         self.identity = conn.get("identity")
-        self.model = None
         metrics = virtual_desktop_metrics()
         records = monitor_records()
+        # U416 P2-4: no magic fallback product id - pen_specs_for_product
+        # itself names the unknown-id fallback (byte-stable notice +
+        # Medium extents), which is exactly the pad to draw here.
         product_id = conn.get("product_id")
-        if (metrics is not None and records and self.identity is not None
-                and product_id is not None):
-            box_mm = rotated_pen_box_mm(
-                pen_specs_for_product(product_id, config),
-                config.orientation_degrees)
-            self.model = PenAreaCanvasModel(
-                metrics, records, self.CANVAS_W, self.CANVAS_H,
-                box_mm[0], box_mm[1], self._stored_rect(records))
+        specs = pen_specs_for_product(product_id, config)
+        box_mm = rotated_pen_box_mm(specs, config.orientation_degrees)
+        bounds = None
+        usable_records = []
+        if metrics is not None and metrics[2] > 0 and metrics[3] > 0:
+            bounds, usable_records = metrics, records
+        else:
+            union = union_rect_from_records(records)
+            if union is not None and union[2] > 0 and union[3] > 0:
+                bounds, usable_records = union, records
+            else:
+                bounds = (0.0, 0.0, box_mm[0], box_mm[1])
+        self.model = PenAreaCanvasModel(
+            bounds, usable_records, self.CANVAS_W, self.CANVAS_H,
+            box_mm[0], box_mm[1],
+            self._stored_rect(usable_records, bounds[2], bounds[3]))
         self.canvas = tk.Canvas(self, width=int(self.CANVAS_W),
                                 height=int(self.CANVAS_H), bg="#262626",
                                 borderwidth=1, highlightthickness=0)
         self.canvas.grid(row=0, column=0, columnspan=2, pady=(0, 4))
-        self.readout_label = ttk.Label(
-            self, text=self.model.readout() if self.model else
-            "No display geometry or device identity: pen area stays on the isotropic default.")
+        self.readout_label = ttk.Label(self, text=self.model.readout())
         self.readout_label.grid(row=1, column=0, columnspan=2, sticky="w")
         ttk.Button(self, text="Save Pen Area", command=self.save_entry).grid(
             row=2, column=0, sticky="w", pady=(4, 0))
@@ -576,23 +625,31 @@ class PenAreaEditor(ttk.Frame):
             row=2, column=1, sticky="e", pady=(4, 0))
         self._drag_anchor = None
         self._drag_mode = "rect"
-        if self.model is not None:
-            self.canvas.bind("<ButtonPress-1>", self._press)
-            self.canvas.bind("<B1-Motion>", self._motion)
+        self.canvas.bind("<ButtonPress-1>", self._press)
+        self.canvas.bind("<B1-Motion>", self._motion)
         self._redraw()
 
-    def _stored_rect(self, records):
+    def _stored_rect(self, records, bounds_w, bounds_h):
+        """Stored FRACTION for the current display key, in model px."""
+        if self.identity is None:
+            return None
         lane = self.config.pen_area_maps.get(self.identity)
         entry = select_pen_area_entry(lane, display_key_for_records(records))
-        return list(entry["rect_px"]) if entry else None
+        if entry is None:
+            return None
+        fx, fy, fw, fh = entry["rect_frac"]
+        return [fx * bounds_w, fy * bounds_h, fw * bounds_w, fh * bounds_h]
 
     def save_entry(self):
-        """Store the model rect under the CURRENT display key and save (L1)."""
+        """Store the model rect (as FRACTIONS) under the current key (L1)."""
         if self.model is None or self.identity is None:
             return False
         key = display_key_for_records(self.model.records)
-        self.config.set_pen_area_entry(self.identity, key, self.model.records,
-                                       [int(v) for v in self.model.rect])
+        w, h = self.model.desktop_w, self.model.desktop_h
+        rx, ry, rw, rh = self.model.rect
+        self.config.set_pen_area_entry(
+            self.identity, key, self.model.records,
+            [rx / w, ry / h, rw / w, rh / h])
         self.config.save_to_file()
         reset_pen_area_key_cache()
         return True

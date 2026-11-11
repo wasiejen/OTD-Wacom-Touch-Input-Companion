@@ -1,9 +1,15 @@
-"""U414 L3 (#406, option A): pen-area rect canvas editor.
+"""U414 L3 (#406, option A) + U416 L3 (#406 defect round 1): rect editor.
 
 Model pins run headless (pure `PenAreaCanvasModel` math, no tkinter); the
 widget pins use the module-scoped hidden Tk root like test_gui_device_bar.
-RED-before at 1b9ca84: ImportError on `PenAreaCanvasModel` /
-`PenAreaEditor` from gui.
+
+U416 (maintainer host defect: black canvas + "No display geometry ..." on
+the junk-metrics host): the editor now BUILDS its model always - bounds
+from virtual metrics, else the EnumDisplayMonitors union, else a single
+fallback rectangle with the pad's aspect - and the stored rect is
+FRACTIONAL. Device identity is required only at SAVE time (it names the
+lane). RED-before 03c0a40: the old inert-without-metrics gate + rect_px
+save.
 """
 
 import pytest
@@ -102,7 +108,7 @@ def _build_widget(root, widget_config, monkeypatch, metrics=SCREEN):
     return gui.PenAreaEditor(root, widget_config, device_info)
 
 
-def test_widget_save_writes_entry_for_current_display_key(root, widget_config, monkeypatch):
+def test_widget_save_writes_fractional_entry_for_current_display_key(root, widget_config, monkeypatch):
     calls = []
     monkeypatch.setattr(gui, "reset_pen_area_key_cache", lambda: calls.append(1))
     widget = _build_widget(root, widget_config, monkeypatch)
@@ -110,24 +116,76 @@ def test_widget_save_writes_entry_for_current_display_key(root, widget_config, m
     entry = list(widget_config.pen_area_maps["0123456789ab"]["entries"])[0]
     assert entry["display_key"] == touch_controller.display_key_for_records(RECORDS)
     assert entry["monitors"] == RECORDS
-    assert len(entry["rect_px"]) == 4 and entry["rect_px"][2] > 0
+    rect_frac = entry["rect_frac"]
+    assert len(rect_frac) == 4
+    assert 0.0 <= rect_frac[0] <= 1.0 and rect_frac[2] > 0.0 and rect_frac[2] <= 1.0
+    assert rect_frac[0] + rect_frac[2] <= 1.000001
     assert calls == [1]
 
 
-def test_widget_save_disabled_without_identity(root, widget_config, monkeypatch):
+def test_widget_editable_without_identity_save_refuses(root, widget_config, monkeypatch):
+    # U416: identity names the LANE, so it gates SAVE only. Editing must
+    # work without it (the model is live, drag math runs).
     monkeypatch.setattr(gui, "virtual_desktop_metrics", lambda: SCREEN)
     monkeypatch.setattr(gui, "monitor_records", lambda: list(RECORDS))
     device_info = {"connection": {"product_id": 791}, "base_config": widget_config}
     widget = gui.PenAreaEditor(root, widget_config, device_info)
+    assert widget.model is not None
+    widget.model.move_by(100000, 0)
+    assert widget.model.rect[0] == 3440 - widget.model.rect[2]  # drag clamped
     assert widget.save_entry() is False
+    assert widget.remove_entry() is False
     assert widget_config.pen_area_maps == {}
 
 
-def test_widget_disabled_without_metrics(root, widget_config, monkeypatch):
+def test_widget_builds_on_metrics_less_host_from_records(root, widget_config, monkeypatch):
+    # U416 defect core repro: junk/None virtual metrics (maintainer host).
+    # Bounds fall back to the EnumDisplayMonitors union; canvas usable.
     monkeypatch.setattr(gui, "virtual_desktop_metrics", lambda: None)
     monkeypatch.setattr(gui, "monitor_records", lambda: list(RECORDS))
     device_info = {"connection": {"identity": "0123456789ab", "product_id": 791},
                    "base_config": widget_config}
     widget = gui.PenAreaEditor(root, widget_config, device_info)
-    assert widget.model is None
-    assert widget.save_entry() is False
+    assert widget.model is not None
+    assert (widget.model.desktop_w, widget.model.desktop_h) == (3440.0, 1440.0)
+    widget.model.move_by(100000, 0)
+    assert widget.model.rect[0] == 3440 - widget.model.rect[2]
+    assert widget.save_entry() is True
+
+
+def test_widget_falls_back_to_pad_aspect_rect(root, widget_config, monkeypatch):
+    # U416 last resort: NO metrics AND no usable enumeration -> the canvas
+    # still renders a single virtual-desktop rectangle with the pad's
+    # aspect (fractions stay load-stable via the empty-records display key).
+    monkeypatch.setattr(gui, "virtual_desktop_metrics", lambda: None)
+    monkeypatch.setattr(gui, "monitor_records", lambda: [])
+    device_info = {"connection": {"identity": "0123456789ab", "product_id": 791},
+                   "base_config": widget_config}
+    widget = gui.PenAreaEditor(root, widget_config, device_info)
+    assert widget.model is not None
+    box = touch_controller.rotated_pen_box_mm(
+        touch_controller.PEN_SPECS_BY_PRODUCT[791], 0)
+    assert widget.model.desktop_w / widget.model.desktop_h == pytest.approx(
+        box[0] / box[1], rel=1e-6)
+    assert len(widget.model.monitor_canvas_rects()) == 1
+    assert widget.save_entry() is True
+    entry = list(widget_config.pen_area_maps["0123456789ab"]["entries"])[0]
+    assert entry["monitors"] == []
+    assert entry["display_key"] == touch_controller.display_key_for_records([])
+
+
+def test_widget_loads_stored_fraction_back_into_model_px(root, widget_config, monkeypatch):
+    # Fraction round-trip through the editor: saved fraction -> model px
+    # on reopen matches the same bounds.
+    monkeypatch.setattr(gui, "virtual_desktop_metrics", lambda: SCREEN)
+    monkeypatch.setattr(gui, "monitor_records", lambda: list(RECORDS))
+    device_info = {"connection": {"identity": "0123456789ab", "product_id": 791},
+                   "base_config": widget_config}
+    widget = gui.PenAreaEditor(root, widget_config, device_info)
+    widget.model.rect = [516.0, 144.0, 1720.0, 720.0]  # 16:10-ish; aspect may lock
+    assert widget.save_entry() is True
+    key = touch_controller.display_key_for_records(RECORDS)
+    frac = widget_config.pen_area_maps["0123456789ab"]["entries"][0]["rect_frac"]
+    reopened = gui.PenAreaEditor(root, widget_config, device_info)
+    assert reopened.model.rect == pytest.approx([frac[0] * 3440, frac[1] * 1440,
+                                                 frac[2] * 3440, frac[3] * 1440])

@@ -216,6 +216,100 @@ def test_widget_redraw_picks_up_a_changed_size(tk_root):
     other.destroy()
 
 
+# --- U416 L1 (#407 defect round 1, maintainer eyes on the PNG) -------------
+# The PNG layout (STEP-0, image viewed 2026-11-12): ring + central button
+# SIT IN THE LEFT STRIP (same column as the keys), vertically centered
+# between the two groups; the 4+4 groups sit CLOSE to the ring. The U415
+# table put the ring at the BODY center (defect 1) with groups spreading
+# outward from it (defect 2). RED-before 8abfb9e: the current table fails
+# the ring-in-strip and the inside-body pins.
+
+
+def _medium_layout(degrees=0):
+    drawing = TABLET_DRAWINGS["medium"]
+    return tablet_pictogram_layout(degrees, drawing["body_mm"][0],
+                                   drawing["body_mm"][1],
+                                   digitizer=drawing["digitizer_mm"])
+
+
+def test_ring_center_sits_in_the_left_strip_not_the_tablet_center():
+    layout = _medium_layout(0)
+    by_number = {n: (x, y) for n, x, y in layout["buttons"]}
+    ring_x, ring_y = layout["ring_center"]
+    # Same column as the keys (within one key diameter), and left of the
+    # pen area (the body center is inside the pen area -> RED before).
+    assert abs(ring_x - by_number[4][0]) < 2 * layout["button_radius"]
+    assert ring_x < min(x for x, _ in layout["pen_area"]) - layout["button_radius"]
+
+
+def test_ring_centered_between_the_two_tight_groups():
+    layout = _medium_layout(0)
+    by_number = {n: (x, y) for n, x, y in layout["buttons"]}
+    ring_x, ring_y = layout["ring_center"]
+    assert ring_y == pytest.approx((by_number[4][1] + by_number[5][1]) / 2)
+    # Groups CLOSE to the ring: gap from key4's edge to the ring's outer
+    # edge, in units of the key pitch, stays small (< 2 pitches).
+    pitch = by_number[2][1] - by_number[1][1]
+    gap = (ring_y - by_number[4][1]) - layout["dial_radius"] - layout["button_radius"]
+    assert 0 <= gap < 2 * pitch
+
+
+@pytest.mark.parametrize("size", ("small", "medium", "large"))
+def test_ring_outer_circle_stays_inside_the_strip_at_every_size(size):
+    # U416 reviewer P1 (RED-before: dial_radius scaled off half_h overflowed
+    # the narrow strip on `large` by ~13.5 mm, crossing the body/seam).
+    # The ring must fit the STRIP, not the body height.
+    drawing = TABLET_DRAWINGS[size]
+    layout = tablet_pictogram_layout(0, drawing["body_mm"][0],
+                                     drawing["body_mm"][1],
+                                     digitizer=drawing["digitizer_mm"])
+    half_w = layout["rect"][2][0]
+    ring_x, ring_y = layout["ring_center"]
+    pen_left = min(x for x, _ in layout["pen_area"])
+    assert ring_x + layout["dial_radius"] <= pen_left
+    assert abs(ring_x) + layout["dial_radius"] <= half_w
+
+
+def test_all_key_circles_stay_inside_the_body_outline():
+    # U415 carried P2-4 (outer keys overhang the body edge): fixed with
+    # this round's group spacing. RED-before: |y|+r = 1.07*half_h failed.
+    layout = _medium_layout(0)
+    half_h = layout["rect"][2][1]
+    assert all(abs(y) + layout["button_radius"] <= half_h
+               for _, _, y in layout["buttons"])
+
+
+# --- U416 L2 (#407 defect 3): the strip seam line must ROTATE -------------
+# At 90 deg the pen-area/strip delineation line stayed put (drawn from
+# UNROTATED corners). RED-before eb75009: KeyError 'seam' (layout has no
+# rotated seam) and the Tk orientation check fails on the vertical line.
+
+
+@pytest.mark.parametrize("degrees", (0, 90, 180, 270))
+def test_layout_seam_endpoints_rotate_with_the_angle(degrees):
+    from touch_controller import rotate_point
+    layout = _medium_layout(degrees)
+    drawing = TABLET_DRAWINGS["medium"]
+    half_w, half_h = drawing["body_mm"][0] / 2, drawing["body_mm"][1] / 2
+    raw = [(layout["strip_right"], -half_h), (layout["strip_right"], half_h)]
+    got = layout["seam"]
+    assert len(got) == 2
+    for (rx, ry), (gx, gy) in zip(raw, got):
+        assert (gx, gy) == pytest.approx(rotate_point(rx, ry, degrees, 0, 0))
+
+
+def test_widget_seam_line_follows_the_rotation(tk_root):
+    widget = OrientationWidget(tk_root, degrees=0)
+    at_zero = widget.coords("penarea_seam")
+    widget.draw_degrees(90)
+    at_90 = widget.coords("penarea_seam")
+    assert at_zero, "seam line must carry tag penarea_seam"
+    # 0 deg: the seam is vertical (dx ~ 0); 90 deg: horizontal (dy ~ 0).
+    assert abs(at_zero[2] - at_zero[0]) < 0.1 * abs(at_zero[3] - at_zero[1])
+    assert abs(at_90[3] - at_90[1]) < 0.1 * abs(at_90[2] - at_90[0])
+    widget.destroy()
+
+
 def test_widget_size_changes_the_drawing(tk_root):
     small = OrientationWidget(tk_root, degrees=0, size="small")
     large = OrientationWidget(tk_root, degrees=0, size="large")
