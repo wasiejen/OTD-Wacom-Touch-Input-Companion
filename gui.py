@@ -21,6 +21,7 @@ from touch_controller import (
     select_pen_area_entry,
     snapshot_device_sections,
     virtual_desktop_metrics,
+    PEN_SPECS_BY_PRODUCT,
 )
 
 # Wireless tablet size GUI lane (U386 / TODO #385). The combo offers the
@@ -231,6 +232,27 @@ ORIENTATION_PRESETS = (0, 90, 180, 270)
 PICTOGRAM_WIDTH = 223.52
 PICTOGRAM_HEIGHT = 139.7
 
+# Tablet drawing geometry (U415 / #407 ruling): the Motion-tab pictogram is
+# a REDRAWN vector tablet (tkinter-native shapes; the PNG
+# images/wacom_intuos_pro_medium.png is CONSTRUCTION REFERENCE ONLY - button
+# placement 1-8 + central ring + pen-area placement - and is never
+# displayed). One entry per selected tablet size: body = the physical pad
+# outline, digitizer = the active area (mirrors the PEN_SPECS mm so the
+# drawing tracks the mapping the driver actually uses). The express-key
+# strip is LEFT ONLY on every size (the old graphic mirrored an empty
+# column to the right); the digitizer sits right of the strip.
+TABLET_DRAWINGS = {
+    "small": {"body_mm": (210.0, 140.0),
+              "digitizer_mm": (PEN_SPECS_BY_PRODUCT[788]["width_mm"],
+                               PEN_SPECS_BY_PRODUCT[788]["height_mm"])},
+    "medium": {"body_mm": (277.0, 189.0),
+               "digitizer_mm": (PEN_SPECS_BY_PRODUCT[789]["width_mm"],
+                                PEN_SPECS_BY_PRODUCT[789]["height_mm"])},
+    "large": {"body_mm": (378.0, 262.0),
+              "digitizer_mm": (PEN_SPECS_BY_PRODUCT[791]["width_mm"],
+                               PEN_SPECS_BY_PRODUCT[791]["height_mm"])},
+}
+
 
 def parse_orientation_degrees(raw):
     """Whole degrees 0..359 from an entry string; None when invalid."""
@@ -243,21 +265,46 @@ def parse_orientation_degrees(raw):
     return int(degrees)
 
 
-def tablet_pictogram_layout(degrees, width=PICTOGRAM_WIDTH, height=PICTOGRAM_HEIGHT):
-    """Rotated tablet pictogram geometry, centered at the origin (U74 d).
+def _drawing_layout_rects(width, height, digitizer):
+    """(strip_width, digitizer_width, digitizer_height, right_margin) (U415).
 
-    Unrotated layout: tablet rectangle spanning +-width/2 x +-height/2; the
-    central round on the middle axis with the dial ring around it; express
-    keys 1-4 above and 5-8 mirrored below, numbered top-to-bottom. Every
-    point rotates clockwise by degrees with the same matrix the input
-    transform uses, so widget and cursor mapping stay consistent.
+    The express-key strip is the leftover body width right of it sits the
+    digitizer rect, leaving a thin right margin. Without an explicit
+    digitizer the body degrades to fixed ratios (legacy default shape).
+    """
+    if digitizer is None:
+        strip = width * 0.22
+        right_margin = width * 0.05
+        return strip, width - strip - right_margin, height * 0.76, right_margin
+    digitizer_w, digitizer_h = float(digitizer[0]), float(digitizer[1])
+    right_margin = width * 0.045
+    strip = width - digitizer_w - right_margin
+    return strip, digitizer_w, digitizer_h, right_margin
+
+
+def tablet_pictogram_layout(degrees, width=PICTOGRAM_WIDTH, height=PICTOGRAM_HEIGHT,
+                            digitizer=None):
+    """Rotated tablet pictogram geometry, centered at the origin (U74 d, U415).
+
+    Unrotated layout: body rectangle spanning +-width/2 x +-height/2; the
+    express-key strip LEFT ONLY (U415 fix: the old graphic mirrored an
+    empty column right); the digitizer (pen-area) rect right of the strip,
+    vertically centered; the central round on the middle axis with the
+    dial ring around it; keys 1-4 above and 5-8 mirrored below, numbered
+    top-to-bottom. Every point rotates clockwise by degrees with the same
+    matrix the input transform uses, so widget and cursor mapping stay
+    consistent. Return adds `pen_area` (4 digitizer corners) over U74 d.
     """
     half_w, half_h = width / 2, height / 2
+    strip_w, digitizer_w, digitizer_h, right_margin = _drawing_layout_rects(
+        width, height, digitizer)
     dial_radius = half_h * 0.32
     button_radius = half_h * 0.08
     inner_offset = half_h * 0.42
     step = half_h * 0.19
-    column_x = -half_w * 0.5
+    column_x = -half_w + strip_w / 2
+    pen_left = -half_w + strip_w
+    pen_right = half_w - right_margin
 
     offsets = {
         1: -inner_offset - 3 * step, 2: -inner_offset - 2 * step,
@@ -273,10 +320,14 @@ def tablet_pictogram_layout(degrees, width=PICTOGRAM_WIDTH, height=PICTOGRAM_HEI
 
     corners = [(-half_w, -half_h), (half_w, -half_h),
                (half_w, half_h), (-half_w, half_h)]
+    pen_corners = [(pen_left, -digitizer_h / 2), (pen_right, -digitizer_h / 2),
+                   (pen_right, digitizer_h / 2), (pen_left, digitizer_h / 2)]
     buttons = [(number, *rotated(column_x, offset))
-               for number, offset in offsets.items()]
+                for number, offset in offsets.items()]
     return {
         "rect": [rotated(x, y) for x, y in corners],
+        "pen_area": [rotated(x, y) for x, y in pen_corners],
+        "strip_right": -half_w + strip_w,
         "center": rotated(0, 0),
         "dial_radius": dial_radius,
         "button_radius": button_radius,
