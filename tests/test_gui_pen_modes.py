@@ -145,6 +145,27 @@ def test_numeric_fields_echo_the_stored_rect_on_open(modes_cfg, tk_root, monkeyp
     assert float(win.rect_entries["w_px"].get()) == pytest.approx(1720.0, abs=1)
 
 
+def test_subset_checkboxes_seed_from_the_stored_subset(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # U424 UNIT VERDICT P1 (RED-before 62483be: vars were hardcoded True,
+    # the UI lied about a stored restriction and one click silently
+    # broadened the stretch target).
+    modes_cfg.pen_stretch_screens = [DISP2]
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    assert win.stretch_screen_vars[DISP1].get() is False
+    assert win.stretch_screen_vars[DISP2].get() is True
+    assert win.stretch_screen_panel.winfo_manager() != "pack"  # mode-gated
+    win.stretch_screen_vars[DISP1].set(True)
+    win._on_stretch_screens_change()
+    assert modes_cfg.pen_stretch_screens is None  # all selected again
+
+
+def test_legacy_stretch_toggle_absent_from_feature_vars(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # U424 UNIT VERDICT P2-2: the raw pen_stretch_full_desktop checkbox
+    # must not render via the generic feature loop either (retired).
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    assert "pen_stretch_full_desktop" not in win.feature_vars
+
+
 def test_editor_view_stays_put_across_edge_rect_moves(modes_cfg, tk_root, monkeypatch, tmp_path):
     # U424 L3 (#424 canvas jitter): the view transform must derive from
     # the SCREEN BOUNDS once, and the canvas must not slide when the

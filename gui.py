@@ -1035,6 +1035,11 @@ class SettingsWindow(tk.Toplevel):
         if pen_mode_var is not None:
             self._set_widget_value(pen_mode_var, resolved_pen_mode(config))
             self._sync_mode_panels()
+        # U424 UNIT VERDICT P1: keep the subset checkboxes honest on
+        # refresh (alias/focus change can swap the effective config).
+        for rec, var in getattr(self, "stretch_screen_vars", {}).items():
+            stored = getattr(config, "pen_stretch_screens", None)
+            var.set((not stored) or rec in stored)
         self.saved_actions = dict(config.action_mapping)
         for combo_map in (getattr(self, "action_combos", {}),
                           getattr(self, "pen_combos", {}),
@@ -1394,8 +1399,12 @@ class SettingsWindow(tk.Toplevel):
         self.stretch_screen_panel = ttk.LabelFrame(
             scroll_frame, text=" Screens to stretch over ", padding=8)
         self.stretch_screen_vars = {}
+        # U424 UNIT VERDICT P1: seed FROM the stored subset (None/empty =
+        # all) - the UI must show the actual reach on open, not all-checked.
+        stored_subset = getattr(self.config, "pen_stretch_screens", None)
         for record in monitor_records():
-            rec_var = tk.BooleanVar(value=True)
+            rec_var = tk.BooleanVar(
+                value=(not stored_subset) or record in stored_subset)
             cb = ttk.Checkbutton(
                 self.stretch_screen_panel, text=_screen_label(record),
                 variable=rec_var, command=self._on_stretch_screens_change)
@@ -1645,7 +1654,12 @@ class SettingsWindow(tk.Toplevel):
         # Filter out cursor_acceleration & scroll_acceleration since they are in Motion tab,
         # pen_absolute_mode since it is in the Pen tab, and the button/dial controls
         # since they are in the Buttons tab.
-        excluded_features = ({"cursor_acceleration", "scroll_acceleration", "pen_absolute_mode"}
+        # U424 / #424: pen_absolute_mode AND pen_stretch_full_desktop are
+        # retired from the UI (the mode selector owns them now; the
+        # toggles stay readable in config for the migration only - no
+        # dual control, UNIT VERDICT P2-2).
+        excluded_features = ({"cursor_acceleration", "scroll_acceleration",
+                              "pen_absolute_mode", "pen_stretch_full_desktop"}
                              | set(BUTTON_CONTROL_KEYS) | set(BUTTON_TOUCH_KEYS))
 
         for feature_key, enabled in self.config.feature_toggles.items():
