@@ -4,6 +4,25 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261112-0440:
+
+  - FIXED three graphics defects the maintainer found in the new tablet
+    drawing (U416 / #407): the dial ring + central button moved INTO the
+    left button strip (vertically centered between the now-TIGHT 4+4 key
+    groups, per the reference picture - they used to sit at the tablet
+    center); the strip/pen-area seam line now rotates with the drawing
+    (it stayed vertical at 90 deg); outer key circles stay inside the
+    body outline.
+
+  - FIXED the pen-area rect editor on hosts whose virtual-screen metrics
+    read junk (U416 / #406): the canvas is no longer black there. The
+    stored rect is now FRACTIONAL (0..1 of the display union), so the pen
+    path maps it without consulting any display metrics; the editor
+    builds from metrics, else the monitor enumeration union, else a
+    single pad-aspect fallback rectangle, and stays editable without a
+    device identity (identity is required only to SAVE). Old stored
+    pixel rects migrate automatically on load.
+
 261112-0330:
 
   - REDREW the Motion-tab orientation pictogram (U415 / TODO #407 ruling):
