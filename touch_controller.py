@@ -614,10 +614,17 @@ class DriverConfig:
 
     @staticmethod
     def _validated_pen_area_entry(entry):
-        """Return the normalized pen-area entry, or an error string (U414 lane).
+        """Return the normalized pen-area entry (rect_frac), or an error string.
 
-        Schema (approved proposal §2): display_key non-empty str, monitors
-        list of str, rect_px [rx, ry, rw, rh] with positive rw/rh.
+        Schema (U416 / #406 defect round 1): display_key non-empty str,
+        monitors list of str, rect_frac [rx, ry, rw, rh] FRACTIONS of the
+        union bounds of the entry's own monitors (0 <= rx,ry; 0 < rw,rh;
+        the rect inside 0..1). Fractions survive hosts that answer junk
+        for the virtual-screen metrics. Legacy U414 rect_px entries are
+        MIGRATED at load by dividing through the union bounds of the
+        entry's own monitor records - the exact source of the px datum
+        (documented choice; no current-display guesswork, since those
+        metrics may be the junk this schema exists to survive).
         """
         if not isinstance(entry, dict):
             return "must be an object"
@@ -627,15 +634,32 @@ class DriverConfig:
         monitors = entry.get("monitors")
         if not isinstance(monitors, list) or not all(isinstance(m, str) for m in monitors):
             return "needs a 'monitors' list of strings"
-        rect_px = entry.get("rect_px")
-        if (not isinstance(rect_px, (list, tuple)) or len(rect_px) != 4
+        if "rect_frac" in entry:
+            values = entry["rect_frac"]
+        elif "rect_px" in entry:
+            legacy = entry["rect_px"]
+            if (not isinstance(legacy, (list, tuple)) or len(legacy) != 4
+                    or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                               for v in legacy)):
+                return "legacy rect_px must be [rx, ry, rw, rh] numbers"
+            union = union_rect_from_records(monitors)
+            if union is None or union[2] <= 0 or union[3] <= 0:
+                return ("legacy rect_px needs parseable 'monitors' bounds to "
+                        "convert to rect_frac (U416)")
+            values = [legacy[0] / union[2], legacy[1] / union[3],
+                      legacy[2] / union[2], legacy[3] / union[3]]
+        else:
+            return "needs a 'rect_frac' list"
+        if (not isinstance(values, (list, tuple)) or len(values) != 4
                 or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
-                           for v in rect_px)):
-            return "rect_px must be [rx, ry, rw, rh] numbers"
-        if rect_px[2] <= 0 or rect_px[3] <= 0:
-            return "rect_px needs positive width and height"
+                           for v in values)):
+            return "rect_frac must be [rx, ry, rw, rh] numbers"
+        rx, ry, rw, rh = (float(v) for v in values)
+        if rw <= 0 or rh <= 0 or rx < 0.0 or ry < 0.0 or rw > 1.0 or rh > 1.0 \
+                or rx + rw > 1.000001 or ry + rh > 1.000001:
+            return "rect_frac must stay inside 0..1 with positive width and height"
         return {"display_key": display_key, "monitors": list(monitors),
-                "rect_px": [int(v) for v in rect_px]}
+                "rect_frac": [rx, ry, rw, rh]}
 
     @staticmethod
     def _error_reference(raw_text, key, item_index):
@@ -1316,20 +1340,23 @@ class DriverConfig:
             entry[name] = value
         self.device_settings[identity] = entry
 
-    def set_pen_area_entry(self, identity, display_key, monitors, rect_px):
-        """Store the pen-area rectangle for one display configuration (U414 / #406).
+    def set_pen_area_entry(self, identity, display_key, monitors, rect_frac):
+        """Store the pen-area FRACTIONAL rectangle for one display config.
 
-        The entry for the current `display_key` is replaced; entries of other
-        configurations stay (proposal §2: the GUI saves the current
-        configuration's entry only). Does not save the file.
-        Raises ValueError when the entry shape fails the load schema.
+        U414 / #406; U416: `rect_frac` is [rx, ry, rw, rh] in 0..1 of the
+        union bounds of `monitors` (fractional so metrics-less hosts can
+        store and consume the rect). The entry for the current
+        `display_key` is replaced; entries of other configurations stay
+        (proposal §2: the GUI saves the current configuration's entry
+        only). Does not save the file. Raises ValueError when the entry
+        shape fails the load schema.
         """
         # U414 STEP-1 P2-3: validate on the WRITE side too (same schema as
         # load); a caller with a malformed rect fails loudly here instead of
         # saving garbage that the next load would reject.
         entry = self._validated_pen_area_entry({"display_key": display_key,
                                                 "monitors": monitors,
-                                                "rect_px": rect_px})
+                                                "rect_frac": list(rect_frac)})
         if isinstance(entry, str):
             raise ValueError(f"pen-area entry rejected: {entry}")
         lane = self.pen_area_maps.setdefault(identity, {"entries": []})
@@ -1813,7 +1840,12 @@ def cached_display_key(now=None):
 
 
 def select_live_pen_area_rect(config, identity):
-    """The rect for the live identity + display configuration, else None."""
+    """The FRACTIONAL rect for the live identity + display config, else None.
+
+    U416 / #406: returns rect_frac (0..1 of the union bounds); the
+    normalized 0..65535 pen space spans the same virtual bounds
+    (MOUSEEVENTF_VIRTUALDESK), so consumers need no display metrics.
+    """
     if identity is None:
         return None
     key = cached_display_key()
@@ -1822,7 +1854,7 @@ def select_live_pen_area_rect(config, identity):
     entry = select_pen_area_entry(config.pen_area_maps.get(identity), key)
     if entry is None:
         return None
-    return list(entry["rect_px"])
+    return list(entry["rect_frac"])
 
 
 def pen_area_rect_aspect_lock(rect_px, box_mm_w, box_mm_h):
@@ -1846,6 +1878,11 @@ def pen_area_norm_projection(rect_px, extent_w, extent_h, screen_w, screen_h):
     Datum (U414 STEP-2 P1): rx/ry are pixels RELATIVE TO THE VIRTUAL
     DESKTOP ORIGIN - the (left, top) of the metrics bounding rect, i.e.
     MOUSEEVENTF_VIRTUALDESK's own zero - not absolute screen coordinates.
+
+    U416 / #406: the pen path passes FRACTIONAL rects (0..1 of the union
+    bounds) with screen_w = screen_h = 1.0 - the same form, fractions
+    pre-divided; the normalized space IS the virtual-desk space, so no
+    display metrics are consulted for the mapping.
     """
     rx, ry, rw, rh = rect_px
     return (rx * PEN_VIRTUAL_RESOLUTION / screen_w,
@@ -2148,23 +2185,29 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
                     pen_specs, config.orientation_degrees)
                 px_mm = (metrics[2] / box_mm_w, metrics[3] / box_mm_h)
                 bands = (0.0, 0.0)
-        elif pen_area_rect is not None and metrics is not None:
-            # Pen-area rect lane (U414 / #406, proposal §2): the rotated
-            # digitizer box maps onto the user's virtual-desktop rectangle,
-            # so the writing app that owns that region gets the full pen
-            # travel at one px/mm scale (isotropy by the aspect-locked rect;
-            # px_mm below reports the pair from the ROTATED mm box). The
-            # stretch toggle above keeps override authority; no match or
-            # junk metrics falls through to the U376 default.
+        elif pen_area_rect is not None:
+            # Pen-area rect lane (U414 / #406, proposal §2; U416 fractional):
+            # the rotated digitizer box maps onto the user's stored
+            # rectangle - rect is [rx, ry, rw, rh] FRACTIONS of the virtual
+            # bounds, so this branch consults NO display metrics and runs
+            # on junk-metrics hosts (#406 defect). Isotropy holds by the
+            # aspect-locked rect; px_mm below reports the pair from the
+            # ROTATED mm box when metrics allow (diag decoration only).
+            # The stretch toggle above keeps override authority; no rect
+            # falls through to the U376 default / degraded lane.
             box_mm_w, box_mm_h = rotated_pen_box_mm(
                 pen_specs, config.orientation_degrees)
             off_x, scale_x, off_y, scale_y = pen_area_norm_projection(
-                pen_area_rect, extent_w, extent_h, metrics[2], metrics[3])
+                pen_area_rect, extent_w, extent_h, 1.0, 1.0)
             nx = min(max(int(off_x + (x - left) * scale_x + 1e-9), 0),
                      PEN_VIRTUAL_RESOLUTION)
             ny = min(max(int(off_y + (y - top) * scale_y + 1e-9), 0),
                      PEN_VIRTUAL_RESOLUTION)
-            px_mm = (pen_area_rect[2] / box_mm_w, pen_area_rect[3] / box_mm_h)
+            if metrics is not None:
+                px_mm = (pen_area_rect[2] * metrics[2] / box_mm_w,
+                         pen_area_rect[3] * metrics[3] / box_mm_h)
+            else:
+                px_mm = None
             bands = None
             mode = "pen_area"
         elif metrics is not None:
