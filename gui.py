@@ -1490,6 +1490,19 @@ class SettingsWindow(tk.Toplevel):
             mm_entry.bind("<FocusOut>", lambda e, k=f"{field_key}_mm": self._apply_rect_field(k))
             self.rect_entries[f"{field_key}_px"] = px_entry
             self.rect_entries[f"{field_key}_mm"] = mm_entry
+        # U424r3 R3-L4 (#424 item 4): HONEST BASIS LABEL. The px values
+        # (and the fractional-rect basis + the pen mapping) all live in
+        # the DPI-VIRTUALIZED desktop space: this process declares no DPI
+        # awareness, so GetSystemMetrics AND MOUSEEVENTF_VIRTUALDESK both
+        # address the scaled space (a 2160-physical row at 150% reads
+        # 1440). Display, rect basis and injection share ONE space - no
+        # precision is lost; switching to physical pixels would move the
+        # injection basis too and is deliberately NOT done.
+        ttk.Label(fields_frame,
+                  text="px = DPI-scaled desktop space (the same space the "
+                       "pen injection addresses); mm = physical",
+                  foreground="#888888").grid(row=4, column=0, columnspan=4,
+                                             sticky="w", pady=(2, 0))
         # U424r3 R3-L3 (#424 item 3b): editable SENSITIVITY (px/mm) - the
         # derived handle s = rw/box_mm_w; editing it resizes the footprint
         # at fixed center (protocol DECISION: no schema change).

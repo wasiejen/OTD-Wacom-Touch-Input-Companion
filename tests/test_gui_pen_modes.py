@@ -208,6 +208,23 @@ def test_sensitivity_field_echoes_and_edits_the_footprint(modes_cfg, tk_root, mo
     assert float(win.rect_entries["s_px"].get()) == pytest.approx(0.5, rel=1e-3)
 
 
+def test_numeric_panel_labels_the_dpi_scaled_basis(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # U424r3 R3-L4 (#424 item 4): honest labeling after the basis
+    # investigation. RED-before 3a902da: no basis hint existed.
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    texts = []
+    stack = [win.pen_rect_panel]
+    while stack:
+        for child in stack.pop().winfo_children():
+            if hasattr(child, "cget"):
+                try:
+                    texts.append(str(child.cget("text")))
+                except tk.TclError:
+                    pass
+            stack.append(child)
+    assert any("DPI-scaled" in t and "injection" in t for t in texts)
+
+
 def test_rect_drag_updates_the_numeric_fields(modes_cfg, tk_root, monkeypatch, tmp_path):
     # Item 3a: drag/resize -> fields (one-way today). Driven through the
     # editor's own event handlers (no Tk event pump needed).
