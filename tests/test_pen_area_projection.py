@@ -203,9 +203,11 @@ def test_relative_lane_ignores_the_rect(state, config, stub_send_input):
     config.feature_toggles["pen_absolute_mode"] = False
     config.feature_toggles["pen_stretch_full_desktop"] = False
     dispatcher = ActionDispatcher(state, config)
-    for _ in range(4):
-        update_pen_cursor(state, dispatcher, config, SPEC_791, 120, 80,
-                          screen_metrics=SCREEN, pen_area_rect=RECT)
+    # The first report is the origin (no delta); moving positions after it
+    # must emit MOVE-only deltas.
+    for step in range(6):
+        update_pen_cursor(state, dispatcher, config, SPEC_791, 2000 * step,
+                          1500 * step, screen_metrics=SCREEN, pen_area_rect=RECT)
     assert stub_send_input
     for event in stub_send_input:
         assert event[0] == "mouse"
