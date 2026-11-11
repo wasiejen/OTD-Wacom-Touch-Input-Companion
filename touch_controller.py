@@ -2150,11 +2150,12 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
 
     screen_metrics (U376): synthetic (left, top, width_px, height_px) desktop
     extents for the tests; None resolves them from the system metrics.
-    pen_area_rect (U414 / #406): [rx, ry, rw, rh] virtual-desktop px from
-    the per-configuration lane (resolved by the caller only on an exact
-    display-key match), measured from the virtual-desktop origin like
-    `pen_area_norm_projection`'s datum contract; None runs the pre-U414
-    lanes byte-unchanged.
+    pen_area_rect (U414 / #406, U416 fractional): [rx, ry, rw, rh] FRACTIONS
+    (0..1) of the virtual-desktop union bounds, from the per-configuration
+    lane (resolved by the caller only on an exact display-key match). The
+    branch maps them straight through the normalized 0..65535 space, which
+    IS the MOUSEEVENTF_VIRTUALDESK space, so NO display metrics are read;
+    None runs the pre-U414 lanes byte-unchanged.
     """
     ad = action_dispatch
     absolute = config.feature_toggles.get("pen_absolute_mode", True)

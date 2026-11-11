@@ -303,9 +303,12 @@ def tablet_pictogram_layout(degrees, width=PICTOGRAM_WIDTH, height=PICTOGRAM_HEI
     strip_w, digitizer_w, digitizer_h, right_margin = _drawing_layout_rects(
         width, height, digitizer)
     # Ratios from images/wacom_intuos_pro_medium.png (viewed 2026-11-12):
-    # ring outer ~0.24 of body half-height, tight 3-px-ish gaps, key pitch
-    # 0.155, key circles fully inside the body edge (0.925 + r = 1.0).
-    dial_radius = half_h * 0.24
+    # tight groups (key pitch 0.155, inner gap 0.06), key circles fully
+    # inside the body edge, ring ~0.24 of half-height BUT CAPPED to the
+    # strip (U416 reviewer P1: the strip is narrower than the body height
+    # on every size, and on `large` a height-sized ring crossed the body
+    # and the seam - the ring must fit the STRIP it lives in).
+    dial_radius = min(half_h * 0.24, strip_w / 2 - half_h * 0.02)
     button_radius = half_h * 0.075
     step = half_h * 0.155
     inner_offset = dial_radius + half_h * 0.06 + button_radius
@@ -377,7 +380,9 @@ def pictogram_view_scale(layout, canvas_w, canvas_h, safety=0.93):
     features = ([(x, y, 0.0) for x, y in layout["rect"]]
                 + [(x, y, 0.0) for x, y in layout["pen_area"]]
                 + [(x, y, layout["button_radius"]) for _, x, y in layout["buttons"]]
-                + [(*layout["center"], layout["dial_radius"])])
+                # U416 P2-2: the DRAWN ring sits at ring_center (the old
+                # body-center reference was stale and unbounded the fit).
+                + [(*layout["ring_center"], layout["dial_radius"])])
     extents_x = max(abs(x) + radius for x, _, radius in features)
     extents_y = max(abs(y) + radius for _, y, radius in features)
     return min(canvas_w / 2 / extents_x, canvas_h / 2 / extents_y) * safety
@@ -441,11 +446,13 @@ class OrientationWidget(tk.Canvas):
         dial = layout["dial_radius"] * scale
         self.create_oval(cx - dial, cy - dial, cx + dial, cy + dial,
                          outline="#6a9fd8")
-        central = layout["button_radius"] * 1.2 * scale
+        # U416 P2-3 (PNG): the central button carries NO text (the label
+        # sprawled across the small round); keep it a plain filled round,
+        # capped inside the ring.
+        central = min(layout["button_radius"] * 1.2,
+                      layout["dial_radius"] * 0.55) * scale
         self.create_oval(cx - central, cy - central, cx + central, cy + central,
                          fill="#2e5a86", outline="#6a9fd8")
-        self.create_text(cx, cy, text="central", fill="#c8c8c8",
-                         font=("Segoe UI", 6))
 
         button = layout["button_radius"] * scale
         for number, x, y in layout["buttons"]:
@@ -560,8 +567,13 @@ class PenAreaEditor(ttk.Frame):
     the per-display-configuration `pen_area_map_<identity>` lane. Save
     re-resolves the running reader's display key immediately
     (`reset_pen_area_key_cache`), the #386 Apply Live shape for this
-    feature. Without display geometry or device identity the widget stays
-    inert and the isotropic default keeps running.
+    feature. U416 (maintainer black-canvas host): the editor ALWAYS builds
+    - bounds from vetted metrics, else the monitor-record union, else one
+    pad-aspect fallback rectangle; device identity gates SAVE only, never
+    editing. Fallback hosts share the empty-records display key; entries
+    live in per-identity lanes so different pads cannot collide, and a
+    pad-orientation flip between fallback sessions reinterprets fractions
+    under the flipped box aspect (rare, self-healing on next save).
     """
 
     CANVAS_W = 320.0
@@ -581,9 +593,11 @@ class PenAreaEditor(ttk.Frame):
         self.identity = conn.get("identity")
         metrics = virtual_desktop_metrics()
         records = monitor_records()
+        # U416 P2-4: no magic fallback product id - pen_specs_for_product
+        # itself names the unknown-id fallback (byte-stable notice +
+        # Medium extents), which is exactly the pad to draw here.
         product_id = conn.get("product_id")
-        specs = pen_specs_for_product(
-            product_id if product_id is not None else 789, config)
+        specs = pen_specs_for_product(product_id, config)
         box_mm = rotated_pen_box_mm(specs, config.orientation_degrees)
         bounds = None
         usable_records = []

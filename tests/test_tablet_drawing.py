@@ -254,6 +254,22 @@ def test_ring_centered_between_the_two_tight_groups():
     assert 0 <= gap < 2 * pitch
 
 
+@pytest.mark.parametrize("size", ("small", "medium", "large"))
+def test_ring_outer_circle_stays_inside_the_strip_at_every_size(size):
+    # U416 reviewer P1 (RED-before: dial_radius scaled off half_h overflowed
+    # the narrow strip on `large` by ~13.5 mm, crossing the body/seam).
+    # The ring must fit the STRIP, not the body height.
+    drawing = TABLET_DRAWINGS[size]
+    layout = tablet_pictogram_layout(0, drawing["body_mm"][0],
+                                     drawing["body_mm"][1],
+                                     digitizer=drawing["digitizer_mm"])
+    half_w = layout["rect"][2][0]
+    ring_x, ring_y = layout["ring_center"]
+    pen_left = min(x for x, _ in layout["pen_area"])
+    assert ring_x + layout["dial_radius"] <= pen_left
+    assert abs(ring_x) + layout["dial_radius"] <= half_w
+
+
 def test_all_key_circles_stay_inside_the_body_outline():
     # U415 carried P2-4 (outer keys overhang the body edge): fixed with
     # this round's group spacing. RED-before: |y|+r = 1.07*half_h failed.
