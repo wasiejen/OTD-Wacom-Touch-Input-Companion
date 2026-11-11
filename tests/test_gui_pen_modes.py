@@ -52,11 +52,11 @@ def modes_cfg(monkeypatch, tmp_path):
     return DriverConfig()
 
 
-def make_window(root, cfg, monkeypatch, tmp_path):
+def make_window(root, cfg, monkeypatch, tmp_path, product_id=791):
     monkeypatch.setattr(gui, "messagebox", StubBox())
     monkeypatch.setattr(gui, "ToastNotification", lambda *args, **kwargs: None)
     device_info = {"connection": {"config": cfg, "identity": "0123456789ab",
-                                  "product_id": 791},
+                                  "product_id": product_id},
                    "base_config": cfg, "manager": None}
     win = gui.SettingsWindow(root, TabletState(), cfg, device_info)
     CONSTRUCTED.append(win)
@@ -174,16 +174,16 @@ def test_rect_panel_keeps_its_place_across_mode_cycles(modes_cfg, tk_root, monke
         raw = win.tk.call("pack", "slaves", str(win._pen_scroll_frame))
         return [str(item).rstrip("'>").split(".")[-1] for item in raw]
 
+    # (U424r3 R3-L5: the wireless frame left the Pen tab - the stability
+    # anchor is now the rect panel's own index in the full slave order;
+    # a re-append moves it to the end and this index changes.)
     order0 = slaves()
     idx_rect = order0.index(win.pen_rect_panel._name)
-    idx_wireless = order0.index(win._pen_wireless_frame._name)
-    assert idx_rect < idx_wireless
     for mode in ("relative", "stretched", "relative", "rect_1to1"):
         win.pen_mode_var.set(mode)
         win._on_pen_mode_select()
     order1 = slaves()
     assert order1.index(win.pen_rect_panel._name) == idx_rect
-    assert order1.index(win._pen_wireless_frame._name) == idx_wireless
 
 
 # --- U424r3 R3-L3 (#424 round-3 item 3): bidirectional sync + px/mm handle ---
@@ -238,6 +238,50 @@ def test_rect_drag_updates_the_numeric_fields(modes_cfg, tk_root, monkeypatch, t
     assert float(win.rect_entries["y_px"].get()) == pytest.approx(model.rect[1], abs=1)
     assert float(win.rect_entries["s_px"].get()) == pytest.approx(
         model.rect[2] / model.box_mm[0], rel=1e-3)
+
+
+# --- U424r3 R3-L5 (#424 round-3 item 5): wireless lane -> Focused Device ---
+
+
+def test_wireless_lane_lives_in_focused_device_for_receiver_only(
+        modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before 8742a4f (scratch): lane was a Pen-tab child and ALWAYS
+    # visible; here = hidden for the wired 791, gridded under Focused
+    # Device for the receiver 132.
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)  # 791
+    lane = win._pen_wireless_frame
+    assert lane.winfo_manager() == ""
+    win2 = make_window(tk_root, modes_cfg, monkeypatch, tmp_path,
+                       product_id=132)
+    lane2 = win2._pen_wireless_frame
+    assert lane2.winfo_manager() == "grid"
+
+    def is_descendant(widget, ancestor):  # no winfo_ancestors on this Tk
+        master = widget.master
+        while master is not None:
+            if str(master) == str(ancestor):
+                return True
+            master = getattr(master, "master", None)
+        return False
+
+    assert is_descendant(lane2, win2._focused_device_frame)
+    assert not is_descendant(lane2, win2._pen_scroll_frame)
+
+
+def test_wireless_lane_syncs_dynamically_on_rebind(modes_cfg, tk_root, monkeypatch, tmp_path):
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)  # starts 791
+    lane = win._pen_wireless_frame
+    assert lane.winfo_manager() == ""
+    win.device_info["connection"] = {"config": modes_cfg,
+                                     "identity": "0123456789ab",
+                                     "product_id": 132}
+    win._rebind_focused_device()
+    assert lane.winfo_manager() == "grid"
+    win.device_info["connection"] = {"config": modes_cfg,
+                                     "identity": "0123456789ab",
+                                     "product_id": 791}
+    win._rebind_focused_device()
+    assert lane.winfo_manager() == ""
 
 
 # --- U424r3 R3-L2 (#424 round-3 item 2): Apply Live = single apply path ----

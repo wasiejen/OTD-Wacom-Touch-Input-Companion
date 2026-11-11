@@ -920,6 +920,7 @@ class SettingsWindow(tk.Toplevel):
         base = self.device_info["base_config"]
         frame = ttk.LabelFrame(container, text=" Focused Device ", padding=8)
         frame.pack(fill="x", pady=(0, 6))
+        self._focused_device_frame = frame  # U424r3 R3-L5 lane parent pin
 
         # Live device list (U87 a): the combo feeds on the running connections.
         ttk.Label(frame, text="Device:").grid(row=0, column=0, sticky="w")
@@ -966,10 +967,66 @@ class SettingsWindow(tk.Toplevel):
         device_btn = ttk.Button(frame, text="Save to Device",
                                 command=self.save_to_focused_device)
         device_btn.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        # U424r3 R3-L5 (#424 item 5): the wireless size lane lives HERE,
+        # inside Focused Device, visible only for the receiver (id 132).
+        self._build_wireless_lane(frame)
         ToolTip(device_btn, "Save ONLY this device's current values under its "
                             "identity key; the main Save button stays global.")
         frame.columnconfigure(3, weight=1)
         self._refresh_device_combo()
+
+    def _build_wireless_lane(self, parent):
+        """Wireless Tablet Size lane (U386 / #385), MOVED out of the Pen tab
+        into the Focused Device section (U424r3 R3-L5 / #424 item 5): it
+        belongs to the receiver identity, not to pen movement, and it is
+        shown ONLY while the focused device is the wireless receiver."""
+        wireless_frame = ttk.LabelFrame(
+            parent, text=" Wireless Tablet Size (receiver id 132) ", padding=10)
+        self._pen_wireless_frame = wireless_frame  # U424r3 pin name kept
+        self.wireless_size_notice = tk.Label(
+            wireless_frame, text="", wraplength=400, justify="left",
+            foreground="#a00000")
+        self.wireless_size_notice.grid(row=0, column=0, columnspan=2,
+                                       sticky="w", pady=(0, 6))
+        size_lbl = ttk.Label(wireless_frame, text="Tablet size:")
+        size_lbl.grid(row=1, column=0, sticky="w", pady=4)
+        self.wireless_size_combo = ttk.Combobox(
+            wireless_frame, values=(WIRELESS_SIZE_UNSET_LABEL,) + WIRELESS_TABLET_SIZES,
+            state="readonly", width=12)
+        self.wireless_size_combo.set(
+            getattr(self.config, "wireless_tablet_size", None) or WIRELESS_SIZE_UNSET_LABEL)
+        self.wireless_size_combo.grid(row=1, column=1, sticky="e", pady=4)
+        wireless_tip = ("Extents preset for the tablet behind the wireless receiver "
+                        "(product id 132, paired size not detectable): small = 788, "
+                        "medium = 789, large = 791. Unset shows a loud notice - there "
+                        "is no silent default. A change applies at the next device "
+                        "reconnect.")
+        ToolTip(size_lbl, wireless_tip)
+        ToolTip(self.wireless_size_combo, wireless_tip)
+        wireless_frame.columnconfigure(1, weight=1)
+        self._sync_wireless_lane()
+
+    def _sync_wireless_lane(self):
+        """Dynamic visibility (#424 item 5): render the lane ONLY when the
+        focused connection is the wireless receiver (id 132); hide and
+        refresh the combo echo on every focus/rebind change."""
+        frame = getattr(self, "_pen_wireless_frame", None)
+        if frame is None:
+            return
+        conn = self.device_info.get("connection") or {}
+        is_wireless = conn.get("product_id") == WIRELESS_RECEIVER_PRODUCT_ID
+        packed = frame.winfo_manager() == "grid"
+        if is_wireless and not packed:
+            frame.grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        elif not is_wireless and packed:
+            frame.grid_forget()
+        if hasattr(self, "wireless_size_combo"):
+            self._set_widget_value(
+                self.wireless_size_combo,
+                getattr(self.config, "wireless_tablet_size", None)
+                or WIRELESS_SIZE_UNSET_LABEL)
+        self._refresh_wireless_notice()
 
     def _live_connections(self):
         """The running device list; the focused connection when no manager is wired."""
@@ -1031,6 +1088,11 @@ class SettingsWindow(tk.Toplevel):
         self.alias_entry.insert(0, conn.get("alias") or "")
         self.device_label.configure(text=device_display_name(conn))
         self._rebind_config_widgets()
+        # U424r3 R3-L5: dynamic lane on focus change; duck-typed rebind
+        # harnesses (FakeDeviceWindow) carry neither the lane nor the sync.
+        sync_lane = getattr(self, "_sync_wireless_lane", None)
+        if sync_lane is not None:
+            sync_lane()
 
     @staticmethod
     def _set_widget_value(widget, text):
@@ -1520,40 +1582,6 @@ class SettingsWindow(tk.Toplevel):
         self._sync_rect_entries()
         self._sync_mode_panels()
 
-        # --- 2. Wireless Tablet Size Frame (U386 / TODO #385) ---
-        # The wireless receiver (id 132) shares one product id across every
-        # tablet size and cannot detect its paired tablet, so the size is a
-        # user choice with NO silent default (planner ruling): an unset size
-        # shows the loud notice below while a receiver connection is live.
-        wireless_frame = ttk.LabelFrame(
-            scroll_frame, text=" Wireless Tablet Size (receiver id 132) ", padding=10)
-        self._pen_wireless_frame = wireless_frame  # U424r3 pin + L5 move
-        wireless_frame.pack(fill="x", padx=10, pady=8, expand=True)
-
-        self.wireless_size_notice = tk.Label(
-            wireless_frame, text="", wraplength=400, justify="left",
-            foreground="#a00000")
-        self.wireless_size_notice.grid(row=0, column=0, columnspan=2,
-                                       sticky="w", pady=(0, 6))
-
-        size_lbl = ttk.Label(wireless_frame, text="Tablet size:")
-        size_lbl.grid(row=1, column=0, sticky="w", pady=4)
-        self.wireless_size_combo = ttk.Combobox(
-            wireless_frame, values=(WIRELESS_SIZE_UNSET_LABEL,) + WIRELESS_TABLET_SIZES,
-            state="readonly", width=12)
-        self.wireless_size_combo.set(
-            getattr(self.config, "wireless_tablet_size", None) or WIRELESS_SIZE_UNSET_LABEL)
-        self.wireless_size_combo.grid(row=1, column=1, sticky="e", pady=4)
-
-        wireless_tip = ("Extents preset for the tablet behind the wireless receiver "
-                        "(product id 132, paired size not detectable): small = 788, "
-                        "medium = 789, large = 791. Unset shows a loud notice - there "
-                        "is no silent default. A change applies at the next device "
-                        "reconnect.")
-        ToolTip(size_lbl, wireless_tip)
-        ToolTip(self.wireless_size_combo, wireless_tip)
-        self._refresh_wireless_notice()
-        wireless_frame.columnconfigure(1, weight=1)
 
         # --- 3. Pen Button Mapping Frame ---
         button_frame = ttk.LabelFrame(scroll_frame, text=" Pen Button Mapping ", padding=10)
