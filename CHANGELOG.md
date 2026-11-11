@@ -4,6 +4,19 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261112-0330:
+
+  - REDREW the Motion-tab orientation pictogram (U415 / TODO #407 ruling):
+    it is now a vector tablet DRAWING (tkinter shapes, no image file; the
+    product PNG is construction reference only) sized by the SELECTED
+    tablet size (small / medium / large; the wireless receiver falls
+    through the Pen-tab size choice, unset = medium). The drawing shows
+    the express-key strip LEFT ONLY (the old graphic mirrored an empty
+    column), the digitizer (pen-area) rect, the central dial ring +
+    round, and keys 1-8 with fixed labels. The view scale refits per
+    rotation angle, so the graphic now stays INSIDE its frame at every
+    angle (old defect: escaped at 90 deg).
+
 261112-0220:
 
   - ADDED the opt-in `WTD_METRICS_DIAG=1` startup readout (U412 / #412):
