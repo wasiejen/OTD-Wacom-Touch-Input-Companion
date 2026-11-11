@@ -1753,6 +1753,10 @@ def pen_area_norm_projection(rect_px, extent_w, extent_h, screen_w, screen_h):
     off_x = rx * 65535 / screen_w places the box edge at rect px rx;
     scale_x = rw * 65535 / (extent_w * screen_w) spans rw px for the full
     rotated count extent; same per axis for y.
+
+    Datum (U414 STEP-2 P1): rx/ry are pixels RELATIVE TO THE VIRTUAL
+    DESKTOP ORIGIN - the (left, top) of the metrics bounding rect, i.e.
+    MOUSEEVENTF_VIRTUALDESK's own zero - not absolute screen coordinates.
     """
     rx, ry, rw, rh = rect_px
     return (rx * PEN_VIRTUAL_RESOLUTION / screen_w,
@@ -2022,7 +2026,9 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
     extents for the tests; None resolves them from the system metrics.
     pen_area_rect (U414 / #406): [rx, ry, rw, rh] virtual-desktop px from
     the per-configuration lane (resolved by the caller only on an exact
-    display-key match); None runs the pre-U414 lanes byte-unchanged.
+    display-key match), measured from the virtual-desktop origin like
+    `pen_area_norm_projection`'s datum contract; None runs the pre-U414
+    lanes byte-unchanged.
     """
     ad = action_dispatch
     absolute = config.feature_toggles.get("pen_absolute_mode", True)

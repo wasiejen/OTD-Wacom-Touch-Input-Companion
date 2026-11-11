@@ -179,6 +179,57 @@ def cfg_state_config(monkeypatch, tmp_path):
     return DriverConfig(), TabletState()
 
 
+def test_rect_datum_is_virtual_desktop_origin_relative(state, config,
+                                                        stub_send_input):
+    # U414 STEP-2 P1: rx/ry are pixels from the virtual-desktop origin
+    # (metrics left/top), NOT absolute coordinates. On the maintainer's
+    # pivoted layout the virtual origin is (-1440, 0); an implementation
+    # that baked the absolute datum in would land the near corner 1440 px
+    # left of the rect here while the (0,0)-origin tests pass.
+    origin_screen = (-1440, 0, 4880, 2560)
+    nx0, ny0 = _map(state, config, SPEC_791, 0, 0, origin_screen,
+                    stub_send_input, RECT)
+    stub_send_input.clear()
+    nx1, ny1 = _map(state, config, SPEC_791, SPEC_791["max_x"],
+                    SPEC_791["max_y"], origin_screen, stub_send_input, RECT)
+    assert (_px(nx0, 4880), _px(ny0, 2560)) == (RECT[0], RECT[1])
+    assert (_px(nx1, 4880), _px(ny1, 2560)) == (RECT[0] + RECT[2],
+                                                RECT[1] + RECT[3])
+
+
+def test_relative_lane_ignores_the_rect(state, config, stub_send_input):
+    # U414 STEP-2 P2-3: explicit relative control - the rect must never
+    # touch the relative path (no absolute flags, no rect-sized deltas).
+    config.feature_toggles["pen_absolute_mode"] = False
+    config.feature_toggles["pen_stretch_full_desktop"] = False
+    dispatcher = ActionDispatcher(state, config)
+    for _ in range(4):
+        update_pen_cursor(state, dispatcher, config, SPEC_791, 120, 80,
+                          screen_metrics=SCREEN, pen_area_rect=RECT)
+    assert stub_send_input
+    for event in stub_send_input:
+        assert event[0] == "mouse"
+        assert event[1] == 0x0001  # MOUSEEVENTF_MOVE only, no ABSOLUTE bit
+
+
+def test_cached_display_key_caches_none_until_ttl(monkeypatch):
+    # U414 STEP-2 P2-2: the None path must not re-walk monitors per report
+    # on enumeration-failed hosts.
+    calls = []
+
+    def fake_records():
+        calls.append(1)
+        return []
+
+    monkeypatch.setattr(touch_controller, "monitor_records", fake_records)
+    touch_controller.reset_pen_area_key_cache()
+    assert cached_display_key(now=100.0) is None
+    assert cached_display_key(now=101.0) is None
+    assert len(calls) == 1
+    assert cached_display_key(now=103.0) is None
+    assert len(calls) == 2
+
+
 def test_cached_display_key_walks_once_per_ttl(monkeypatch):
     calls = []
 
