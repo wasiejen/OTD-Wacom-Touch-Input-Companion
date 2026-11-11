@@ -552,6 +552,41 @@ class PenAreaCanvasModel:
         self.rect = [rx, ry, w, h]
         return list(self.rect)
 
+    def match_box_aspect(self, s=None):
+        """Re-derive the rect shape to the current box aspect (U424r5
+        R5-E / #424 item E, watch resolved: the SHAPE follows
+        orientation). Rule: keep the CENTER and the SENSITIVITY s
+        (new w = s x new box_w, height follows the new aspect), clamp
+        inside the union. No-op (tolerance 1e-6 rel) when the rect
+        already matches, so normal loads never move the stored rect.
+        `s` = the sensitivity of the PREVIOUS box (callers that swap
+        box_mm first pass it explicitly; None = derive from the model's
+        own box, i.e. same-box re-derivation at build).
+        """
+        bw, bh = self.box_mm
+        if bw <= 0 or bh <= 0 or self.rect[2] <= 0 or self.rect[3] <= 0:
+            return list(self.rect)
+        want = bw / bh
+        if abs(want - self.rect[2] / self.rect[3]) <= 1e-6 * want:
+            return list(self.rect)
+        if s is None:
+            s = self.rect[2] / bw
+        cx = self.rect[0] + self.rect[2] / 2.0
+        cy = self.rect[1] + self.rect[3] / 2.0
+        w = s * bw
+        h = w * bh / bw
+        # U424r5 R5-E: when the sensitivity-exact box does not FIT the
+        # union (a 90-deg tall box on a wide desktop), fit it back down
+        # with the ASPECT kept (s lowers) - the shape must always agree
+        # with the box, never clamp into a wrong aspect.
+        fit = min(1.0, self.desktop_w / w, self.desktop_h / h)
+        w *= fit
+        h *= fit
+        rx = min(max(cx - w / 2.0, 0.0), self.desktop_w - w)
+        ry = min(max(cy - h / 2.0, 0.0), self.desktop_h - h)
+        self.rect = [rx, ry, w, h]
+        return list(self.rect)
+
     def monitor_canvas_rects(self):
         """Monitor outline boxes in canvas px, origin = virtual-desktop origin.
 
@@ -676,6 +711,10 @@ class PenAreaEditor(ttk.Frame):
             bounds, usable_records, self.CANVAS_W, self.CANVAS_H,
             box_mm[0], box_mm[1],
             self._stored_rect(usable_records, bounds[2], bounds[3]))
+        # U424r5 R5-E: a legacy/stale stored rect that does not match the
+        # current box aspect is re-derived at BUILD (canvas-only; the
+        # next Apply persists).
+        self.model.match_box_aspect()
         self.canvas = tk.Canvas(self, width=int(self.CANVAS_W),
                                 height=int(self.CANVAS_H), bg="#262626",
                                 borderwidth=1, highlightthickness=0)
@@ -724,8 +763,16 @@ class PenAreaEditor(ttk.Frame):
         """
         if self.model is None:
             return
+        # U424r5 R5-E (#424 item E, watch resolved): the DRAWN SHAPE
+        # follows too - re-derived at fixed center + the OLD box's
+        # sensitivity (s rides across the swap when the union fits), no
+        # pointer interaction required. Apply persists it (the window
+        # reorients BEFORE persisting); the pen then follows the entry.
         box = rotated_pen_box_mm(pen_specs, orientation_degrees)
+        old_bw = self.model.box_mm[0]
+        s = self.model.rect[2] / old_bw if old_bw > 0 else None
         self.model.box_mm = (float(box[0]), float(box[1]))
+        self.model.match_box_aspect(s)
         self._redraw()
 
     def persist_entry(self):
@@ -1710,8 +1757,17 @@ class SettingsWindow(tk.Toplevel):
         """
         unset = getattr(self.config, "wireless_tablet_size", None) is None
         show = unset and self._wireless_receiver_live()
-        self.wireless_size_notice.configure(
-            text=WIRELESS_SIZE_NOTICE_TEXT if show else "")
+        notice = self.wireless_size_notice
+        notice.configure(text=WIRELESS_SIZE_NOTICE_TEXT if show else "")
+        # U424r5 R5-F (#424 item F): an empty label still asks one line
+        # of grid height - UNMANAGE the row when there is no text, so no
+        # empty residue row stays above the tablet-size picker.
+        managed = notice.winfo_manager() == "grid"
+        if show and not managed:
+            notice.grid(row=0, column=0, columnspan=2, sticky="w",
+                        pady=(0, 6))
+        elif not show and managed:
+            notice.grid_remove()
 
     def _build_buttons_tab(self):
         canvas = tk.Canvas(self.tab_buttons, borderwidth=0)
@@ -2019,14 +2075,15 @@ class SettingsWindow(tk.Toplevel):
         # the 1:1 rect rides it like every other setting (the editor's old
         # "Save Pen Area" button is gone). Duck-typed callers without the
         # editor lane are skipped.
-        editor = getattr(self, "pen_area_editor", None)
-        if editor is not None:
-            editor.persist_entry()
-        # U424r4 R4-B: editor follows an applied orientation change;
-        # duck-typed apply harnesses carry neither the editor nor the hook.
+        # U424r5 R5-E: reorient BEFORE persist so Apply Live stores the
+        # orientation-matched shape (order matters: persist writes the
+        # editor's current rect).
         reorient = getattr(self, "_reorient_pen_editor", None)
         if reorient is not None:
             reorient()
+        editor = getattr(self, "pen_area_editor", None)
+        if editor is not None:
+            editor.persist_entry()
 
         # Refresh only when the window actually built the wireless lane:
         # duck-typed apply_settings callers (FakeWindow pins) carry neither

@@ -275,6 +275,33 @@ def test_wireless_lane_lives_in_focused_device_for_receiver_only(
     assert not is_descendant(lane2, win2._pen_scroll_frame)
 
 
+def test_wireless_notice_row_fully_removed_when_size_set(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # U424r5 R5-F (#424 item F): clearing the notice must REMOVE its
+    # grid row - no empty residue above the picker.
+    # RED-before dcf07f3: the label stayed managed (text "" still asks
+    # one line of grid height).
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path,
+                      product_id=132)
+    lane = win._pen_wireless_frame
+
+    def managed_slaves():
+        return list(win.tk.call("grid", "slaves", str(lane)))
+
+    assert win.wireless_size_notice.cget("text") != ""
+    assert win.wireless_size_notice.winfo_manager() == "grid"
+    assert len(managed_slaves()) == 3  # notice row + label + picker
+    modes_cfg.wireless_tablet_size = "large"
+    win._refresh_wireless_notice()
+    assert win.wireless_size_notice.cget("text") == ""
+    assert win.wireless_size_notice.winfo_manager() == ""
+    assert len(managed_slaves()) == 2  # label + picker only, no empty row
+    # and it comes back when the size is unset again (no one-way state)
+    modes_cfg.wireless_tablet_size = None
+    win._refresh_wireless_notice()
+    assert win.wireless_size_notice.winfo_manager() == "grid"
+    assert len(managed_slaves()) == 3
+
+
 def test_wireless_lane_syncs_dynamically_on_rebind(modes_cfg, tk_root, monkeypatch, tmp_path):
     win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)  # starts 791
     lane = win._pen_wireless_frame
@@ -317,7 +344,16 @@ def test_apply_writes_the_rect_entry_like_other_settings(modes_cfg, tk_root, mon
     assert win.apply_settings() is True
     entries = modes_cfg.pen_area_maps["0123456789ab"]["entries"]
     frac = entries[0]["rect_frac"]
-    assert frac == pytest.approx([0.0, 0.0, 0.5, 0.5])
+    # U424r5 R5-E: apply reorients BEFORE persisting, so the stored frac
+    # is exactly the editor's CURRENT (orientation-matched) rect.
+    expected = [model.rect[0] / model.desktop_w,
+                model.rect[1] / model.desktop_h,
+                model.rect[2] / model.desktop_w,
+                model.rect[3] / model.desktop_h]
+    assert frac == pytest.approx(expected)
+    # ASPECT compared in PX space (frac ratios carry the desktop aspect)
+    assert model.rect[2] / model.rect[3] == pytest.approx(
+        model.box_mm[0] / model.box_mm[1], rel=1e-6)
 
 
 # --- U424r4 R4-B (#424 round-4 item B): orientation sync (pen path wins) ---
@@ -339,11 +375,77 @@ def test_orientation_apply_reorients_editor_box_not_the_footprint(
     # Editor agrees with the pen: rotated box mm...
     assert model.box_mm == pytest.approx(rotated_pen_box_mm(specs, 90))
     assert model.box_mm[0] == pytest.approx(rotated_pen_box_mm(specs, 0)[1])
-    # ...and the SAME rect px footprint the pen maps (pen path wins).
-    assert model.rect == footprint_px
+    # U424r5 R5-E SUPERSEDES the R4-B "footprint EXACTLY unchanged"
+    # contract (round-5 ruling E, watch resolved): the SHAPE now follows
+    # orientation - center-kept aspect re-derivation; Apply persists the
+    # new shape so pen and editor stay one datum.
+    box90 = rotated_pen_box_mm(specs, 90)
+    assert model.rect[2] / model.rect[3] == pytest.approx(
+        box90[0] / box90[1], rel=1e-6)
+    # (center-keep-with-fit-clamp is pinned exactly in the no-pointer
+    # test at a sensitivity that FITS; here the 0-deg default does not
+    # fit rotated at its s, so the fit-clamp may ride an edge - assert
+    # union-validity instead.)
+    assert model.rect[0] >= 0 and model.rect[1] >= 0
+    assert model.rect[0] + model.rect[2] <= model.desktop_w + 1e-6
+    assert model.rect[1] + model.rect[3] <= model.desktop_h + 1e-6
     # Sensitivity echo follows the new box (w axis).
     assert float(win.rect_entries["s_px"].get()) == pytest.approx(
         model.rect[2] / model.box_mm[0], rel=1e-3)
+
+
+def test_orientation_reorients_the_drawn_rect_shape_no_pointer(
+        modes_cfg, tk_root, monkeypatch, tmp_path):
+    # U424r5 R5-E (#424 item E): SHAPE follows orientation (watch
+    # resolved - pen-wins presentation accepted, now the shape pushes).
+    # RED-before 3e20f3a: rect aspect stayed 0-deg until a handle grab.
+    from touch_controller import rotated_pen_box_mm
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    model = win.pen_area_editor.model
+    model.apply_scale(2.0)  # a sensitivity that FITS both orientations
+    box0 = model.box_mm
+    center = (model.rect[0] + model.rect[2] / 2,
+              model.rect[1] + model.rect[3] / 2)
+    s0 = model.rect[2] / box0[0]
+    box90 = rotated_pen_box_mm(pen_specs_for(791, modes_cfg), 90)
+    modes_cfg.orientation_degrees = 90
+    win._reorient_pen_editor()  # the Apply/rebind orientation event path
+    want_ar = box90[0] / box90[1]
+    assert model.rect[2] / model.rect[3] == pytest.approx(want_ar, rel=1e-6)
+    # center kept, sensitivity kept when it fits (w = s x new box_w)
+    assert (model.rect[0] + model.rect[2] / 2,
+            model.rect[1] + model.rect[3] / 2) == pytest.approx(center, abs=1e-6)
+    assert model.rect[2] / box90[0] == pytest.approx(s0, rel=1e-6)
+    assert 0 <= model.rect[0] and model.rect[2] <= model.desktop_w
+
+
+def test_orientation_apply_then_reload_keeps_the_new_shape(
+        modes_cfg, tk_root, monkeypatch, tmp_path):
+    # Apply Live persists the re-derived shape; a fresh window (reload)
+    # shows the same shape - and a legacy mismatched stored rect is
+    # re-derived at BUILD time too (canvas-only until next Apply).
+    from touch_controller import display_key_for_records, rotated_pen_box_mm
+    modes_cfg.set_pen_area_entry(
+        "0123456789ab", display_key_for_records([DISP1, DISP2]),
+        [DISP1, DISP2],
+        [0.125, 0.125, 0.75, 0.5])  # deliberately 0-deg-aspect legacy
+    modes_cfg.orientation_degrees = 90
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    model = win.pen_area_editor.model
+    box90 = rotated_pen_box_mm(pen_specs_for(791, modes_cfg), 90)
+    assert model.rect[2] / model.rect[3] == pytest.approx(
+        box90[0] / box90[1], rel=1e-6)
+    stored_before = win.apply_settings() and True
+    assert stored_before is True
+    win2 = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    assert win2.pen_area_editor.model.rect[2] / \
+        win2.pen_area_editor.model.rect[3] == pytest.approx(
+            box90[0] / box90[1], rel=1e-3)
+
+
+def pen_specs_for(product_id, cfg):
+    from touch_controller import pen_specs_for_product
+    return pen_specs_for_product(product_id, cfg)
 
 
 def test_editor_built_after_orientation_shows_rotated_box(modes_cfg, tk_root, monkeypatch, tmp_path):
