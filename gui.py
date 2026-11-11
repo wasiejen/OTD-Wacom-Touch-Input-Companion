@@ -529,6 +529,21 @@ class PenAreaCanvasModel:
         self.rect = [rx, ry, rw, rh]
         return list(self.rect)
 
+    def apply_scale(self, px_mm):
+        """Resize the footprint to the wanted sensitivity px/mm, keeping its
+        CENTER (U424r3 R3-L3, #424 item 3b; protocol DECISION: s is the
+        derived handle s = rw_px / box_mm_w - aspect-lock makes one scalar
+        suffice; footprint semantics and the pen math are unchanged)."""
+        cx = self.rect[0] + self.rect[2] / 2
+        cy = self.rect[1] + self.rect[3] / 2
+        w = min(max(float(px_mm) * self.box_mm[0], self.MIN_RECT_PX),
+                self.desktop_w)
+        h = min(w * self.box_mm[1] / self.box_mm[0], self.desktop_h)
+        rx = min(max(cx - w / 2.0, 0.0), self.desktop_w - w)
+        ry = min(max(cy - h / 2.0, 0.0), self.desktop_h - h)
+        self.rect = [rx, ry, w, h]
+        return list(self.rect)
+
     def monitor_canvas_rects(self):
         """Monitor outline boxes in canvas px, origin = virtual-desktop origin.
 
@@ -611,9 +626,13 @@ class PenAreaEditor(ttk.Frame):
     CANVAS_H = 120.0
     HANDLE = 8
 
-    def __init__(self, parent, config, device_info, **kwargs):
+    def __init__(self, parent, config, device_info, on_change=None, **kwargs):
         super().__init__(parent, **kwargs)
         self.config = config
+        # U424r3 R3-L3 (#424 item 3a): the window hooks this to sync the
+        # numeric fields when the model moves (drag/resize) - the sync is
+        # bidirectional.
+        self.on_change = on_change
         conn = (device_info or {}).get("connection") or {}
         # U416 / #406 defect: the model ALWAYS builds (the canvas is
         # editable everywhere); device identity names the lane, so it is
@@ -657,10 +676,12 @@ class PenAreaEditor(ttk.Frame):
         self.readout_label = ttk.Label(self, text=self.model.readout(),
                                        width=72, anchor="w")
         self.readout_label.grid(row=1, column=0, columnspan=2, sticky="w")
-        ttk.Button(self, text="Save Pen Area", command=self.save_entry).grid(
-            row=2, column=0, sticky="w", pady=(4, 0))
+        # U424r3 R3-L2 (#424 item 2): no "Save Pen Area" - Apply Live
+        # persists the rect (persist_entry, driven by the window's Apply).
+        # "Remove Rect" stays here, inside the 1:1 panel, and never
+        # switches modes.
         ttk.Button(self, text="Remove Rect", command=self.remove_entry).grid(
-            row=2, column=1, sticky="e", pady=(4, 0))
+            row=2, column=0, columnspan=2, sticky="w", pady=(4, 0))
         self._drag_anchor = None
         self._drag_mode = "rect"
         self.canvas.bind("<ButtonPress-1>", self._press)
@@ -678,8 +699,14 @@ class PenAreaEditor(ttk.Frame):
         fx, fy, fw, fh = entry["rect_frac"]
         return [fx * bounds_w, fy * bounds_h, fw * bounds_w, fh * bounds_h]
 
-    def save_entry(self):
-        """Store the model rect (as FRACTIONS) under the current key (L1)."""
+    def persist_entry(self):
+        """Write the model rect (FRACTIONS) under the current key.
+
+        U414 L1; U424r3 R3-L2: driven by the window's Apply Live (the old
+        standalone "Save Pen Area" button was removed). No file write here
+        - persistence follows Save like every other setting; the key cache
+        reset keeps the running reader live.
+        """
         if self.model is None or self.identity is None:
             return False
         key = display_key_for_records(self.model.records)
@@ -688,7 +715,6 @@ class PenAreaEditor(ttk.Frame):
         self.config.set_pen_area_entry(
             self.identity, key, self.model.records,
             [rx / w, ry / h, rw / w, rh / h])
-        self.config.save_to_file()
         reset_pen_area_key_cache()
         return True
 
@@ -721,6 +747,8 @@ class PenAreaEditor(ttk.Frame):
                                event.y - self._drag_anchor[1])
             self._drag_anchor = (event.x, event.y)
         self._redraw()
+        if self.on_change is not None:
+            self.on_change()
 
     def _redraw(self):
         self.canvas.delete("all")
@@ -892,6 +920,7 @@ class SettingsWindow(tk.Toplevel):
         base = self.device_info["base_config"]
         frame = ttk.LabelFrame(container, text=" Focused Device ", padding=8)
         frame.pack(fill="x", pady=(0, 6))
+        self._focused_device_frame = frame  # U424r3 R3-L5 lane parent pin
 
         # Live device list (U87 a): the combo feeds on the running connections.
         ttk.Label(frame, text="Device:").grid(row=0, column=0, sticky="w")
@@ -938,10 +967,66 @@ class SettingsWindow(tk.Toplevel):
         device_btn = ttk.Button(frame, text="Save to Device",
                                 command=self.save_to_focused_device)
         device_btn.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        # U424r3 R3-L5 (#424 item 5): the wireless size lane lives HERE,
+        # inside Focused Device, visible only for the receiver (id 132).
+        self._build_wireless_lane(frame)
         ToolTip(device_btn, "Save ONLY this device's current values under its "
                             "identity key; the main Save button stays global.")
         frame.columnconfigure(3, weight=1)
         self._refresh_device_combo()
+
+    def _build_wireless_lane(self, parent):
+        """Wireless Tablet Size lane (U386 / #385), MOVED out of the Pen tab
+        into the Focused Device section (U424r3 R3-L5 / #424 item 5): it
+        belongs to the receiver identity, not to pen movement, and it is
+        shown ONLY while the focused device is the wireless receiver."""
+        wireless_frame = ttk.LabelFrame(
+            parent, text=" Wireless Tablet Size (receiver id 132) ", padding=10)
+        self._pen_wireless_frame = wireless_frame  # U424r3 pin name kept
+        self.wireless_size_notice = tk.Label(
+            wireless_frame, text="", wraplength=400, justify="left",
+            foreground="#a00000")
+        self.wireless_size_notice.grid(row=0, column=0, columnspan=2,
+                                       sticky="w", pady=(0, 6))
+        size_lbl = ttk.Label(wireless_frame, text="Tablet size:")
+        size_lbl.grid(row=1, column=0, sticky="w", pady=4)
+        self.wireless_size_combo = ttk.Combobox(
+            wireless_frame, values=(WIRELESS_SIZE_UNSET_LABEL,) + WIRELESS_TABLET_SIZES,
+            state="readonly", width=12)
+        self.wireless_size_combo.set(
+            getattr(self.config, "wireless_tablet_size", None) or WIRELESS_SIZE_UNSET_LABEL)
+        self.wireless_size_combo.grid(row=1, column=1, sticky="e", pady=4)
+        wireless_tip = ("Extents preset for the tablet behind the wireless receiver "
+                        "(product id 132, paired size not detectable): small = 788, "
+                        "medium = 789, large = 791. Unset shows a loud notice - there "
+                        "is no silent default. A change applies at the next device "
+                        "reconnect.")
+        ToolTip(size_lbl, wireless_tip)
+        ToolTip(self.wireless_size_combo, wireless_tip)
+        wireless_frame.columnconfigure(1, weight=1)
+        self._sync_wireless_lane()
+
+    def _sync_wireless_lane(self):
+        """Dynamic visibility (#424 item 5): render the lane ONLY when the
+        focused connection is the wireless receiver (id 132); hide and
+        refresh the combo echo on every focus/rebind change."""
+        frame = getattr(self, "_pen_wireless_frame", None)
+        if frame is None:
+            return
+        conn = self.device_info.get("connection") or {}
+        is_wireless = conn.get("product_id") == WIRELESS_RECEIVER_PRODUCT_ID
+        packed = frame.winfo_manager() == "grid"
+        if is_wireless and not packed:
+            frame.grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        elif not is_wireless and packed:
+            frame.grid_forget()
+        if hasattr(self, "wireless_size_combo"):
+            self._set_widget_value(
+                self.wireless_size_combo,
+                getattr(self.config, "wireless_tablet_size", None)
+                or WIRELESS_SIZE_UNSET_LABEL)
+        self._refresh_wireless_notice()
 
     def _live_connections(self):
         """The running device list; the focused connection when no manager is wired."""
@@ -1003,6 +1088,11 @@ class SettingsWindow(tk.Toplevel):
         self.alias_entry.insert(0, conn.get("alias") or "")
         self.device_label.configure(text=device_display_name(conn))
         self._rebind_config_widgets()
+        # U424r3 R3-L5: dynamic lane on focus change; duck-typed rebind
+        # harnesses (FakeDeviceWindow) carry neither the lane nor the sync.
+        sync_lane = getattr(self, "_sync_wireless_lane", None)
+        if sync_lane is not None:
+            sync_lane()
 
     @staticmethod
     def _set_widget_value(widget, text):
@@ -1273,15 +1363,26 @@ class SettingsWindow(tk.Toplevel):
         self._sync_mode_panels()
 
     def _sync_mode_panels(self):
+        # U424r3 R3-L1 (#424 item 1): panels pack with an explicit
+        # `after=` anchor so a mode cycle can never re-append them at the
+        # tab bottom (his bug); the speed row is relative-mode-only.
         mode = self.pen_mode_var.get()
         for panel, visible in ((self.stretch_screen_panel,
                                 mode == "stretched"),
                                (self.pen_rect_panel, mode == "rect_1to1")):
             packed = panel.winfo_manager() == "pack"  # not pack_info:
             if visible and not packed:
-                panel.pack(fill="x", padx=10, pady=(0, 8), expand=True)
+                panel.pack(fill="x", padx=10, pady=(0, 8), expand=True,
+                           after=self._pen_movement_frame)
             elif not visible and packed:
                 panel.pack_forget()
+        show_speed = mode == "relative"
+        for widget, row, col, span, sticky in self._pen_speed_widgets:
+            if show_speed and widget.winfo_manager() != "grid":
+                widget.grid(row=row, column=col, columnspan=span,
+                            sticky=sticky, pady=4)
+            elif not show_speed and widget.winfo_manager() == "grid":
+                widget.grid_remove()
 
     def _on_stretch_screens_change(self):
         # Ruling 1: the checkboxes RESTRICT the stretch target; all
@@ -1305,6 +1406,9 @@ class SettingsWindow(tk.Toplevel):
             self.rect_entries[f"{key}_mm"].delete(0, tk.END)
             self.rect_entries[f"{key}_mm"].insert(
                 0, f"{rect[i] * pen_mm_per_px(dpi, axis):.1f}")
+        self.rect_entries["s_px"].delete(0, tk.END)
+        self.rect_entries["s_px"].insert(
+            0, f"{rect[2] / model.box_mm[0]:.4f}")
 
     def _apply_rect_field(self, source_key):
         # Ruling 2: px and mm entries are bidirectional, aspect-locked
@@ -1321,6 +1425,17 @@ class SettingsWindow(tk.Toplevel):
         except ValueError:
             self._sync_rect_entries()  # revert the bad edit
             return
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            # U424r3 reviewer P2-2: float() accepts literal "nan"/"inf";
+            # non-finite entries revert like any bad edit (never reach the
+            # model).
+            self._sync_rect_entries()
+            return
+        if field == "s":  # sensitivity handle (U424r3 R3-L3)
+            model.apply_scale(raw)
+            editor._redraw()
+            self._sync_rect_entries()
+            return
         dpi = virtual_desktop_dpi()
         axis = 1 if field in ("y", "h") else 0
         value_px = raw / pen_mm_per_px(dpi, axis) if unit == "mm" else raw
@@ -1335,6 +1450,7 @@ class SettingsWindow(tk.Toplevel):
         canvas = tk.Canvas(self.tab_pen, borderwidth=0)
         scrollbar = ttk.Scrollbar(self.tab_pen, orient="vertical", command=canvas.yview)
         scroll_frame = ttk.Frame(canvas)
+        self._pen_scroll_frame = scroll_frame  # U424r3: pack-order pin target
 
         scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
@@ -1373,24 +1489,32 @@ class SettingsWindow(tk.Toplevel):
                 "Stretched: the whole pen box fills the selected screens. "
                 "1:1: the pen box maps onto a stored rectangle at one px/mm.")
 
+        # U424r3 R3-L1 (#424 item 1): the Speed row is RELATIVE-mode-only
+        # (contextual); Pressure Threshold is mode-independent. Widgets
+        # carry their grid spec so _sync_mode_panels can hide/show rows.
+        self._pen_speed_widgets = []
         pen_fields = [
-            ("Speed (px/mm):", "pen_speed", self.config.pen_speed),
-            ("Pressure Threshold:", "pen_pressure_threshold", self.config.pen_pressure_threshold),
+            ("Speed (px/mm):", "pen_speed", self.config.pen_speed, 4),
+            ("Pressure Threshold:", "pen_pressure_threshold", self.config.pen_pressure_threshold, 5),
         ]
 
-        for idx, (label_text, key, initial_val) in enumerate(pen_fields, start=4):
+        for label_text, key, initial_val, row_idx in pen_fields:
             lbl = ttk.Label(movement_frame, text=label_text)
-            lbl.grid(row=idx, column=0, sticky="w", pady=4)
+            lbl.grid(row=row_idx, column=0, sticky="w", pady=4)
             ent = ttk.Entry(movement_frame, width=12)
             ent.insert(0, str(initial_val))
-            ent.grid(row=idx, column=1, sticky="e", pady=4)
+            ent.grid(row=row_idx, column=1, sticky="e", pady=4)
             self.entries[key] = ent
+            if key == "pen_speed":
+                self._pen_speed_widgets = [(lbl, row_idx, 0, 1, "w"),
+                                            (ent, row_idx, 1, 1, "e")]
 
             if key in pen_tooltips:
                 ToolTip(lbl, pen_tooltips[key])
                 ToolTip(ent, pen_tooltips[key])
 
         movement_frame.columnconfigure(1, weight=1)
+        self._pen_movement_frame = movement_frame
 
         # --- 1b. Stretched-mode screen subset panel (U424 / ruling 1) ---
         # Checkboxes RESTRICT the stretch target: unselected screens are
@@ -1434,45 +1558,36 @@ class SettingsWindow(tk.Toplevel):
             mm_entry.bind("<FocusOut>", lambda e, k=f"{field_key}_mm": self._apply_rect_field(k))
             self.rect_entries[f"{field_key}_px"] = px_entry
             self.rect_entries[f"{field_key}_mm"] = mm_entry
+        # U424r3 R3-L4 (#424 item 4): HONEST BASIS LABEL. The px values
+        # (and the fractional-rect basis + the pen mapping) all live in
+        # the DPI-VIRTUALIZED desktop space: this process declares no DPI
+        # awareness, so GetSystemMetrics AND MOUSEEVENTF_VIRTUALDESK both
+        # address the scaled space (a 2160-physical row at 150% reads
+        # 1440). Display, rect basis and injection share ONE space - no
+        # precision is lost; switching to physical pixels would move the
+        # injection basis too and is deliberately NOT done.
+        ttk.Label(fields_frame,
+                  text="px = DPI-scaled desktop space (the same space the "
+                       "pen injection addresses); mm = physical",
+                  foreground="#888888").grid(row=4, column=0, columnspan=4,
+                                             sticky="w", pady=(2, 0))
+        # U424r3 R3-L3 (#424 item 3b): editable SENSITIVITY (px/mm) - the
+        # derived handle s = rw/box_mm_w; editing it resizes the footprint
+        # at fixed center (protocol DECISION: no schema change).
+        ttk.Label(fields_frame, text="Sensitivity (px/mm):").grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 0))
+        s_entry = ttk.Entry(fields_frame, width=9)
+        s_entry.grid(row=3, column=2, padx=4, pady=(4, 0))
+        s_entry.bind("<Return>", lambda e: self._apply_rect_field("s_px"))
+        s_entry.bind("<FocusOut>", lambda e: self._apply_rect_field("s_px"))
+        self.rect_entries["s_px"] = s_entry
         self.pen_area_editor = PenAreaEditor(self.pen_rect_panel, self.config,
-                                             self.device_info)
+                                             self.device_info,
+                                             on_change=self._sync_rect_entries)
         self.pen_area_editor.pack(fill="x", pady=(6, 0))
         self._sync_rect_entries()
         self._sync_mode_panels()
 
-        # --- 2. Wireless Tablet Size Frame (U386 / TODO #385) ---
-        # The wireless receiver (id 132) shares one product id across every
-        # tablet size and cannot detect its paired tablet, so the size is a
-        # user choice with NO silent default (planner ruling): an unset size
-        # shows the loud notice below while a receiver connection is live.
-        wireless_frame = ttk.LabelFrame(
-            scroll_frame, text=" Wireless Tablet Size (receiver id 132) ", padding=10)
-        wireless_frame.pack(fill="x", padx=10, pady=8, expand=True)
-
-        self.wireless_size_notice = tk.Label(
-            wireless_frame, text="", wraplength=400, justify="left",
-            foreground="#a00000")
-        self.wireless_size_notice.grid(row=0, column=0, columnspan=2,
-                                       sticky="w", pady=(0, 6))
-
-        size_lbl = ttk.Label(wireless_frame, text="Tablet size:")
-        size_lbl.grid(row=1, column=0, sticky="w", pady=4)
-        self.wireless_size_combo = ttk.Combobox(
-            wireless_frame, values=(WIRELESS_SIZE_UNSET_LABEL,) + WIRELESS_TABLET_SIZES,
-            state="readonly", width=12)
-        self.wireless_size_combo.set(
-            getattr(self.config, "wireless_tablet_size", None) or WIRELESS_SIZE_UNSET_LABEL)
-        self.wireless_size_combo.grid(row=1, column=1, sticky="e", pady=4)
-
-        wireless_tip = ("Extents preset for the tablet behind the wireless receiver "
-                        "(product id 132, paired size not detectable): small = 788, "
-                        "medium = 789, large = 791. Unset shows a loud notice - there "
-                        "is no silent default. A change applies at the next device "
-                        "reconnect.")
-        ToolTip(size_lbl, wireless_tip)
-        ToolTip(self.wireless_size_combo, wireless_tip)
-        self._refresh_wireless_notice()
-        wireless_frame.columnconfigure(1, weight=1)
 
         # --- 3. Pen Button Mapping Frame ---
         button_frame = ttk.LabelFrame(scroll_frame, text=" Pen Button Mapping ", padding=10)
@@ -1829,6 +1944,14 @@ class SettingsWindow(tk.Toplevel):
         except ValueError as e:
             messagebox.showerror("Invalid Input", f"Please enter valid numeric values.\nDetails: {e}")
             return False
+
+        # U424r3 R3-L2 (#424 item 2): Apply Live is the SINGLE apply path -
+        # the 1:1 rect rides it like every other setting (the editor's old
+        # "Save Pen Area" button is gone). Duck-typed callers without the
+        # editor lane are skipped.
+        editor = getattr(self, "pen_area_editor", None)
+        if editor is not None:
+            editor.persist_entry()
 
         # Refresh only when the window actually built the wireless lane:
         # duck-typed apply_settings callers (FakeWindow pins) carry neither

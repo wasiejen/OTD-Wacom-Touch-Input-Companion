@@ -33,6 +33,26 @@ def _model(metrics=SCREEN, records=None, rect=RECT):
                               CANVAS[0], CANVAS[1], BOX_MM[0], BOX_MM[1], rect)
 
 
+def test_apply_scale_resizes_footprint_at_fixed_center():
+    # U424r3 R3-L3 (#424 item 3b): sensitivity is an editable handle on
+    # the footprint. RED-before cc392fc: AttributeError apply_scale.
+    m = _model()
+    cx = m.rect[0] + m.rect[2] / 2
+    cy = m.rect[1] + m.rect[3] / 2
+    m.apply_scale(2.0)
+    assert m.rect[2] == pytest.approx(2.0 * BOX_MM[0], rel=1e-9)
+    assert m.rect[3] == pytest.approx(2.0 * BOX_MM[1], rel=1e-9)
+    assert (m.rect[0] + m.rect[2] / 2, m.rect[1] + m.rect[3] / 2) == \
+        pytest.approx((cx, cy))
+
+
+def test_apply_scale_clamps_inside_the_desktop():
+    m = _model()
+    m.apply_scale(1000.0)  # absurd px/mm -> clamp to the desktop width
+    assert m.rect[2] == pytest.approx(SCREEN[2])
+    assert m.rect[0] == pytest.approx(0.0)
+
+
 def test_aspect_lock_helper_rederives_rh():
     assert pen_area_rect_aspect_lock([0, 0, 1000, 7], 325.12, 203.2) == \
         [0, 0, 1000, 625]
@@ -112,7 +132,7 @@ def test_widget_save_writes_fractional_entry_for_current_display_key(root, widge
     calls = []
     monkeypatch.setattr(gui, "reset_pen_area_key_cache", lambda: calls.append(1))
     widget = _build_widget(root, widget_config, monkeypatch)
-    assert widget.save_entry() is True
+    assert widget.persist_entry() is True
     entry = list(widget_config.pen_area_maps["0123456789ab"]["entries"])[0]
     assert entry["display_key"] == touch_controller.display_key_for_records(RECORDS)
     assert entry["monitors"] == RECORDS
@@ -133,7 +153,7 @@ def test_widget_editable_without_identity_save_refuses(root, widget_config, monk
     assert widget.model is not None
     widget.model.move_by(100000, 0)
     assert widget.model.rect[0] == 3440 - widget.model.rect[2]  # drag clamped
-    assert widget.save_entry() is False
+    assert widget.persist_entry() is False
     assert widget.remove_entry() is False
     assert widget_config.pen_area_maps == {}
 
@@ -150,7 +170,7 @@ def test_widget_builds_on_metrics_less_host_from_records(root, widget_config, mo
     assert (widget.model.desktop_w, widget.model.desktop_h) == (3440.0, 1440.0)
     widget.model.move_by(100000, 0)
     assert widget.model.rect[0] == 3440 - widget.model.rect[2]
-    assert widget.save_entry() is True
+    assert widget.persist_entry() is True
 
 
 def test_widget_falls_back_to_pad_aspect_rect(root, widget_config, monkeypatch):
@@ -168,7 +188,7 @@ def test_widget_falls_back_to_pad_aspect_rect(root, widget_config, monkeypatch):
     assert widget.model.desktop_w / widget.model.desktop_h == pytest.approx(
         box[0] / box[1], rel=1e-6)
     assert len(widget.model.monitor_canvas_rects()) == 1
-    assert widget.save_entry() is True
+    assert widget.persist_entry() is True
     entry = list(widget_config.pen_area_maps["0123456789ab"]["entries"])[0]
     assert entry["monitors"] == []
     assert entry["display_key"] == touch_controller.display_key_for_records([])
@@ -183,7 +203,7 @@ def test_widget_loads_stored_fraction_back_into_model_px(root, widget_config, mo
                    "base_config": widget_config}
     widget = gui.PenAreaEditor(root, widget_config, device_info)
     widget.model.rect = [516.0, 144.0, 1720.0, 720.0]  # 16:10-ish; aspect may lock
-    assert widget.save_entry() is True
+    assert widget.persist_entry() is True
     key = touch_controller.display_key_for_records(RECORDS)
     frac = widget_config.pen_area_maps["0123456789ab"]["entries"][0]["rect_frac"]
     reopened = gui.PenAreaEditor(root, widget_config, device_info)

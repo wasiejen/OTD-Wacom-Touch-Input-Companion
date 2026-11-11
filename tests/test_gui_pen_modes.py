@@ -52,11 +52,11 @@ def modes_cfg(monkeypatch, tmp_path):
     return DriverConfig()
 
 
-def make_window(root, cfg, monkeypatch, tmp_path):
+def make_window(root, cfg, monkeypatch, tmp_path, product_id=791):
     monkeypatch.setattr(gui, "messagebox", StubBox())
     monkeypatch.setattr(gui, "ToastNotification", lambda *args, **kwargs: None)
     device_info = {"connection": {"config": cfg, "identity": "0123456789ab",
-                                  "product_id": 791},
+                                  "product_id": product_id},
                    "base_config": cfg, "manager": None}
     win = gui.SettingsWindow(root, TabletState(), cfg, device_info)
     CONSTRUCTED.append(win)
@@ -143,6 +143,188 @@ def test_numeric_fields_echo_the_stored_rect_on_open(modes_cfg, tk_root, monkeyp
     win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
     assert float(win.rect_entries["x_px"].get()) == pytest.approx(860.0, abs=1)
     assert float(win.rect_entries["w_px"].get()) == pytest.approx(1720.0, abs=1)
+    # U424r3 STEP-3 P2-1 close: an OLD stored entry also echoes its
+    # effective sensitivity s = rw/box_mm_w on open (direct, not
+    # composition).
+    model = win.pen_area_editor.model
+    assert float(win.rect_entries["s_px"].get()) == pytest.approx(
+        model.rect[2] / model.box_mm[0], rel=1e-3)
+
+
+# --- U424r3 R3-L1 (#424 round-3 item 1): contextual fields + stable place ---
+
+
+def test_relative_speed_field_shows_only_in_relative_mode(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before 11a7939: the speed entry was always visible.
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    speed = win.entries["pen_speed"]
+    assert speed.winfo_manager() == ""  # rect_1to1 default: hidden
+    win.pen_mode_var.set("relative")
+    win._on_pen_mode_select()
+    assert speed.winfo_manager() == "grid"
+    win.pen_mode_var.set("stretched")
+    win._on_pen_mode_select()
+    assert speed.winfo_manager() == ""
+    # Mode-independent pressure threshold stays put in every mode.
+    assert win.entries["pen_pressure_threshold"].winfo_manager() == "grid"
+
+
+def test_rect_panel_keeps_its_place_across_mode_cycles(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before 11a7939: re-pack APPENDED the panel at the tab bottom.
+    # Pin = real pack order (Tcl `pack slaves`), not creation order.
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+
+    def slaves():
+        # Pack order of DIRECT slaves, keyed by widget path tails (the Tcl
+        # list items are window objects/paths depending on host version).
+        raw = win.tk.call("pack", "slaves", str(win._pen_scroll_frame))
+        return [str(item).rstrip("'>").split(".")[-1] for item in raw]
+
+    # (U424r3 R3-L5: the wireless frame left the Pen tab - the stability
+    # anchor is now the rect panel's own index in the full slave order;
+    # a re-append moves it to the end and this index changes.)
+    order0 = slaves()
+    idx_rect = order0.index(win.pen_rect_panel._name)
+    for mode in ("relative", "stretched", "relative", "rect_1to1"):
+        win.pen_mode_var.set(mode)
+        win._on_pen_mode_select()
+    order1 = slaves()
+    assert order1.index(win.pen_rect_panel._name) == idx_rect
+
+
+# --- U424r3 R3-L3 (#424 round-3 item 3): bidirectional sync + px/mm handle ---
+
+
+def test_sensitivity_field_echoes_and_edits_the_footprint(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before cc392fc: KeyError 's_px' (no sensitivity field).
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    model = win.pen_area_editor.model
+    box_w = model.box_mm[0]
+    s0 = model.rect[2] / box_w
+    assert float(win.rect_entries["s_px"].get()) == pytest.approx(s0, rel=1e-3)
+    cx = model.rect[0] + model.rect[2] / 2
+    cy = model.rect[1] + model.rect[3] / 2
+    win.rect_entries["s_px"].delete(0, tk.END)
+    win.rect_entries["s_px"].insert(0, "0.5")
+    win._apply_rect_field("s_px")
+    assert model.rect[2] == pytest.approx(0.5 * box_w, rel=1e-6)
+    assert (model.rect[0] + model.rect[2] / 2,
+            model.rect[1] + model.rect[3] / 2) == pytest.approx((cx, cy))
+    # and the echo follows the edit
+    assert float(win.rect_entries["s_px"].get()) == pytest.approx(0.5, rel=1e-3)
+
+
+def test_numeric_panel_labels_the_dpi_scaled_basis(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # U424r3 R3-L4 (#424 item 4): honest labeling after the basis
+    # investigation. RED-before 3a902da: no basis hint existed.
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    texts = []
+    stack = [win.pen_rect_panel]
+    while stack:
+        for child in stack.pop().winfo_children():
+            if hasattr(child, "cget"):
+                try:
+                    texts.append(str(child.cget("text")))
+                except tk.TclError:
+                    pass
+            stack.append(child)
+    assert any("DPI-scaled" in t and "injection" in t for t in texts)
+
+
+def test_rect_drag_updates_the_numeric_fields(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # Item 3a: drag/resize -> fields (one-way today). Driven through the
+    # editor's own event handlers (no Tk event pump needed).
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    editor = win.pen_area_editor
+    model = editor.model
+    press = type("E", (), {"x": 5.0, "y": 5.0})()
+    editor._press(press)
+    editor._motion(type("E", (), {"x": 105.0, "y": 55.0})())
+    assert float(win.rect_entries["x_px"].get()) == pytest.approx(model.rect[0], abs=1)
+    assert float(win.rect_entries["y_px"].get()) == pytest.approx(model.rect[1], abs=1)
+    assert float(win.rect_entries["s_px"].get()) == pytest.approx(
+        model.rect[2] / model.box_mm[0], rel=1e-3)
+
+
+# --- U424r3 R3-L5 (#424 round-3 item 5): wireless lane -> Focused Device ---
+
+
+def test_wireless_lane_lives_in_focused_device_for_receiver_only(
+        modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before 8742a4f (scratch): lane was a Pen-tab child and ALWAYS
+    # visible; here = hidden for the wired 791, gridded under Focused
+    # Device for the receiver 132.
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)  # 791
+    lane = win._pen_wireless_frame
+    assert lane.winfo_manager() == ""
+    win2 = make_window(tk_root, modes_cfg, monkeypatch, tmp_path,
+                       product_id=132)
+    lane2 = win2._pen_wireless_frame
+    assert lane2.winfo_manager() == "grid"
+
+    def is_descendant(widget, ancestor):  # no winfo_ancestors on this Tk
+        master = widget.master
+        while master is not None:
+            if str(master) == str(ancestor):
+                return True
+            master = getattr(master, "master", None)
+        return False
+
+    assert is_descendant(lane2, win2._focused_device_frame)
+    assert not is_descendant(lane2, win2._pen_scroll_frame)
+
+
+def test_wireless_lane_syncs_dynamically_on_rebind(modes_cfg, tk_root, monkeypatch, tmp_path):
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)  # starts 791
+    lane = win._pen_wireless_frame
+    assert lane.winfo_manager() == ""
+    win.device_info["connection"] = {"config": modes_cfg,
+                                     "identity": "0123456789ab",
+                                     "product_id": 132}
+    win._rebind_focused_device()
+    assert lane.winfo_manager() == "grid"
+    win.device_info["connection"] = {"config": modes_cfg,
+                                     "identity": "0123456789ab",
+                                     "product_id": 791}
+    win._rebind_focused_device()
+    assert lane.winfo_manager() == ""
+
+
+# --- U424r3 R3-L2 (#424 round-3 item 2): Apply Live = single apply path ----
+
+
+def test_save_pen_area_button_gone_remove_rect_stays(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before 6c10b03: the editor still rendered "Save Pen Area".
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    texts = []
+    for child in win.pen_area_editor.winfo_children():
+        if hasattr(child, "cget"):
+            try:
+                texts.append(str(child.cget("text")))
+            except tk.TclError:
+                pass
+    assert "Save Pen Area" not in texts
+    assert "Remove Rect" in texts
+
+
+def test_apply_writes_the_rect_entry_like_other_settings(modes_cfg, tk_root, monkeypatch, tmp_path):
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    model = win.pen_area_editor.model
+    model.rect = [0.0, 0.0, model.desktop_w / 2, model.desktop_h / 2]
+    assert win.apply_settings() is True
+    entries = modes_cfg.pen_area_maps["0123456789ab"]["entries"]
+    frac = entries[0]["rect_frac"]
+    assert frac == pytest.approx([0.0, 0.0, 0.5, 0.5])
+
+
+def test_remove_rect_does_not_switch_modes(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # Panel semantics: Remove drops the entry, the mode stays 1:1.
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    assert win.apply_settings() is True  # seed an entry via Apply
+    assert win.pen_area_editor.remove_entry() is True
+    assert modes_cfg.pen_mode == "rect_1to1"
+    assert win.pen_rect_panel.winfo_manager() == "pack"
+    assert not modes_cfg.pen_area_maps.get("0123456789ab", {}).get("entries")
 
 
 def test_subset_checkboxes_seed_from_the_stored_subset(modes_cfg, tk_root, monkeypatch, tmp_path):
