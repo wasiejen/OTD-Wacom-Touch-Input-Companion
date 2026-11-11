@@ -41,7 +41,7 @@ class FakeWindow:
     """Duck-typed SettingsWindow widget surface used by apply/save."""
 
     def __init__(self, config, entries, accel=(True, True), features=None, actions=None,
-                 pen_absolute=None, pen_buttons=None, buttons=None, button_toggles=None,
+                 pen_mode=None, pen_buttons=None, buttons=None, button_toggles=None,
                  touches=None, touch_toggles=None):
         self.config = config
         self.entries = {key: FakeEntry(value) for key, value in entries.items()}
@@ -49,8 +49,10 @@ class FakeWindow:
         self.scroll_accel_var = FakeVar(accel[1])
         self.feature_vars = {key: FakeVar(value) for key, value in (features or {}).items()}
         self.action_combos = {key: FakeEntry(value) for key, value in (actions or {}).items()}
-        if pen_absolute is not None:
-            self.pen_absolute_var = FakeVar(pen_absolute)
+        if pen_mode is not None:
+            # U424: the Pen tab applies the ONE mode (the old absolute
+            # toggle write is retired; harness re-pinned with it).
+            self.pen_mode_var = FakeVar(pen_mode)
         if pen_buttons is not None:
             self.pen_combos = {key: FakeEntry(value) for key, value in pen_buttons.items()}
         if buttons is not None:
@@ -190,20 +192,20 @@ def test_save_writes_file_when_valid(window_surface, tmp_path):
 
 def test_apply_pen_settings_updates_config(window_surface):
     config, box = window_surface
-    win = make_window(config, {"pen_speed": "11.5"}, pen_absolute=False,
+    win = make_window(config, {"pen_speed": "11.5"}, pen_mode="relative",
                       pen_buttons={"pen_button_1": "left_click"})
 
     applied = types.MethodType(gui.SettingsWindow.apply_settings, win)()
 
     assert applied is True
     assert config.pen_speed == 11.5
-    assert config.feature_toggles["pen_absolute_mode"] is False
+    assert config.pen_mode == "relative"
     assert config.action_mapping["pen_button_1"] == "left_click"
 
 
 def test_save_writes_pen_settings(window_surface, tmp_path):
     config, box = window_surface
-    win = make_window(config, {"pen_speed": "9.5"}, pen_absolute=True,
+    win = make_window(config, {"pen_speed": "9.5"}, pen_mode="stretched",
                       pen_buttons={"pen_button_2": "right_click"})
 
     saved = types.MethodType(gui.SettingsWindow.save_to_file, win)()
@@ -211,19 +213,19 @@ def test_save_writes_pen_settings(window_surface, tmp_path):
     assert saved is True
     data = json.loads((tmp_path / "user.cfg").read_text())
     assert data["motion_and_thresholds"]["pen_speed"] == 9.5
-    assert data["feature_toggles"]["pen_absolute_mode"] is True
+    assert data["motion_and_thresholds"]["pen_mode"] == "stretched"
     assert data["action_mapping"]["pen_button_2"] == "right_click"
 
 
 def test_apply_pen_invalid_number_leaves_config_untouched(window_surface):
     config, box = window_surface
-    win = make_window(config, {"pen_speed": "abc"}, pen_absolute=False)
+    win = make_window(config, {"pen_speed": "abc"}, pen_mode="relative")
 
     applied = types.MethodType(gui.SettingsWindow.apply_settings, win)()
 
     assert applied is False
     assert config.pen_speed == 8.0
-    assert config.feature_toggles["pen_absolute_mode"] is True
+    assert config.pen_mode is None  # all-or-nothing: mode not applied
     assert box.errors
 
 

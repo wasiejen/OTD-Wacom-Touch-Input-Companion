@@ -593,7 +593,7 @@ class DriverConfig:
         "scroll_speed_low", "scroll_speed_high",
         "pen_speed", "pen_pressure_threshold",
         "dial_step_threshold", "orientation_degrees", "wireless_tablet_size",
-        "pen_mode",
+        "pen_mode", "pen_stretch_screens",
     )
 
     # Sections the saved file may hold. "devices" is the reserved slot (c):
@@ -764,6 +764,10 @@ class DriverConfig:
         # toggle migration, see resolved_pen_mode). Set via set_pen_mode;
         # switching modes applies LIVE and never touches the stored rect.
         self.pen_mode = None
+        # U424 / #424 ruling 1: stretched-mode screen subset (list of
+        # monitor-record strings naming the stretch target; None/empty =
+        # ALL screens, the pre-U424 full-desktop behavior).
+        self.pen_stretch_screens = None
 
         # Gesture Thresholds
         self.max_tap_duration = 0.250       # Seconds
@@ -1092,6 +1096,17 @@ class DriverConfig:
                     else:
                         errors.append(f"'motion_and_thresholds.{key}' needs one of "
                                       f"{'/'.join(PEN_MODES)} or null, "
+                                      f"got {self._describe(val)} ({ref})")
+                    continue
+                if key == "pen_stretch_screens":
+                    # U424: list of monitor-record strings, or null = all.
+                    if val is None:
+                        validated["motion"][key] = None
+                    elif isinstance(val, list) and all(isinstance(v, str) for v in val):
+                        validated["motion"][key] = list(val)
+                    else:
+                        errors.append(f"'motion_and_thresholds.{key}' needs a list "
+                                      f"of monitor-record strings or null, "
                                       f"got {self._describe(val)} ({ref})")
                     continue
                 number = self._coerce_number(val)
@@ -1896,6 +1911,27 @@ def cached_display_key(now=None):
     return key
 
 
+def virtual_desktop_dpi():
+    """(dpi_x, dpi_y) of the primary DC for the rect editor's mm fields
+    (U424 / #424 ruling 2). Never raises: falls back to 96/96 (Windows
+    default scaling) when the DC calls fail."""
+    try:
+        hdc = ctypes.windll.user32.GetDC(0)
+        dpi_x = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)   # LOGPIXELSX
+        dpi_y = ctypes.windll.gdi32.GetDeviceCaps(hdc, 90)   # LOGPIXELSY
+        ctypes.windll.user32.ReleaseDC(0, hdc)
+        if dpi_x > 0 and dpi_y > 0:
+            return float(dpi_x), float(dpi_y)
+    except Exception:
+        pass
+    return 96.0, 96.0
+
+
+def pen_mm_per_px(dpi, axis=0):
+    """Millimetres per pixel for the numeric rect fields (U424 ruling 2)."""
+    return 25.4 / dpi[axis]
+
+
 def select_live_pen_area_rect(config, identity):
     """The FRACTIONAL rect for the live identity + display config, else None.
 
@@ -2232,19 +2268,42 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
         px_mm = None
         bands = None
         if pen_mode == "stretched":
-            # Opt-in stretch (U344 goal 3): per-axis scales, the whole
-            # digitizer box stretched across the full desktop -- the
-            # maintainer's ultrawide observation, kept as opt-in.
-            nx = min(max(int((x - left) * PEN_VIRTUAL_RESOLUTION / extent_w + 1e-9), 0),
-                     PEN_VIRTUAL_RESOLUTION)
-            ny = min(max(int((y - top) * PEN_VIRTUAL_RESOLUTION / extent_h + 1e-9), 0),
-                     PEN_VIRTUAL_RESOLUTION)
-            mode = "stretch"
-            if metrics is not None:
+            # U424 / #424 ruling 1: the screen checkboxes RESTRICT the
+            # stretch target; unselected screens are unreachable, the box
+            # stretches across the UNION of the selected monitors. Empty
+            # or unset = ALL screens = the pre-U424 full-desktop stretch
+            # (byte-unchanged). Junk metrics keep the degraded full fill
+            # (subset math needs the metrics datum, never invents one).
+            subset = getattr(config, "pen_stretch_screens", None)
+            union = (union_rect_from_records(subset)
+                     if subset and metrics is not None else None)
+            if union is not None and union[2] > 0 and union[3] > 0:
+                frac = [(union[0] - metrics[0]) / metrics[2],
+                        (union[1] - metrics[1]) / metrics[3],
+                        union[2] / metrics[2], union[3] / metrics[3]]
+                off_x, scale_x, off_y, scale_y = pen_area_norm_projection(
+                    frac, extent_w, extent_h, 1.0, 1.0)
+                nx = min(max(int(off_x + (x - left) * scale_x + 1e-9), 0),
+                         PEN_VIRTUAL_RESOLUTION)
+                ny = min(max(int(off_y + (y - top) * scale_y + 1e-9), 0),
+                         PEN_VIRTUAL_RESOLUTION)
+                mode = "stretch_subset"
                 box_mm_w, box_mm_h = rotated_pen_box_mm(
                     pen_specs, config.orientation_degrees)
-                px_mm = (metrics[2] / box_mm_w, metrics[3] / box_mm_h)
+                px_mm = (frac[2] * metrics[2] / box_mm_w,
+                         frac[3] * metrics[3] / box_mm_h)
                 bands = (0.0, 0.0)
+            else:
+                nx = min(max(int((x - left) * PEN_VIRTUAL_RESOLUTION / extent_w + 1e-9), 0),
+                         PEN_VIRTUAL_RESOLUTION)
+                ny = min(max(int((y - top) * PEN_VIRTUAL_RESOLUTION / extent_h + 1e-9), 0),
+                         PEN_VIRTUAL_RESOLUTION)
+                mode = "stretch"
+                if metrics is not None:
+                    box_mm_w, box_mm_h = rotated_pen_box_mm(
+                        pen_specs, config.orientation_degrees)
+                    px_mm = (metrics[2] / box_mm_w, metrics[3] / box_mm_h)
+                    bands = (0.0, 0.0)
         elif pen_area_rect is not None:
             # Pen-area rect lane (U414 / #406, proposal §2; U416 fractional):
             # the rotated digitizer box maps onto the user's stored

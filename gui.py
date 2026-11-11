@@ -14,14 +14,18 @@ from touch_controller import (
     display_key_for_records,
     monitor_records,
     pen_area_rect_aspect_lock,
+    pen_mm_per_px,
     pen_specs_for_product,
+    resolved_pen_mode,
     reset_pen_area_key_cache,
     rotate_point,
     rotated_pen_box_mm,
     select_pen_area_entry,
     snapshot_device_sections,
     union_rect_from_records,
+    virtual_desktop_dpi,
     virtual_desktop_metrics,
+    PEN_MODES,
     PEN_SPECS_BY_PRODUCT,
 )
 
@@ -463,6 +467,15 @@ class OrientationWidget(tk.Canvas):
                              font=("Segoe UI", 8))
 
 
+def _screen_label(record):
+    """Human label for a monitor record 'PATH|left|top|WxH' (U424)."""
+    try:
+        path, left, top, dims = record.split("|")
+        return f"{path.split(chr(92))[-1].lstrip('.')} {left},{top} {dims}"
+    except ValueError:
+        return record
+
+
 class PenAreaCanvasModel:
     """Pure model behind the pen-area rect editor (U414 / #406 option A).
 
@@ -497,6 +510,24 @@ class PenAreaCanvasModel:
         parts = record.split("|")
         width_txt, height_txt = parts[3].split("x")
         return int(parts[1]), int(parts[2]), int(width_txt), int(height_txt)
+
+    def apply_fields(self, x=None, y=None, w=None):
+        """Set the rect from the numeric fields (U424 / #424 ruling 2).
+
+        Width aspect-locks the height to the rotated digitizer box; every
+        value is clamped INSIDE the display union (the model bounds).
+        Returns the new rect [rx, ry, rw, rh] in px.
+        """
+        rx, ry, rw, rh = self.rect
+        if w is not None:
+            rw = min(max(float(w), self.MIN_RECT_PX), self.desktop_w)
+            rh = min(rw * self.box_mm[1] / self.box_mm[0], self.desktop_h)
+        if x is not None:
+            rx = min(max(float(x), 0.0), self.desktop_w - rw)
+        if y is not None:
+            ry = min(max(float(y), 0.0), self.desktop_h - rh)
+        self.rect = [rx, ry, rw, rh]
+        return list(self.rect)
 
     def monitor_canvas_rects(self):
         """Monitor outline boxes in canvas px, origin = virtual-desktop origin.
@@ -701,7 +732,7 @@ class PenAreaEditor(ttk.Frame):
 
 
 def apply_settings_to_config(config, numeric_values, accel_toggles, feature_toggles,
-                             action_mappings, pen_button_actions=None, pen_absolute_mode=None,
+                             action_mappings, pen_button_actions=None, pen_mode=None,
                              button_actions=None, button_toggles=None,
                              wireless_tablet_size=_KEEP_WIRELESS_SIZE):
     """Apply a complete settings set to config, or apply nothing at all.
@@ -746,8 +777,10 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
     for feat_key, action in action_mappings.items():
         config.action_mapping[feat_key] = action
 
-    if pen_absolute_mode is not None:
-        config.feature_toggles["pen_absolute_mode"] = pen_absolute_mode
+    if pen_mode is not None:
+        # U424: the Pen tab applies the ONE stored mode (the old
+        # pen_absolute_mode toggle write is retired - no dual control).
+        config.set_pen_mode(pen_mode)
 
     for pen_key, action in (pen_button_actions or {}).items():
         config.action_mapping[pen_key] = action
@@ -991,10 +1024,10 @@ class SettingsWindow(tk.Toplevel):
         for key, var in getattr(self, "button_vars", {}).items():
             if key in config.feature_toggles:
                 self._set_widget_value(var, config.feature_toggles[key])
-        pen_absolute_var = getattr(self, "pen_absolute_var", None)
-        if pen_absolute_var is not None:
-            self._set_widget_value(pen_absolute_var,
-                                   config.feature_toggles.get("pen_absolute_mode", True))
+        pen_mode_var = getattr(self, "pen_mode_var", None)
+        if pen_mode_var is not None:
+            self._set_widget_value(pen_mode_var, resolved_pen_mode(config))
+            self._sync_mode_panels()
         self.saved_actions = dict(config.action_mapping)
         for combo_map in (getattr(self, "action_combos", {}),
                           getattr(self, "pen_combos", {}),
@@ -1218,6 +1251,74 @@ class SettingsWindow(tk.Toplevel):
         entry.insert(0, str(degrees))
         self.orientation_widget.draw_degrees(degrees)
 
+    # --- U424 / #424 tri-modal handlers (rulings 1-3) ----------------------
+
+    def _on_pen_mode_select(self):
+        # Ruling 3: switching modes applies LIVE (set_pen_mode, the
+        # reader re-resolves per report) and never touches the stored
+        # 1:1 rect - it stays, inactive, instantly re-usable.
+        self.config.set_pen_mode(self.pen_mode_var.get())
+        self._sync_mode_panels()
+
+    def _sync_mode_panels(self):
+        mode = self.pen_mode_var.get()
+        for panel, visible in ((self.stretch_screen_panel,
+                                mode == "stretched"),
+                               (self.pen_rect_panel, mode == "rect_1to1")):
+            packed = panel.winfo_manager() == "pack"  # not pack_info:
+            if visible and not packed:
+                panel.pack(fill="x", padx=10, pady=(0, 8), expand=True)
+            elif not visible and packed:
+                panel.pack_forget()
+
+    def _on_stretch_screens_change(self):
+        # Ruling 1: the checkboxes RESTRICT the stretch target; all
+        # selected persists as None (= the pre-U424 full-desktop lane).
+        selected = [rec for rec, var in self.stretch_screen_vars.items()
+                    if var.get()]
+        self.config.pen_stretch_screens = (
+            selected if len(selected) < len(self.stretch_screen_vars) else None)
+
+    def _sync_rect_entries(self):
+        editor = getattr(self, "pen_area_editor", None)
+        model = editor.model if editor is not None else None
+        if model is None:
+            return
+        dpi = virtual_desktop_dpi()
+        rect = model.rect
+        for i, key in enumerate("xywh"):
+            axis = i % 2
+            self.rect_entries[f"{key}_px"].delete(0, tk.END)
+            self.rect_entries[f"{key}_px"].insert(0, f"{rect[i]:.0f}")
+            self.rect_entries[f"{key}_mm"].delete(0, tk.END)
+            self.rect_entries[f"{key}_mm"].insert(
+                0, f"{rect[i] * pen_mm_per_px(dpi, axis):.1f}")
+
+    def _apply_rect_field(self, source_key):
+        # Ruling 2: px and mm entries are bidirectional, aspect-locked
+        # (height edits re-derive width), clamped inside the display
+        # union by the model.
+        editor = getattr(self, "pen_area_editor", None)
+        model = editor.model if editor is not None else None
+        if model is None:
+            return
+        field, unit = source_key.rsplit("_", 1)
+        entry = self.rect_entries[source_key]
+        try:
+            raw = float(entry.get().strip().replace(",", "."))
+        except ValueError:
+            self._sync_rect_entries()  # revert the bad edit
+            return
+        dpi = virtual_desktop_dpi()
+        axis = 1 if field in ("y", "h") else 0
+        value_px = raw / pen_mm_per_px(dpi, axis) if unit == "mm" else raw
+        if field == "h":  # aspect lock: height drives width through the box
+            value_px = value_px * model.box_mm[0] / model.box_mm[1]
+            field = "w"
+        model.apply_fields(**{field: value_px})
+        editor._redraw()
+        self._sync_rect_entries()
+
     def _build_pen_tab(self):
         canvas = tk.Canvas(self.tab_pen, borderwidth=0)
         scrollbar = ttk.Scrollbar(self.tab_pen, orient="vertical", command=canvas.yview)
@@ -1237,17 +1338,35 @@ class SettingsWindow(tk.Toplevel):
         movement_frame = ttk.LabelFrame(scroll_frame, text=" Pen Movement Parameters ", padding=10)
         movement_frame.pack(fill="x", padx=10, pady=8, expand=True)
 
-        self.pen_absolute_var = tk.BooleanVar(value=self.config.feature_toggles.get("pen_absolute_mode", True))
-        chk_pen = ttk.Checkbutton(movement_frame, text="Absolute Movement (Off = Relative Deltas)", variable=self.pen_absolute_var)
-        chk_pen.grid(row=0, column=0, columnspan=2, sticky="w", pady=(0, 6))
-        ToolTip(chk_pen, "Absolute: pen position maps the tablet range onto the screen. Relative: movement is sent as deltas scaled by the speed entry.")
+        # U424 / TODO #424 (rulings 1-3): ONE mode selector replaces the
+        # old absolute checkbox (RETIRED - no dual control, reviewer
+        # P2-2 closure). Contextual sub-panels below: stretched -> screen
+        # checkboxes (default ALL = today); rect_1to1 -> numeric fields +
+        # canvas editor. Switching a mode applies LIVE.
+        self.pen_mode_var = tk.StringVar(value=resolved_pen_mode(self.config))
+        self.pen_mode_radios = []
+        mode_rows = (
+            ("relative", "Relative (movement deltas, speed below)"),
+            ("stretched", "Absolute - stretched / full fill"),
+            ("rect_1to1", "Absolute - 1:1 pen area rectangle"),
+        )
+        for idx, (mode_key, mode_label) in enumerate(mode_rows, start=1):
+            rb = ttk.Radiobutton(movement_frame, text=mode_label,
+                                 value=mode_key, variable=self.pen_mode_var,
+                                 command=self._on_pen_mode_select)
+            rb.grid(row=idx, column=0, columnspan=2, sticky="w", pady=(0, 2))
+            self.pen_mode_radios.append(rb)
+        ToolTip(self.pen_mode_radios[0],
+                "Relative: movement is sent as deltas scaled by the speed entry. "
+                "Stretched: the whole pen box fills the selected screens. "
+                "1:1: the pen box maps onto a stored rectangle at one px/mm.")
 
         pen_fields = [
             ("Speed (px/mm):", "pen_speed", self.config.pen_speed),
             ("Pressure Threshold:", "pen_pressure_threshold", self.config.pen_pressure_threshold),
         ]
 
-        for idx, (label_text, key, initial_val) in enumerate(pen_fields, start=1):
+        for idx, (label_text, key, initial_val) in enumerate(pen_fields, start=4):
             lbl = ttk.Label(movement_frame, text=label_text)
             lbl.grid(row=idx, column=0, sticky="w", pady=4)
             ent = ttk.Entry(movement_frame, width=12)
@@ -1261,15 +1380,49 @@ class SettingsWindow(tk.Toplevel):
 
         movement_frame.columnconfigure(1, weight=1)
 
-        # --- 1b. Pen Area Rectangle Frame (U414 / TODO #406, option A) ---
-        # Absolute-mode writing mode: a user rect projected onto the current
-        # screen(s), stored per display configuration (U414 lane). The full-
-        # fill navigation default and the stretch toggle stay untouched.
-        area_frame = ttk.LabelFrame(
-            scroll_frame, text=" Pen Area Rectangle (absolute mode) ", padding=10)
-        area_frame.pack(fill="x", padx=10, pady=(0, 8), expand=True)
-        self.pen_area_editor = PenAreaEditor(area_frame, self.config, self.device_info)
-        self.pen_area_editor.pack(fill="x")
+        # --- 1b. Stretched-mode screen subset panel (U424 / ruling 1) ---
+        # Checkboxes RESTRICT the stretch target: unselected screens are
+        # not reachable, the box fills the union of the selected ones.
+        # Default = ALL selected = the pre-U424 full-desktop behavior.
+        self.stretch_screen_panel = ttk.LabelFrame(
+            scroll_frame, text=" Screens to stretch over ", padding=8)
+        self.stretch_screen_vars = {}
+        for record in monitor_records():
+            rec_var = tk.BooleanVar(value=True)
+            cb = ttk.Checkbutton(
+                self.stretch_screen_panel, text=_screen_label(record),
+                variable=rec_var, command=self._on_stretch_screens_change)
+            cb.pack(anchor="w")
+            self.stretch_screen_vars[record] = rec_var
+
+        # --- 1c. Pen Area Rectangle panel (U414 / #406 + U424 ruling 2) ---
+        # 1:1 writing mode only: numeric x/y/w/h in px AND mm (editing
+        # either updates the other, aspect-locked, clamped to the display
+        # union) above the canvas editor; Save/Remove live in here.
+        self.pen_rect_panel = ttk.LabelFrame(
+            scroll_frame, text=" Pen Area Rectangle (1:1 writing area) ", padding=8)
+        self.rect_entries = {}
+        fields_frame = ttk.Frame(self.pen_rect_panel)  # grid lives here,
+        fields_frame.pack(anchor="w")                  # editor packs beside
+        for col, (field_key, field_label) in enumerate(
+                (("x", "X"), ("y", "Y"), ("w", "Width"), ("h", "Height"))):
+            ttk.Label(fields_frame, text=field_label).grid(
+                row=0, column=col, padx=4)
+            px_entry = ttk.Entry(fields_frame, width=9)
+            px_entry.grid(row=1, column=col, padx=4, pady=(0, 2))
+            mm_entry = ttk.Entry(fields_frame, width=9)
+            mm_entry.grid(row=2, column=col, padx=4)
+            px_entry.bind("<Return>", lambda e, k=f"{field_key}_px": self._apply_rect_field(k))
+            px_entry.bind("<FocusOut>", lambda e, k=f"{field_key}_px": self._apply_rect_field(k))
+            mm_entry.bind("<Return>", lambda e, k=f"{field_key}_mm": self._apply_rect_field(k))
+            mm_entry.bind("<FocusOut>", lambda e, k=f"{field_key}_mm": self._apply_rect_field(k))
+            self.rect_entries[f"{field_key}_px"] = px_entry
+            self.rect_entries[f"{field_key}_mm"] = mm_entry
+        self.pen_area_editor = PenAreaEditor(self.pen_rect_panel, self.config,
+                                             self.device_info)
+        self.pen_area_editor.pack(fill="x", pady=(6, 0))
+        self._sync_rect_entries()
+        self._sync_mode_panels()
 
         # --- 2. Wireless Tablet Size Frame (U386 / TODO #385) ---
         # The wireless receiver (id 132) shares one product id across every
@@ -1607,8 +1760,8 @@ class SettingsWindow(tk.Toplevel):
                 )
                 for pen_key, combo in pen_combos.items()
             }
-            pen_absolute_var = getattr(self, "pen_absolute_var", None)
-            pen_absolute_mode = pen_absolute_var.get() if pen_absolute_var is not None else None
+            pen_mode_var = getattr(self, "pen_mode_var", None)
+            pen_mode = pen_mode_var.get() if pen_mode_var is not None else None
             button_combos = getattr(self, "button_combos", {})
             button_actions = {
                 key: resolve_action_mapping(
@@ -1647,7 +1800,7 @@ class SettingsWindow(tk.Toplevel):
             apply_settings_to_config(
                 self.config, numeric_values, accel_toggles, feature_toggles, action_mappings,
                 pen_button_actions=pen_button_actions,
-                pen_absolute_mode=pen_absolute_mode,
+                pen_mode=pen_mode,
                 button_actions=button_actions,
                 button_toggles=button_toggles,
                 wireless_tablet_size=wireless_tablet_size,
