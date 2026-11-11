@@ -11,8 +11,16 @@ from touch_controller import (
     TOUCH_ACTION_CHOICES,
     WIRELESS_RECEIVER_PRODUCT_ID,
     WIRELESS_TABLET_SIZES,
+    display_key_for_records,
+    monitor_records,
+    pen_area_rect_aspect_lock,
+    pen_specs_for_product,
+    reset_pen_area_key_cache,
     rotate_point,
+    rotated_pen_box_mm,
+    select_pen_area_entry,
     snapshot_device_sections,
+    virtual_desktop_metrics,
 )
 
 # Wireless tablet size GUI lane (U386 / TODO #385). The combo offers the
@@ -324,6 +332,208 @@ class OrientationWidget(tk.Canvas):
                              fill="#575757", outline="#9a9a9a")
             self.create_text(bx, by, text=str(number), fill="#e6e6e6",
                              font=("Segoe UI", 8))
+
+
+class PenAreaCanvasModel:
+    """Pure model behind the pen-area rect editor (U414 / #406 option A).
+
+    Owns the virtual-desktop geometry, the canvas scale, and the rect in
+    virtual-desktop px measured FROM THE DESKTOP ORIGIN (the datum of
+    `pen_area_norm_projection`). No tkinter lives here, so the editor's
+    math is pinned headless (tests/test_pen_area_editor.py); the widget
+    only maps canvas events into these calls.
+    """
+
+    MIN_RECT_PX = 16.0
+
+    def __init__(self, metrics, records, canvas_w, canvas_h, box_mm_w, box_mm_h,
+                 rect_px=None):
+        left, top, width, height = metrics
+        self.origin_x, self.origin_y = float(left), float(top)
+        self.desktop_w, self.desktop_h = float(width), float(height)
+        self.records = [str(rec) for rec in records]
+        self.box_mm = (float(box_mm_w), float(box_mm_h))
+        self.scale = min(canvas_w / self.desktop_w, canvas_h / self.desktop_h)
+        if rect_px is None:
+            start_w = min(self.desktop_w * 2.0 / 3.0,
+                          self.desktop_h * self.box_mm[0] / self.box_mm[1])
+            self.rect = [float(v) for v in pen_area_rect_aspect_lock(
+                [0, 0, start_w, 0], self.box_mm[0], self.box_mm[1])]
+        else:
+            self.rect = [float(v) for v in rect_px]
+
+    @staticmethod
+    def parse_record(record):
+        """'<path>|<left>|<top>|<W>x<H>' -> (left, top, width, height) ints."""
+        parts = record.split("|")
+        width_txt, height_txt = parts[3].split("x")
+        return int(parts[1]), int(parts[2]), int(width_txt), int(height_txt)
+
+    def monitor_canvas_rects(self):
+        """Monitor outline boxes in canvas px, origin = virtual-desktop origin."""
+        boxes = []
+        for record in self.records:
+            left, top, width, height = self.parse_record(record)
+            x0 = (left - self.origin_x) * self.scale
+            y0 = (top - self.origin_y) * self.scale
+            boxes.append((x0, y0, x0 + width * self.scale, y0 + height * self.scale))
+        return boxes
+
+    def rect_canvas(self):
+        """The rect in canvas px (origin-relative datum times the view scale)."""
+        rx, ry, rw, rh = self.rect
+        s = self.scale
+        return (rx * s, ry * s, (rx + rw) * s, (ry + rh) * s)
+
+    def handle_canvas(self):
+        """Lower-right corner handle position in canvas px."""
+        rx, ry, rw, rh = self.rect
+        return ((rx + rw) * self.scale, (ry + rh) * self.scale)
+
+    def move_by(self, delta_canvas_x, delta_canvas_y):
+        """Drag the whole rect by a canvas-px delta; clamp inside the desktop."""
+        rx, ry, rw, rh = self.rect
+        self.rect[0] = min(max(rx + delta_canvas_x / self.scale, 0.0),
+                           self.desktop_w - rw)
+        self.rect[1] = min(max(ry + delta_canvas_y / self.scale, 0.0),
+                           self.desktop_h - rh)
+
+    def resize_handle_to(self, handle_canvas_x, handle_canvas_y):
+        """Move the lower-right handle to a canvas point; aspect stays locked.
+
+        Width follows the drag; rh is re-derived from the rotated mm box
+        (`pen_area_rect_aspect_lock`), and the width shrinks first when the
+        clamped axis would leave the desktop, so the aspect never breaks.
+        """
+        rx, ry = self.rect[0], self.rect[1]
+        wanted = handle_canvas_x / self.scale - rx
+        max_w = min(self.desktop_w - rx,
+                    (self.desktop_h - ry) * self.box_mm[0] / self.box_mm[1])
+        locked = pen_area_rect_aspect_lock(
+            [rx, ry, int(max(min(wanted, max_w), self.MIN_RECT_PX)), 0],
+            self.box_mm[0], self.box_mm[1])
+        self.rect = [float(v) for v in locked]
+
+    def readout(self):
+        """Live mm/px readout line for the editor label."""
+        rx, ry, rw, rh = self.rect
+        return ("%dx%d px at (%d,%d) | pen box %.2fx%.2f mm | %.4f px/mm"
+                % (int(rw), int(rh), int(rx), int(ry),
+                   self.box_mm[0], self.box_mm[1], rw / self.box_mm[0]))
+
+
+class PenAreaEditor(ttk.Frame):
+    """In-tab pen-area rect editor (U414 / #406, option A ruled 2026-11-11).
+
+    Scaled virtual-desktop preview (monitor outlines), draggable rect with
+    lower-right aspect-locked handle, live readout, and Save/Remove into
+    the per-display-configuration `pen_area_map_<identity>` lane. Save
+    re-resolves the running reader's display key immediately
+    (`reset_pen_area_key_cache`), the #386 Apply Live shape for this
+    feature. Without display geometry or device identity the widget stays
+    inert and the isotropic default keeps running.
+    """
+
+    CANVAS_W = 320.0
+    CANVAS_H = 120.0
+    HANDLE = 8
+
+    def __init__(self, parent, config, device_info, **kwargs):
+        super().__init__(parent, **kwargs)
+        self.config = config
+        conn = (device_info or {}).get("connection") or {}
+        self.identity = conn.get("identity")
+        self.model = None
+        metrics = virtual_desktop_metrics()
+        records = monitor_records()
+        product_id = conn.get("product_id")
+        if (metrics is not None and records and self.identity is not None
+                and product_id is not None):
+            box_mm = rotated_pen_box_mm(
+                pen_specs_for_product(product_id, config),
+                config.orientation_degrees)
+            self.model = PenAreaCanvasModel(
+                metrics, records, self.CANVAS_W, self.CANVAS_H,
+                box_mm[0], box_mm[1], self._stored_rect(records))
+        self.canvas = tk.Canvas(self, width=int(self.CANVAS_W),
+                                height=int(self.CANVAS_H), bg="#262626",
+                                borderwidth=1, highlightthickness=0)
+        self.canvas.grid(row=0, column=0, columnspan=2, pady=(0, 4))
+        self.readout_label = ttk.Label(
+            self, text=self.model.readout() if self.model else
+            "No display geometry or device identity: pen area stays on the isotropic default.")
+        self.readout_label.grid(row=1, column=0, columnspan=2, sticky="w")
+        ttk.Button(self, text="Save Pen Area", command=self.save_entry).grid(
+            row=2, column=0, sticky="w", pady=(4, 0))
+        ttk.Button(self, text="Remove Rect", command=self.remove_entry).grid(
+            row=2, column=1, sticky="e", pady=(4, 0))
+        self._drag_anchor = None
+        self._drag_mode = "rect"
+        if self.model is not None:
+            self.canvas.bind("<ButtonPress-1>", self._press)
+            self.canvas.bind("<B1-Motion>", self._motion)
+        self._redraw()
+
+    def _stored_rect(self, records):
+        lane = self.config.pen_area_maps.get(self.identity)
+        entry = select_pen_area_entry(lane, display_key_for_records(records))
+        return list(entry["rect_px"]) if entry else None
+
+    def save_entry(self):
+        """Store the model rect under the CURRENT display key and save (L1)."""
+        if self.model is None or self.identity is None:
+            return False
+        key = display_key_for_records(self.model.records)
+        self.config.set_pen_area_entry(self.identity, key, self.model.records,
+                                       [int(v) for v in self.model.rect])
+        self.config.save_to_file()
+        reset_pen_area_key_cache()
+        return True
+
+    def remove_entry(self):
+        """Drop this display configuration's entry (back to the default)."""
+        if self.model is None or self.identity is None:
+            return False
+        key = display_key_for_records(self.model.records)
+        lane = self.config.pen_area_maps.get(self.identity)
+        if lane:
+            lane["entries"] = [e for e in lane.get("entries", [])
+                                if e.get("display_key") != key]
+        self.config.save_to_file()
+        reset_pen_area_key_cache()
+        return True
+
+    def _press(self, event):
+        self._drag_anchor = (event.x, event.y)
+        hx, hy = self.model.handle_canvas()
+        self._drag_mode = ("handle" if abs(event.x - hx) <= self.HANDLE
+                           and abs(event.y - hy) <= self.HANDLE else "rect")
+
+    def _motion(self, event):
+        if self._drag_anchor is None or self.model is None:
+            return
+        if self._drag_mode == "handle":
+            self.model.resize_handle_to(float(event.x), float(event.y))
+        else:
+            self.model.move_by(event.x - self._drag_anchor[0],
+                               event.y - self._drag_anchor[1])
+            self._drag_anchor = (event.x, event.y)
+        self._redraw()
+
+    def _redraw(self):
+        self.canvas.delete("all")
+        if self.model is None:
+            return
+        for box in self.model.monitor_canvas_rects():
+            self.canvas.create_rectangle(*box, outline="#888888")
+        rx0, ry0, rx1, ry1 = self.model.rect_canvas()
+        self.canvas.create_rectangle(rx0, ry0, rx1, ry1, outline="#00c8ff",
+                                     width=2, tags="penarea_rect")
+        hx, hy = self.model.handle_canvas()
+        half = self.HANDLE / 2.0
+        self.canvas.create_rectangle(hx - half, hy - half, hx + half, hy + half,
+                                     fill="#00c8ff", tags="penarea_handle")
+        self.readout_label.config(text=self.model.readout())
 
 
 def apply_settings_to_config(config, numeric_values, accel_toggles, feature_toggles,
@@ -872,6 +1082,16 @@ class SettingsWindow(tk.Toplevel):
                 ToolTip(ent, pen_tooltips[key])
 
         movement_frame.columnconfigure(1, weight=1)
+
+        # --- 1b. Pen Area Rectangle Frame (U414 / TODO #406, option A) ---
+        # Absolute-mode writing mode: a user rect projected onto the current
+        # screen(s), stored per display configuration (U414 lane). The full-
+        # fill navigation default and the stretch toggle stay untouched.
+        area_frame = ttk.LabelFrame(
+            scroll_frame, text=" Pen Area Rectangle (absolute mode) ", padding=10)
+        area_frame.pack(fill="x", padx=10, pady=(0, 8), expand=True)
+        self.pen_area_editor = PenAreaEditor(area_frame, self.config, self.device_info)
+        self.pen_area_editor.pack(fill="x")
 
         # --- 2. Wireless Tablet Size Frame (U386 / TODO #385) ---
         # The wireless receiver (id 132) shares one product id across every

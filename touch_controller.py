@@ -1747,6 +1747,17 @@ def select_live_pen_area_rect(config, identity):
     return list(entry["rect_px"])
 
 
+def pen_area_rect_aspect_lock(rect_px, box_mm_w, box_mm_h):
+    """Return the rect with rh re-derived so rw/rh == box_mm_w/box_mm_h.
+
+    U414 / #406: the editor handle and the default rect both run through
+    here, so isotropy holds BY CONSTRUCTION in the pen_area lane (L2's
+    px/mm pin depends on this aspect); rx/ry/rw are passed through.
+    """
+    rx, ry, rw, _ = rect_px
+    return [rx, ry, rw, int(round(rw * box_mm_h / box_mm_w))]
+
+
 def pen_area_norm_projection(rect_px, extent_w, extent_h, screen_w, screen_h):
     """Normalized-space offset/scale of the pen-area rect (proposal §2 formula).
 
