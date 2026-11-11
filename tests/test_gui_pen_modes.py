@@ -145,6 +145,47 @@ def test_numeric_fields_echo_the_stored_rect_on_open(modes_cfg, tk_root, monkeyp
     assert float(win.rect_entries["w_px"].get()) == pytest.approx(1720.0, abs=1)
 
 
+# --- U424r3 R3-L1 (#424 round-3 item 1): contextual fields + stable place ---
+
+
+def test_relative_speed_field_shows_only_in_relative_mode(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before 11a7939: the speed entry was always visible.
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    speed = win.entries["pen_speed"]
+    assert speed.winfo_manager() == ""  # rect_1to1 default: hidden
+    win.pen_mode_var.set("relative")
+    win._on_pen_mode_select()
+    assert speed.winfo_manager() == "grid"
+    win.pen_mode_var.set("stretched")
+    win._on_pen_mode_select()
+    assert speed.winfo_manager() == ""
+    # Mode-independent pressure threshold stays put in every mode.
+    assert win.entries["pen_pressure_threshold"].winfo_manager() == "grid"
+
+
+def test_rect_panel_keeps_its_place_across_mode_cycles(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # RED-before 11a7939: re-pack APPENDED the panel at the tab bottom.
+    # Pin = real pack order (Tcl `pack slaves`), not creation order.
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+
+    def slaves():
+        # Pack order of DIRECT slaves, keyed by widget path tails (the Tcl
+        # list items are window objects/paths depending on host version).
+        raw = win.tk.call("pack", "slaves", str(win._pen_scroll_frame))
+        return [str(item).rstrip("'>").split(".")[-1] for item in raw]
+
+    order0 = slaves()
+    idx_rect = order0.index(win.pen_rect_panel._name)
+    idx_wireless = order0.index(win._pen_wireless_frame._name)
+    assert idx_rect < idx_wireless
+    for mode in ("relative", "stretched", "relative", "rect_1to1"):
+        win.pen_mode_var.set(mode)
+        win._on_pen_mode_select()
+    order1 = slaves()
+    assert order1.index(win.pen_rect_panel._name) == idx_rect
+    assert order1.index(win._pen_wireless_frame._name) == idx_wireless
+
+
 def test_subset_checkboxes_seed_from_the_stored_subset(modes_cfg, tk_root, monkeypatch, tmp_path):
     # U424 UNIT VERDICT P1 (RED-before 62483be: vars were hardcoded True,
     # the UI lied about a stored restriction and one click silently

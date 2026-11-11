@@ -1273,15 +1273,26 @@ class SettingsWindow(tk.Toplevel):
         self._sync_mode_panels()
 
     def _sync_mode_panels(self):
+        # U424r3 R3-L1 (#424 item 1): panels pack with an explicit
+        # `after=` anchor so a mode cycle can never re-append them at the
+        # tab bottom (his bug); the speed row is relative-mode-only.
         mode = self.pen_mode_var.get()
         for panel, visible in ((self.stretch_screen_panel,
                                 mode == "stretched"),
                                (self.pen_rect_panel, mode == "rect_1to1")):
             packed = panel.winfo_manager() == "pack"  # not pack_info:
             if visible and not packed:
-                panel.pack(fill="x", padx=10, pady=(0, 8), expand=True)
+                panel.pack(fill="x", padx=10, pady=(0, 8), expand=True,
+                           after=self._pen_movement_frame)
             elif not visible and packed:
                 panel.pack_forget()
+        show_speed = mode == "relative"
+        for widget, row, col, span, sticky in self._pen_speed_widgets:
+            if show_speed and widget.winfo_manager() != "grid":
+                widget.grid(row=row, column=col, columnspan=span,
+                            sticky=sticky, pady=4)
+            elif not show_speed and widget.winfo_manager() == "grid":
+                widget.grid_remove()
 
     def _on_stretch_screens_change(self):
         # Ruling 1: the checkboxes RESTRICT the stretch target; all
@@ -1335,6 +1346,7 @@ class SettingsWindow(tk.Toplevel):
         canvas = tk.Canvas(self.tab_pen, borderwidth=0)
         scrollbar = ttk.Scrollbar(self.tab_pen, orient="vertical", command=canvas.yview)
         scroll_frame = ttk.Frame(canvas)
+        self._pen_scroll_frame = scroll_frame  # U424r3: pack-order pin target
 
         scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
         canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
@@ -1373,24 +1385,32 @@ class SettingsWindow(tk.Toplevel):
                 "Stretched: the whole pen box fills the selected screens. "
                 "1:1: the pen box maps onto a stored rectangle at one px/mm.")
 
+        # U424r3 R3-L1 (#424 item 1): the Speed row is RELATIVE-mode-only
+        # (contextual); Pressure Threshold is mode-independent. Widgets
+        # carry their grid spec so _sync_mode_panels can hide/show rows.
+        self._pen_speed_widgets = []
         pen_fields = [
-            ("Speed (px/mm):", "pen_speed", self.config.pen_speed),
-            ("Pressure Threshold:", "pen_pressure_threshold", self.config.pen_pressure_threshold),
+            ("Speed (px/mm):", "pen_speed", self.config.pen_speed, 4),
+            ("Pressure Threshold:", "pen_pressure_threshold", self.config.pen_pressure_threshold, 5),
         ]
 
-        for idx, (label_text, key, initial_val) in enumerate(pen_fields, start=4):
+        for label_text, key, initial_val, row_idx in pen_fields:
             lbl = ttk.Label(movement_frame, text=label_text)
-            lbl.grid(row=idx, column=0, sticky="w", pady=4)
+            lbl.grid(row=row_idx, column=0, sticky="w", pady=4)
             ent = ttk.Entry(movement_frame, width=12)
             ent.insert(0, str(initial_val))
-            ent.grid(row=idx, column=1, sticky="e", pady=4)
+            ent.grid(row=row_idx, column=1, sticky="e", pady=4)
             self.entries[key] = ent
+            if key == "pen_speed":
+                self._pen_speed_widgets = [(lbl, row_idx, 0, 1, "w"),
+                                            (ent, row_idx, 1, 1, "e")]
 
             if key in pen_tooltips:
                 ToolTip(lbl, pen_tooltips[key])
                 ToolTip(ent, pen_tooltips[key])
 
         movement_frame.columnconfigure(1, weight=1)
+        self._pen_movement_frame = movement_frame
 
         # --- 1b. Stretched-mode screen subset panel (U424 / ruling 1) ---
         # Checkboxes RESTRICT the stretch target: unselected screens are
@@ -1447,6 +1467,7 @@ class SettingsWindow(tk.Toplevel):
         # shows the loud notice below while a receiver connection is live.
         wireless_frame = ttk.LabelFrame(
             scroll_frame, text=" Wireless Tablet Size (receiver id 132) ", padding=10)
+        self._pen_wireless_frame = wireless_frame  # U424r3 pin + L5 move
         wireless_frame.pack(fill="x", padx=10, pady=8, expand=True)
 
         self.wireless_size_notice = tk.Label(
