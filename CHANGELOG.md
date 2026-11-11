@@ -4,6 +4,23 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261112-0130:
+
+  - ADDED pen-area rectangle mapping (U414 / #406, option A): the Pen tab
+    now carries an in-tab canvas editor -- a scaled preview of the virtual
+    desktop (monitor outlines), a draggable rectangle with a lower-right
+    aspect-locked handle (locked to the pen box aspect, so one px/mm on
+    both axes), a live mm/px readout, and Save/Remove into a new per-
+    display-configuration `pen_area_map_<identity>` config lane. In
+    absolute mode a stored rectangle that exactly matches the current
+    display set (sha1 over the EnumDisplayMonitors records) replaces the
+    centered isotropic footprint: the whole pen box lands inside the
+    rectangle -- 1:1-scale writing over a screen region -- while no match
+    keeps the U376 isotropic default and the `pen_stretch_full_desktop`
+    toggle keeps its full-fill navigation authority. Saved entries are
+    keyed per monitor arrangement, so a monitor swap falls back and an
+    arrangement return re-loads (rect survives out-and-back).
+
 261111-2355:
 
   - RENAMED the device-alias CLI lane `--save-as <alias>` to
