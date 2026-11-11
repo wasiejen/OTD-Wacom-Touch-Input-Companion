@@ -533,6 +533,33 @@ WIRELESS_TABLET_SIZE_TO_PRODUCT = {"small": 788, "medium": 789, "large": 791}
 WIRELESS_TABLET_SIZE_KEY = "wireless_tablet_size"
 WIRELESS_TABLET_SIZE_LEGACY_KEY = "wireless_pen_size"  # read-only deprecation alias
 
+# U424 / #424 ruling: ONE stored pen-movement mode replaces the effective
+# state of the old boolean toggles. `None` (= unset) derives from the
+# legacy toggles (migration table, protocol Decision ledger): absolute off
+# -> relative; absolute + stretch -> stretched; absolute, no stretch ->
+# rect_1to1 (its documented no-rect fallback IS the old isotropic
+# contain default - prior effective behavior preserved).
+PEN_MODES = ("relative", "stretched", "rect_1to1")
+PEN_MODE_KEY = "pen_mode"
+
+
+def resolved_pen_mode(config):
+    """The effective movement mode: the stored `pen_mode` or its migration.
+
+    The stored mode WINS over legacy toggle writes (no dual control, L1);
+    unset falls back to the toggle-derived migration so never-migrated
+    configs keep their prior effective behavior byte-unchanged.
+    """
+    mode = getattr(config, "pen_mode", None)
+    if mode in PEN_MODES:
+        return mode
+    toggles = config.feature_toggles
+    if not toggles.get("pen_absolute_mode", True):
+        return "relative"
+    if toggles.get("pen_stretch_full_desktop", False):
+        return "stretched"
+    return "rect_1to1"
+
 
 def device_identity_hash(path, serial_number=""):
     """Identity key of one interface: 12-hex hash over interface path + serial.
@@ -566,6 +593,7 @@ class DriverConfig:
         "scroll_speed_low", "scroll_speed_high",
         "pen_speed", "pen_pressure_threshold",
         "dial_step_threshold", "orientation_degrees", "wireless_tablet_size",
+        "pen_mode", "pen_stretch_screens",
     )
 
     # Sections the saved file may hold. "devices" is the reserved slot (c):
@@ -732,7 +760,15 @@ class DriverConfig:
         # means no explicit choice, and the reader prints a loud notice
         # naming the choices instead of silently using medium.
         self.wireless_tablet_size = None
-        
+        # U424 / #424: the single stored movement mode (None = unset ->
+        # toggle migration, see resolved_pen_mode). Set via set_pen_mode;
+        # switching modes applies LIVE and never touches the stored rect.
+        self.pen_mode = None
+        # U424 / #424 ruling 1: stretched-mode screen subset (list of
+        # monitor-record strings naming the stretch target; None/empty =
+        # ALL screens, the pre-U424 full-desktop behavior).
+        self.pen_stretch_screens = None
+
         # Gesture Thresholds
         self.max_tap_duration = 0.250       # Seconds
         self.double_tap_timeout = 0.250     # Seconds for 1F drag
@@ -1050,6 +1086,29 @@ class DriverConfig:
                                       f"{'/'.join(WIRELESS_TABLET_SIZES)} or null, "
                                       f"got {self._describe(val)} ({ref})")
                     continue
+                if key == PEN_MODE_KEY:
+                    # U424 / #424: a string enum, or null = unset (the
+                    # effective mode then migrates from the old toggles).
+                    if val is None:
+                        validated["motion"][key] = None
+                    elif val in PEN_MODES:
+                        validated["motion"][key] = val
+                    else:
+                        errors.append(f"'motion_and_thresholds.{key}' needs one of "
+                                      f"{'/'.join(PEN_MODES)} or null, "
+                                      f"got {self._describe(val)} ({ref})")
+                    continue
+                if key == "pen_stretch_screens":
+                    # U424: list of monitor-record strings, or null = all.
+                    if val is None:
+                        validated["motion"][key] = None
+                    elif isinstance(val, list) and all(isinstance(v, str) for v in val):
+                        validated["motion"][key] = list(val)
+                    else:
+                        errors.append(f"'motion_and_thresholds.{key}' needs a list "
+                                      f"of monitor-record strings or null, "
+                                      f"got {self._describe(val)} ({ref})")
+                    continue
                 number = self._coerce_number(val)
                 if number is None:
                     errors.append(f"'motion_and_thresholds.{key}' needs a number, "
@@ -1339,6 +1398,19 @@ class DriverConfig:
         for name, value in sections.items():
             entry[name] = value
         self.device_settings[identity] = entry
+
+    def set_pen_mode(self, mode):
+        """Switch the movement mode LIVE (U424 / #424 ruling 3).
+
+        The running reader resolves the mode per report, so the switch
+        needs no restart (the #386 Apply-Live shape). The stored 1:1 rect
+        is deliberately untouched: leaving rect_1to1 keeps it (inactive,
+        instantly re-usable). Raises ValueError for unknown modes.
+        """
+        if mode not in PEN_MODES:
+            raise ValueError(f"pen_mode must be one of {'/'.join(PEN_MODES)}, "
+                             f"got {mode!r}")
+        self.pen_mode = mode
 
     def set_pen_area_entry(self, identity, display_key, monitors, rect_frac):
         """Store the pen-area FRACTIONAL rectangle for one display config.
@@ -1839,6 +1911,27 @@ def cached_display_key(now=None):
     return key
 
 
+def virtual_desktop_dpi():
+    """(dpi_x, dpi_y) of the primary DC for the rect editor's mm fields
+    (U424 / #424 ruling 2). Never raises: falls back to 96/96 (Windows
+    default scaling) when the DC calls fail."""
+    try:
+        hdc = ctypes.windll.user32.GetDC(0)
+        dpi_x = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)   # LOGPIXELSX
+        dpi_y = ctypes.windll.gdi32.GetDeviceCaps(hdc, 90)   # LOGPIXELSY
+        ctypes.windll.user32.ReleaseDC(0, hdc)
+        if dpi_x > 0 and dpi_y > 0:
+            return float(dpi_x), float(dpi_y)
+    except Exception:
+        pass
+    return 96.0, 96.0
+
+
+def pen_mm_per_px(dpi, axis=0):
+    """Millimetres per pixel for the numeric rect fields (U424 ruling 2)."""
+    return 25.4 / dpi[axis]
+
+
 def select_live_pen_area_rect(config, identity):
     """The FRACTIONAL rect for the live identity + display config, else None.
 
@@ -2158,34 +2251,59 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
     None runs the pre-U414 lanes byte-unchanged.
     """
     ad = action_dispatch
-    absolute = config.feature_toggles.get("pen_absolute_mode", True)
+    # U424 / #424: ONE mode decides the lane (stored `pen_mode`, else the
+    # documented toggle migration) - the old booleans never steer directly
+    # here anymore, so a toggle write cannot dual-control the mapping.
+    pen_mode = resolved_pen_mode(config)
 
-    if absolute:
+    if pen_mode != "relative":
         # Aspect-aware mapping: the orientation transform already rotated the
         # coordinate, so scale it against the ROTATED bounding box. The 1e-9
         # tolerance absorbs the rotation's float artifacts at the box edges
         # without shifting any integer device coordinate's truncated result.
         left, top, extent_w, extent_h = rotated_pen_extents(
             pen_specs, config.orientation_degrees)
-        stretch = config.feature_toggles.get("pen_stretch_full_desktop", False)
         metrics = (virtual_desktop_metrics() if screen_metrics is None
                    else screen_metrics)
         px_mm = None
         bands = None
-        if stretch:
-            # Opt-in stretch (U344 goal 3): per-axis scales, the whole
-            # digitizer box stretched across the full desktop -- the
-            # maintainer's ultrawide observation, kept as opt-in.
-            nx = min(max(int((x - left) * PEN_VIRTUAL_RESOLUTION / extent_w + 1e-9), 0),
-                     PEN_VIRTUAL_RESOLUTION)
-            ny = min(max(int((y - top) * PEN_VIRTUAL_RESOLUTION / extent_h + 1e-9), 0),
-                     PEN_VIRTUAL_RESOLUTION)
-            mode = "stretch"
-            if metrics is not None:
+        if pen_mode == "stretched":
+            # U424 / #424 ruling 1: the screen checkboxes RESTRICT the
+            # stretch target; unselected screens are unreachable, the box
+            # stretches across the UNION of the selected monitors. Empty
+            # or unset = ALL screens = the pre-U424 full-desktop stretch
+            # (byte-unchanged). Junk metrics keep the degraded full fill
+            # (subset math needs the metrics datum, never invents one).
+            subset = getattr(config, "pen_stretch_screens", None)
+            union = (union_rect_from_records(subset)
+                     if subset and metrics is not None else None)
+            if union is not None and union[2] > 0 and union[3] > 0:
+                frac = [(union[0] - metrics[0]) / metrics[2],
+                        (union[1] - metrics[1]) / metrics[3],
+                        union[2] / metrics[2], union[3] / metrics[3]]
+                off_x, scale_x, off_y, scale_y = pen_area_norm_projection(
+                    frac, extent_w, extent_h, 1.0, 1.0)
+                nx = min(max(int(off_x + (x - left) * scale_x + 1e-9), 0),
+                         PEN_VIRTUAL_RESOLUTION)
+                ny = min(max(int(off_y + (y - top) * scale_y + 1e-9), 0),
+                         PEN_VIRTUAL_RESOLUTION)
+                mode = "stretch_subset"
                 box_mm_w, box_mm_h = rotated_pen_box_mm(
                     pen_specs, config.orientation_degrees)
-                px_mm = (metrics[2] / box_mm_w, metrics[3] / box_mm_h)
+                px_mm = (frac[2] * metrics[2] / box_mm_w,
+                         frac[3] * metrics[3] / box_mm_h)
                 bands = (0.0, 0.0)
+            else:
+                nx = min(max(int((x - left) * PEN_VIRTUAL_RESOLUTION / extent_w + 1e-9), 0),
+                         PEN_VIRTUAL_RESOLUTION)
+                ny = min(max(int((y - top) * PEN_VIRTUAL_RESOLUTION / extent_h + 1e-9), 0),
+                         PEN_VIRTUAL_RESOLUTION)
+                mode = "stretch"
+                if metrics is not None:
+                    box_mm_w, box_mm_h = rotated_pen_box_mm(
+                        pen_specs, config.orientation_degrees)
+                    px_mm = (metrics[2] / box_mm_w, metrics[3] / box_mm_h)
+                    bands = (0.0, 0.0)
         elif pen_area_rect is not None:
             # Pen-area rect lane (U414 / #406, proposal §2; U416 fractional):
             # the rotated digitizer box maps onto the user's stored
@@ -2194,7 +2312,7 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
             # on junk-metrics hosts (#406 defect). Isotropy holds by the
             # aspect-locked rect; px_mm below reports the pair from the
             # ROTATED mm box when metrics allow (diag decoration only).
-            # The stretch toggle above keeps override authority; no rect
+            # `stretched` mode above keeps override authority; no rect
             # falls through to the U376 default / degraded lane.
             box_mm_w, box_mm_h = rotated_pen_box_mm(
                 pen_specs, config.orientation_degrees)
@@ -2242,7 +2360,7 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
             # range reaches the full 0..65535 on both axes; anisotropy is
             # accepted for this host class until the host-measurement probe
             # (TODO #412) makes the measured isotropic lane reachable.
-            # The `pen_stretch_full_desktop` toggle above keeps override
+            # `stretched` mode above keeps override
             # authority. Named `stretch_unmeasured` in the diag line.
             nx = min(max(int((x - left) * PEN_VIRTUAL_RESOLUTION / extent_w + 1e-9), 0),
                      PEN_VIRTUAL_RESOLUTION)
