@@ -1757,8 +1757,17 @@ class SettingsWindow(tk.Toplevel):
         """
         unset = getattr(self.config, "wireless_tablet_size", None) is None
         show = unset and self._wireless_receiver_live()
-        self.wireless_size_notice.configure(
-            text=WIRELESS_SIZE_NOTICE_TEXT if show else "")
+        notice = self.wireless_size_notice
+        notice.configure(text=WIRELESS_SIZE_NOTICE_TEXT if show else "")
+        # U424r5 R5-F (#424 item F): an empty label still asks one line
+        # of grid height - UNMANAGE the row when there is no text, so no
+        # empty residue row stays above the tablet-size picker.
+        managed = notice.winfo_manager() == "grid"
+        if show and not managed:
+            notice.grid(row=0, column=0, columnspan=2, sticky="w",
+                        pady=(0, 6))
+        elif not show and managed:
+            notice.grid_remove()
 
     def _build_buttons_tab(self):
         canvas = tk.Canvas(self.tab_buttons, borderwidth=0)

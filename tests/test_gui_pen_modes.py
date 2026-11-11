@@ -275,6 +275,33 @@ def test_wireless_lane_lives_in_focused_device_for_receiver_only(
     assert not is_descendant(lane2, win2._pen_scroll_frame)
 
 
+def test_wireless_notice_row_fully_removed_when_size_set(modes_cfg, tk_root, monkeypatch, tmp_path):
+    # U424r5 R5-F (#424 item F): clearing the notice must REMOVE its
+    # grid row - no empty residue above the picker.
+    # RED-before dcf07f3: the label stayed managed (text "" still asks
+    # one line of grid height).
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path,
+                      product_id=132)
+    lane = win._pen_wireless_frame
+
+    def managed_slaves():
+        return list(win.tk.call("grid", "slaves", str(lane)))
+
+    assert win.wireless_size_notice.cget("text") != ""
+    assert win.wireless_size_notice.winfo_manager() == "grid"
+    assert len(managed_slaves()) == 3  # notice row + label + picker
+    modes_cfg.wireless_tablet_size = "large"
+    win._refresh_wireless_notice()
+    assert win.wireless_size_notice.cget("text") == ""
+    assert win.wireless_size_notice.winfo_manager() == ""
+    assert len(managed_slaves()) == 2  # label + picker only, no empty row
+    # and it comes back when the size is unset again (no one-way state)
+    modes_cfg.wireless_tablet_size = None
+    win._refresh_wireless_notice()
+    assert win.wireless_size_notice.winfo_manager() == "grid"
+    assert len(managed_slaves()) == 3
+
+
 def test_wireless_lane_syncs_dynamically_on_rebind(modes_cfg, tk_root, monkeypatch, tmp_path):
     win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)  # starts 791
     lane = win._pen_wireless_frame
