@@ -9,7 +9,8 @@ fix unit below lands on a pin that already states its requirement.
 Lanes:
   P1 shutdown release (Item 1, unit A2): a reader holding a modifier or the
      left button must run release_held_inputs within a bounded join window
-     once stop_event is set.
+     once stop_event is set, and main()'s own shutdown path must leave no
+     reader alive behind it.
   P2 Apply-Live durability (Item 2, unit A3): a live-applied value must
      survive pause -> reconnect, or the loss stays pinned red.
   P3 concurrent reader exits (Item 7, unit A4): two readers sharing one
@@ -22,15 +23,21 @@ injected event is counted through the conftest stub_send_input stub, the
 opt-in side of the session injection guard), and no fixed sleeps. The lanes
 synchronize on threading events and on the fake devices' own lifecycle
 signals, so a slow machine waits longer but never reads state that has not
-happened yet.
+happened yet. The one product-internal wait this module inherits is main()'s
+own 1.0 s startup readout (touch_controller.py:3626), not a test sleep.
 
 Pins that cannot pass with today's code call pytest.xfail with a reason
-naming the unit that must flip them (A3, A4). No lane pins a defect as the
-desired outcome: the assertion always states the requirement, the xfail only
-records that the current build does not meet it yet.
+naming the unit that must flip them (A2, A3, A4). No lane pins a defect as
+the desired outcome: the gate states the requirement once, and the xfail
+branch only records that the current build does not meet it. The gate is
+deliberately imperative instead of a strict marker: a blanket marker would
+also swallow a broken churn harness or a release lane that stopped injecting,
+which are different bugs the reader must see as failures.
 """
 
+import sys
 import threading
+import types
 
 import pytest
 
@@ -52,6 +59,33 @@ TICK = 0.02
 
 BASE_ACTION = "volume_up"
 APPLIED_ACTION = "volume_down"
+
+
+class GateDevice(PlainDevice):
+    """Plain device that parks its reader inside read() until the test lets go.
+
+    The shutdown lane needs readers that are provably still running when the
+    product's own shutdown path returns, so an arriving report would not do:
+    read() blocks on gate with no bound and records the reader handle. The
+    lane always releases the gate in its finally.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.gate = threading.Event()
+        self.first_read = threading.Event()
+        self.reader_threads = []
+
+    def read(self, max_size=64):
+        self.reader_threads.append(threading.current_thread())
+        self.first_read.set()
+        while not self.gate.is_set():
+            self.gate.wait(0.5)
+        return []
+
+    def close(self):
+        super().close()
+        self.reader_threads = []
 
 
 def key_ups(events, vk_code):
@@ -89,6 +123,10 @@ def join_readers(*threads):
         thread.join(EVENT_WAIT_SECONDS)
 
 
+def live_threads(threads):
+    return [t for t in threads if t.is_alive()]
+
+
 def wired_pair(product_id, parent_slug):
     """One wired pen+touch interface pair with its own parent instance path."""
     vendor = DeviceManagerThread.VENDOR_ID
@@ -115,9 +153,10 @@ def test_shutdown_stop_event_releases_held_modifier_in_join_window(fake_hid,
     every reader is a daemon thread (:3247-3258), so in the live build the
     reader's finally (:3041-3050) only runs if that thread happens to notice
     the flag before the interpreter tears the process down - the race Item 1
-    names. This pin asserts the property A2 must guarantee: with stop_event
-    set, release_held_inputs runs and the Ctrl-up lands inside one bounded
-    join window. The test does the joining; main() does not do it yet.
+    names. What this pin asserts is the narrower property: once the reader is
+    joined, the release ran and the Ctrl-up landed inside one bounded join
+    window. The test is the joiner - main() does not join yet, and the lane
+    below pins that missing joiner.
     """
     state = TabletState()
     dispatcher = ActionDispatcher(state)
@@ -135,7 +174,8 @@ def test_shutdown_stop_event_releases_held_modifier_in_join_window(fake_hid,
     assert not thread.is_alive(), "reader outlived the join window after stop_event"
     assert len(key_ups(stub_send_input, vk_codes_dict["ctrl"])) == 1, (
         "Ctrl-up did not land exactly once on stop_event exit: %s" % stub_send_input)
-    assert dev.closed is True, "reader exited without closing its device"
+    assert dev.closed_event.wait(EVENT_WAIT_SECONDS), "reader never closed its device"
+    assert dev.closed is True
 
 
 def test_shutdown_stop_event_releases_left_button_in_join_window(fake_hid,
@@ -164,7 +204,63 @@ def test_shutdown_stop_event_releases_left_button_in_join_window(fake_hid,
                             ActionDispatcher.MOUSEEVENTF_LEFTUP)) == 1, (
         "LEFTUP did not land exactly once on stop_event exit: %s" % stub_send_input)
     assert state.is_left_held is False
-    assert dev.closed is True, "reader exited without closing its device"
+    assert dev.closed_event.wait(EVENT_WAIT_SECONDS), "reader never closed its device"
+    assert dev.closed is True
+
+
+def test_shutdown_path_leaves_no_reader_alive_behind_it(fake_hid, monkeypatch,
+                                                        tmp_path):
+    """Item 1 / A2: main()'s own shutdown path has to wait for its readers.
+
+    The two pins above show the release lands when somebody joins; this lane
+    pins the joiner. The gate devices park both readers inside read(), so at
+    the moment main() returns they are provably still running. Today main()'s
+    finally (:3662-3666) sets stop_event, prints, and returns: nothing joins
+    the readers, the interpreter is free to exit, and both daemon threads die
+    wherever they stand - the stuck-Ctrl class Item 1 reports. A2's bounded
+    join (or non-daemon readers) makes this lane green.
+
+    This is the only lane that runs main(): it patches argv, the module config,
+    and the gui import, so the stub GUI closes as soon as it is launched. The
+    inherited 1.0 s cost is main()'s own startup readout (:3626).
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(sys, "argv", ["touch_controller.py"])
+    monkeypatch.setattr(touch_controller, "config", DriverConfig())
+    fake_hid.enumerate = lambda: wired_pair(789, "VID_056A&PID_0315")
+    gates = [GateDevice(), GateDevice()]
+    fake_hid._queue.extend(gates)
+
+    gui_stub = types.ModuleType("gui")
+
+    def stub_launch_gui(state, gui_config, touch_enabled_event, stop_event,
+                        device_info=None):
+        return None
+
+    gui_stub.launch_gui = stub_launch_gui
+    monkeypatch.setitem(sys.modules, "gui", gui_stub)
+
+    try:
+        touch_controller.main()   # returns when the stub GUI closes
+
+        for dev in gates:
+            assert dev.first_read.wait(EVENT_WAIT_SECONDS), (
+                "main() never drove a reader into its read loop")
+        readers = [t for dev in gates for t in dev.reader_threads]
+        assert readers, "main() spawned no reader thread"
+
+        behind = live_threads(readers)
+        if behind:
+            pytest.xfail(
+                "A2 (review Item 1): main()'s shutdown path left "
+                f"{len(behind)} reader(s) alive - the finally sets stop_event "
+                "and returns with no join (touch_controller.py:3662-3666), so "
+                "the daemon threads' release lane is a race at process exit.")
+        # Green condition: main() returned with zero live readers.
+    finally:
+        for dev in gates:
+            dev.gate.set()
+        join_readers(*[t for dev in gates for t in dev.reader_threads])
 
 
 # ==============================================================================
@@ -178,14 +274,15 @@ def test_apply_live_survives_pause_reconnect(fake_hid, monkeypatch, tmp_path):
     config-fork refresh contract in the run_interface docstring, :2947-2951).
     Pause clears the enable event, both readers break out, and the next
     manage_connections pass drops the dead entry and respawns it with a fresh
-    fork. The applied value has to be readable from that respawn - today it is
-    lost silently, which is the user-data-loss lane Item 2 reports.
+    fork. The applied value has to be readable from that respawn's connection
+    entry - today it is lost silently, which is the user-data-loss lane Item 2
+    reports.
 
-    Requirement stated at the object the readers actually read: a value
-    carried by the running connection's live config when the pause lands must
-    be present in the respawned reader's config. The pin deliberately xfails
-    only when THAT measurement fails (an unconditional strict marker would
-    also hide a broken churn harness, which is a different bug).
+    Scope of this pin: the config fork the connection entry carries across the
+    churn. The reader side of the same contract - that every spawn passes that
+    fork as cfg - is owned by test_manager_passes_fork_to_every_reader_spawn
+    (tests/test_apply_live_propagation.py), and the two pins together are what
+    the reader actually reads.
 
     A3 route note for the A3 handover: the manager-side route (keep the
     per-identity fork across the churn) satisfies this pin as written. The
@@ -225,6 +322,7 @@ def test_apply_live_survives_pause_reconnect(fake_hid, monkeypatch, tmp_path):
         respawned = manager.get_primary_connection()
         assert respawned is not None, "no connection after the respawn"
         all_threads = list(respawned["threads"].values())
+
         survived = respawned["config"].action_mapping["btn1_press"]
         if survived != APPLIED_ACTION:
             pytest.xfail(
@@ -234,9 +332,7 @@ def test_apply_live_survives_pause_reconnect(fake_hid, monkeypatch, tmp_path):
                 "config from base_config (:3235), so the reader reads "
                 f"'{survived}' again although the user applied "
                 f"'{APPLIED_ACTION}'.")
-        assert survived == APPLIED_ACTION, (
-            "Apply Live lost across pause/reconnect: the respawned reader "
-            f"carries '{survived}', the user applied '{APPLIED_ACTION}'")
+        # Green condition: the respawned connection carries APPLIED_ACTION.
     finally:
         stop.set()
         join_readers(*all_threads)
@@ -284,6 +380,8 @@ def test_two_sequential_reader_exits_release_the_modifier_once(fake_hid,
     assert len(key_ups(stub_send_input, vk_codes_dict["ctrl"])) == 1, (
         "second reader exit double-released the modifier: %s" % stub_send_input)
     assert dispatcher.held_keys == set()
+    assert dev1.closed is True and dev2.closed is True, (
+        "a reader exited without closing its device")
 
 
 def test_concurrent_reader_exits_release_the_modifier_once(fake_hid,
@@ -313,8 +411,16 @@ def test_concurrent_reader_exits_release_the_modifier_once(fake_hid,
     original_send_key = ActionDispatcher.send_key
 
     def widened_send_key(self, vk_code, release=False, *args, **kwargs):
-        if release:
-            inside_release.wait()
+        # Scoped to this test's dispatcher: a class-wide seam would let any
+        # other releasing dispatcher join the barrier and skew the count.
+        if release and self is dispatcher:
+            try:
+                inside_release.wait()
+            except threading.BrokenBarrierError:
+                # Only one arrival means A4 already turned the second exit
+                # into a no-op. Inject anyway: the count below is the
+                # measurement, and the one release must still land.
+                pass
         return original_send_key(self, vk_code, release, *args, **kwargs)
 
     monkeypatch.setattr(ActionDispatcher, "send_key", widened_send_key)
@@ -327,6 +433,9 @@ def test_concurrent_reader_exits_release_the_modifier_once(fake_hid,
 
     stop.set()      # both finallys run against each other
     join_readers(thread1, thread2)
+    assert not thread1.is_alive() and not thread2.is_alive(), (
+        "a reader outlived the join window: the count below is not a release "
+        "measurement")
 
     ups = len(key_ups(stub_send_input, vk_codes_dict["ctrl"]))
     assert ups >= 1, (
@@ -337,10 +446,10 @@ def test_concurrent_reader_exits_release_the_modifier_once(fake_hid,
             "A4 (review Item 7): concurrent reader exits released the held "
             f"modifier {ups} times - held_keys has no owner and no lock, so "
             "both finallys (:3041-3045) snapshotted the Ctrl as still held.")
-    assert ups == 1, (
-        "concurrent reader exits double-released the modifier: %s"
-        % stub_send_input)
+    # Green condition: exactly one Ctrl-up, and the held set is empty.
     assert dispatcher.held_keys == set()
+    assert dev1.closed is True and dev2.closed is True, (
+        "a reader exited without closing its device")
 
 
 # ==============================================================================
@@ -371,6 +480,7 @@ def test_primary_connection_binds_the_first_enumerated_device(fake_hid):
     try:
         manager.manage_connections()
         conns = manager.list_connections()
+        all_threads.extend(t for conn in conns for t in conn["threads"].values())
         assert len(conns) == 2, "both wired pairs must reach active_connections"
 
         primary = manager.get_primary_connection()
@@ -386,7 +496,6 @@ def test_primary_connection_binds_the_first_enumerated_device(fake_hid):
             "get_primary_state_and_action disagreed with get_primary_connection")
         assert action is primary["action"], (
             "get_primary_state_and_action disagreed with get_primary_connection")
-        all_threads.extend(t for conn in conns for t in conn["threads"].values())
     finally:
         stop.set()
         join_readers(*all_threads)
@@ -413,8 +522,8 @@ def test_two_connections_keep_their_own_runtime_objects(fake_hid):
     try:
         manager.manage_connections()
         conns = manager.list_connections()
-        assert len(conns) == 2
         all_threads.extend(t for conn in conns for t in conn["threads"].values())
+        assert len(conns) == 2
 
         assert conns[0]["config"] is not conns[1]["config"]
         assert conns[0]["state"] is not conns[1]["state"]

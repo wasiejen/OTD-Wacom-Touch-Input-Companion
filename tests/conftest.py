@@ -295,10 +295,11 @@ class ExplodingDevice(FakeDevice):
 class SignalDevice(PlainDevice):
     """Plain device that signals its own lifecycle with events, not sleeps.
 
-    first_read sets when a reader entered its read loop, closed_event sets
-    when run_interface's finally closed the device: the two points the
-    lifetime pins in tests/test_lifecycle_pins.py synchronize on, so a slow
-    machine waits longer but never reads state that has not happened yet.
+    first_read sets on every read (a waiter only needs the first one),
+    closed_event sets when the device is closed, in a finally so a raising
+    close cannot strand a waiter. Those are the two points the lifetime pins
+    in tests/test_lifecycle_pins.py synchronize on, so a slow machine waits
+    longer but never reads state that has not happened yet.
     """
 
     def __init__(self):
@@ -311,8 +312,10 @@ class SignalDevice(PlainDevice):
         return super().read(max_size)
 
     def close(self):
-        super().close()
-        self.closed_event.set()
+        try:
+            super().close()
+        finally:
+            self.closed_event.set()
 
 
 def make_hid_module(devices=None, device_queue=None):
