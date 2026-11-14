@@ -332,7 +332,8 @@ def test_button_config_round_trip(monkeypatch, tmp_path):
 
 
 def test_buttons_thread_processes_report_and_releases_on_exit(fake_hid, stub_send_input, monkeypatch):
-    monkeypatch.setitem(touch_controller.config.action_mapping, "btn1_press", "left_click")
+    cfg = DriverConfig()
+    cfg.action_mapping["btn1_press"] = "left_click"
     dev = PlainDevice(reports=[build_button_report(press=0x01, touch=0x01)])
     fake_hid._queue.append(dev)
     state = TabletState()
@@ -345,7 +346,8 @@ def test_buttons_thread_processes_report_and_releases_on_exit(fake_hid, stub_sen
         target=touch_controller.run_interface,
         args=("Buttons", {"interface_number": 2, "path": b"fake-path"},
               state, dispatcher, enabled, stop),
-        kwargs={"idle_poll": 0.02},
+        # cfg is required since unit B2 (no module-global fallback).
+        kwargs={"idle_poll": 0.02, "cfg": cfg},
         daemon=True,
     )
     thread.start()

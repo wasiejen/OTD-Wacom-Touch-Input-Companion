@@ -8,6 +8,7 @@ mapping change; default OFF is byte-unchanged behavior. RED-before at
 75c25ec: ImportError on the new API names.
 """
 
+import sys
 import pytest
 
 import touch_controller
@@ -94,6 +95,9 @@ def test_startup_main_wires_the_readout(windll_table, monkeypatch, capsys, tmp_p
 
     monkeypatch.setattr(touch_controller, "DeviceManagerThread", _BoomManager)
     monkeypatch.chdir(tmp_path)
+    # A clean start line: main() parses argv strictly since unit B2, and this pin
+    # is about the startup hook, not about the command line.
+    monkeypatch.setattr(sys, "argv", ["touch_controller.py"])
     capsys.readouterr()
     try:
         touch_controller.main()

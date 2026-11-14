@@ -164,7 +164,9 @@ def start_reader(fake_hid, interface_type, state, dispatcher, enabled, stop):
         target=run_interface,
         args=(interface_type, {"interface_number": 1, "path": b"fake-path"},
               state, dispatcher, enabled, stop),
-        kwargs={"idle_poll": TICK},
+        # cfg is required since unit B2 (no module-global fallback): a harness
+        # reader gets its own defaults config.
+        kwargs={"idle_poll": TICK, "cfg": DriverConfig()},
         daemon=True,
     )
     thread.start()

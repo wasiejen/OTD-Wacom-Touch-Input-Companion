@@ -12,7 +12,8 @@ import time
 import pytest
 
 import touch_controller
-from touch_controller import ActionDispatcher, TabletState, run_interface
+from touch_controller import (DriverConfig, ActionDispatcher, TabletState,
+                                run_interface)
 
 from conftest import FakeDevice, PlainDevice
 
@@ -35,7 +36,8 @@ def start_thread(interface_type, dev, state, dispatcher, idle_poll=TICK):
             enabled,
             stop,
         ),
-        kwargs={"idle_poll": idle_poll},
+        # cfg is required since unit B2 (no module-global fallback).
+        kwargs={"idle_poll": idle_poll, "cfg": DriverConfig()},
         daemon=True,
     )
     thread.start()

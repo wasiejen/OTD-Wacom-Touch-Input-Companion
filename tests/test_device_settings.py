@@ -259,7 +259,7 @@ def test_touch_thread_runs_connection_fork(monkeypatch, tmp_path, fake_hid, stub
     enabled.set()
 
     run_interface("Touch", {"interface_number": 1, "path": b"x"},
-                  state, dispatcher, enabled, threading.Event())
+                  state, dispatcher, enabled, threading.Event(), fork)
 
     flags = [event[1] for event in stub_send_input]
     assert ActionDispatcher.MOUSEEVENTF_MIDDLEDOWN in flags
