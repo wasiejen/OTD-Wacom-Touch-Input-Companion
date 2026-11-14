@@ -27,6 +27,15 @@ on GitHub mark shipped states — `v0.2.2` is the latest release.
     nothing and the folder held only `__pycache__`, so it was a local artifact of
     an earlier name. `.gitignore` was not touched (it ignores `/testing`, not
     `/test`, and `__pycache__` is what kept the folder out of `git status`).
+    Reviewer round (P0=1 P1=1 P2=4, fixed forward): the build spec turned out to
+    be untracked (`.gitignore` lists `*.spec`), so `OTD_Wacom_Touch_Driver.spec`
+    is force-added - without it no fresh checkout can build, and the ignore rule
+    itself stays as it is; the released executable is now named
+    `OTD_Wacom_Touch_Driver_<tag>_win64.exe` like the release page and
+    `built_pyinstaller.bat` advertise; the job installs from the repo's own
+    `requirements-built.txt`, the README uses `requirements-dev.txt` and mentions
+    `ruff`; the workflow says what the two expected pynput ERROR lines are; and
+    the stale `tests/README.md` note about the leftover `test/` dir is retired.
     Gate: `597 passed, 0 xfailed` (unchanged); both workflow files parse as YAML.
 
 261115-0025:

@@ -169,13 +169,15 @@ fresh clone on Windows:
 
 ```bash
 python -m venv .venv
-.venv/scripts/python.exe -m pip install -r requirements.txt
-.venv/scripts/python.exe -m pip install pytest
+.venv/scripts/python.exe -m pip install -r requirements-dev.txt
 .venv/scripts/python.exe -m pytest tests -q
+.venv/scripts/python.exe -m ruff check .
 ```
 
-* The suite needs the venv: `requirements.txt` carries `hidapi`, `pystray` and
-  `pillow`, and every test module imports the product modules from the repo root.
+* The suite needs the venv: `requirements-dev.txt` pulls `requirements.txt`
+  (`hidapi`, `pystray`, `pillow`) plus `pytest`; `requirements-built.txt` is the
+  same base plus PyInstaller for the packaging build, and `ruff` is optional - CI
+  runs it informationally.
 * Run pytest from the repo root. `tests/conftest.py` refuses to collect if a
   `user.cfg` sits in the current folder, so an app config left there stops the
   suite instead of silently overriding the mapping defaults (estate TODO #425).
