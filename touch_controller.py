@@ -2703,9 +2703,14 @@ def parse_sub_block(block):
     y = (block[3] << 4) | (block[4] & 0x0F)
     return (slot_id, status, (x, y))
 
-def process_touch_report(report, state, action_dispatch, cfg=None):
+def process_touch_report(report, state, action_dispatch, cfg):
+    """Decode one touch report against ONE named config.
+
+    Unit B2 removed the module-global fallback: the caller states which config
+    this lane reads, so a thread can no longer inherit whatever the import-time
+    global happened to hold (review Item 3, C1-enabler half).
+    """
     ad = action_dispatch
-    cfg = config if cfg is None else cfg
     
     current_time = time.time()   
 
@@ -3025,7 +3030,7 @@ def process_touch_report(report, state, action_dispatch, cfg=None):
 # SIMPLIFIED INTERFACE WORKER THREAD
 # ==============================================================================
 
-def run_interface(interface_type, device_info, state, action_dispatch, touch_enabled_event, stop_event, idle_poll=IDLE_POLL_SECONDS, cfg=None):
+def run_interface(interface_type, device_info, state, action_dispatch, touch_enabled_event, stop_event, cfg, idle_poll=IDLE_POLL_SECONDS):
     """
     Simplified worker thread for 'Pen', 'Touch' or the optional 'Buttons' input.
     Exits as soon as an OSError/Exception is thrown or stop_event is set or touch_enabled_event not set.
@@ -3046,7 +3051,6 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
     interface_num = device_info.get('interface_number', -1)
     path = device_info.get('path')
     header = f"[{interface_type} Thread | Interface: {interface_num}]"
-    cfg = config if cfg is None else cfg
 
     dev = hid.device()
 

@@ -10,6 +10,7 @@ import pytest
 
 import touch_controller
 from touch_controller import (
+    DriverConfig,
     MAX_TOUCH_CONTACTS,
     ActionDispatcher,
     TabletState,
@@ -61,7 +62,7 @@ def test_eleven_contact_report_processes_without_exception(stub_send_input):
     state = TabletState()
     ad = ActionDispatcher(state)
 
-    process_touch_report(down_report(11), state, ad)
+    process_touch_report(down_report(11), state, ad, DriverConfig())
 
     assert len(state.active_contacts) == 11
     assert state.peak_contact_count == 11
@@ -75,7 +76,7 @@ def test_twelve_contact_report_processes_without_exception(stub_send_input):
     ad = ActionDispatcher(state)
 
     process_touch_report(touch_report([touch_down_block(i, 50 + i, 60 + i) for i in range(1, 13)]),
-                         state, ad)
+                         state, ad, DriverConfig())
 
     assert len(state.active_contacts) == 12
     assert state.peak_contact_count == 12
@@ -87,8 +88,8 @@ def test_state_still_processes_reports_after_an_over_cap_report(stub_send_input)
     state = TabletState()
     ad = ActionDispatcher(state)
 
-    process_touch_report(down_report(11), state, ad)
-    process_touch_report(touch_report([release_block(i) for i in range(1, 12)]), state, ad)
+    process_touch_report(down_report(11), state, ad, DriverConfig())
+    process_touch_report(touch_report([release_block(i) for i in range(1, 12)]), state, ad, DriverConfig())
 
     assert state.active_contacts == {}
     assert state.last_num_active == 0
@@ -98,7 +99,7 @@ def test_normal_contact_count_indexes_its_own_cell():
     state = TabletState()
     ad = ActionDispatcher(state)
 
-    process_touch_report(down_report(2), state, ad)
+    process_touch_report(down_report(2), state, ad, DriverConfig())
 
     assert len(state.active_contacts) == 2
     assert state.start_time[2] is not None
@@ -117,7 +118,8 @@ def test_interface_thread_survives_an_over_cap_report(fake_hid, stub_send_input)
     thread = threading.Thread(
         target=run_interface,
         args=("Touch", {"interface_number": 1, "path": b"fake-path"}, state, ad, enabled, stop),
-        kwargs={"idle_poll": 0.02},
+        # cfg is required since unit B2 (no module-global fallback).
+        kwargs={"idle_poll": 0.02, "cfg": DriverConfig()},
         daemon=True,
     )
     thread.start()

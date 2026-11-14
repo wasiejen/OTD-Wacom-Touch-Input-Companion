@@ -4,7 +4,8 @@ Evidence (projects/OTD-Wacom-Touch-Input-Companion/handover_u378.md, U381
 reviewer P1): manage_connections built conn_config = base_config.fork_for_device
 (...) and stored it in the connection dict, but never passed it to the
 run_interface spawns, so every reader resolved its cfg from the module global
-config (run_interface: cfg = config if cfg is None else cfg). The GUI edits
+config through its optional-cfg fallback (since removed: unit B2 made cfg a
+required parameter of run_interface, so a reader cannot inherit a global any more). The GUI edits
 that fork (main(): gui_config = conn['config']; apply_settings mutates it in
 place), so a live "Apply Live" reached no running reader and every setting
 took effect only after a restart. The U381 button/touch lanes looked green

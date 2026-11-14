@@ -9,7 +9,7 @@ import threading
 import pytest
 
 import touch_controller
-from touch_controller import ActionDispatcher, TabletState
+from touch_controller import ActionDispatcher, DriverConfig, TabletState
 from vk_codes import vk_codes_dict
 
 from conftest import ExplodingDevice, FakeDevice
@@ -101,7 +101,8 @@ def test_thread_exit_on_oserror_releases_ctrl(fake_hid, stub_send_input):
     stop = threading.Event()
 
     touch_controller.run_interface(
-        "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, enabled, stop
+        "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, enabled, stop,
+        DriverConfig()
     )
 
     assert ("key", vk_codes_dict["ctrl"], ActionDispatcher.KEYEVENTF_KEYUP) in stub_send_input
@@ -121,7 +122,8 @@ def test_thread_exit_on_oserror_releases_left_button(fake_hid, stub_send_input):
     stop = threading.Event()
 
     touch_controller.run_interface(
-        "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, enabled, stop
+        "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, enabled, stop,
+        DriverConfig()
     )
 
     assert ("mouse", ActionDispatcher.MOUSEEVENTF_LEFTUP, 0, 0, 0) in stub_send_input
@@ -145,7 +147,7 @@ def test_run_interface_calls_release_held_inputs_on_exit(fake_hid):
 
     touch_controller.run_interface(
         "Touch", {"interface_number": 1, "path": b"fake"}, TabletState(),
-        RecordingDispatcher(), enabled, stop
+        RecordingDispatcher(), enabled, stop, DriverConfig()
     )
 
     assert calls == ["released"]

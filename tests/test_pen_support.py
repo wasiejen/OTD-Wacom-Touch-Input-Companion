@@ -605,7 +605,8 @@ def test_pen_thread_processes_full_report_and_logs_init_note(fake_hid, stub_send
         target=touch_controller.run_interface,
         args=("Pen", {"interface_number": 1, "path": b"fake-path", "product_id": 789},
               state, dispatcher, enabled, stop),
-        kwargs={"idle_poll": 0.02},
+        # cfg is required since unit B2 (no module-global fallback).
+        kwargs={"idle_poll": 0.02, "cfg": DriverConfig()},
         daemon=True,
     )
     thread.start()
