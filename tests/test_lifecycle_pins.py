@@ -31,7 +31,7 @@ lanes' margin has to be owned by the device, not by machine speed, so removing
 that dwell would silently kill the red-without-join margin.
 
 Pins that cannot pass with today's code call pytest.xfail with a reason
-naming the unit that must flip them (A3, A4). No lane pins a defect as
+naming the unit that must flip them (A4). No lane pins a defect as
 the desired outcome: the gate states the requirement once, and the xfail
 branch only records that the current build does not meet it. The gate is
 deliberately imperative instead of a strict marker: a blanket marker would
@@ -54,6 +54,7 @@ from touch_controller import (
     TabletState,
     run_interface,
 )
+import gui
 from vk_codes import vk_codes_dict
 
 from conftest import PlainDevice, SignalDevice
@@ -401,72 +402,220 @@ def test_shutdown_sweeps_a_wedged_readers_held_input(fake_hid, stub_send_input,
 # P2 - Apply-Live durability across pause -> reconnect (Item 2 / unit A3)
 # ==============================================================================
 
+class _FakeVar:
+    """Tk variable stand-in for the apply lane."""
+
+    def __init__(self, value=True):
+        self._value = value
+
+    def get(self):
+        return self._value
+
+
+class _FakeEntry:
+    """Tk entry/combo stand-in for the apply lane."""
+
+    def __init__(self, value):
+        self._value = value
+
+    def get(self):
+        return self._value
+
+
+class _FakeMessageBox:
+    """Collects the dialogs apply_settings would show instead of showing them."""
+
+    def __init__(self):
+        self.errors = []
+
+    def showerror(self, title, message):
+        self.errors.append((title, message))
+
+
+class ApplyWindow:
+    """Duck-typed SettingsWindow running the REAL apply_settings body.
+
+    A3's contract lives in the GUI apply call, so these lanes drive that method
+    itself rather than a stand-in: the fake carries only what apply_settings
+    reads (entries, the accel/feature vars, the action combos, saved actions,
+    device_info) and binds the real apply_settings plus the real write-through
+    helper, the same pattern the FakeWindow pins use in
+    tests/test_action_mapping.py.
+    """
+
+    def __init__(self, config, device_info, combos):
+        self.config = config
+        self.device_info = device_info
+        self.entries = {}
+        self.cursor_accel_var = _FakeVar(True)
+        self.scroll_accel_var = _FakeVar(True)
+        self.feature_vars = {}
+        self.action_combos = {key: _FakeEntry(value)
+                              for key, value in combos.items()}
+        self.saved_actions = {}
+        self.apply_settings = types.MethodType(gui.SettingsWindow.apply_settings, self)
+        self._write_through_focused_entry = types.MethodType(
+            gui.SettingsWindow._write_through_focused_entry, self)
+
+
+def live_base_config(action_values=None):
+    """A base config with the caller's gesture values applied up front."""
+    base = DriverConfig()
+    for key, value in (action_values or {}).items():
+        base.action_mapping[key] = value
+    return base
+
+
+def grant_live_vocabulary(base, conn):
+    """Give the base config the action vocabulary main() gives it.
+
+    main() reads the list off the live dispatcher and stores it on the base
+    config (touch_controller.py:3703-3716). A stored identity entry is validated
+    against that list when a connection reforks, so a churn lane that skipped
+    this step would watch a legitimate Apply rejected as an unknown action
+    instead of testing the durability it names.
+    """
+    base.set_available_actions(list(conn["action"].ACTION_DISPATCH.keys()))
+
+
+def start_manager(enabled, stop, base):
+    """A manager over the queued fake devices, already past its first pass."""
+    manager = DeviceManagerThread(enabled, stop, poll_interval=0.1, base_config=base)
+    manager.manage_connections()
+    return manager
+
+
+def churn(manager, enabled, all_threads):
+    """Pause, wait the readers out, resume, run one reconnect pass.
+
+    Returns the respawned connections. This is the churn Item 2 reports on: the
+    pause drops the enable event, both readers break out, and the next pass
+    deletes the dead entry and forks a fresh config for the identity.
+    """
+    enabled.clear()
+    join_readers(*all_threads)
+    enabled.set()
+    manager.manage_connections()
+    return manager.list_connections()
+
+
 def test_apply_live_survives_pause_reconnect(fake_hid, monkeypatch, tmp_path):
-    """Item 2 / A3: a live-applied value must outlive its connection.
+    """Item 2 / A3: a live-applied value outlives its connection.
 
-    "Apply Live" mutates the connection's own config fork in place (the U386
-    config-fork refresh contract in the run_interface docstring, :2947-2951).
-    Pause clears the enable event, both readers break out, and the next
-    manage_connections pass drops the dead entry and respawns it with a fresh
-    fork. The applied value has to be readable from that respawn's connection
-    entry - today it is lost silently, which is the user-data-loss lane Item 2
-    reports.
+    "Apply Live" runs the real gui.SettingsWindow.apply_settings against the
+    connection's own config fork and, since A3, writes the applied sections
+    through to that device's identity entry in base_config. The lane then pauses,
+    resumes and lets the manager respawn the connection with a fresh fork: the
+    applied value must come back on the respawned connection's config, because
+    that fork is what every reader receives (the reader side of the same contract
+    is owned by test_manager_passes_fork_to_every_reader_spawn in
+    tests/test_apply_live_propagation.py).
 
-    Scope of this pin: the config fork the connection entry carries across the
-    churn. The reader side of the same contract - that every spawn passes that
-    fork as cfg - is owned by test_manager_passes_fork_to_every_reader_spawn
-    (tests/test_apply_live_propagation.py), and the two pins together are what
-    the reader actually reads.
-
-    A3 route note for the A3 handover: the manager-side route (keep the
-    per-identity fork across the churn) satisfies this pin as written. The
-    other route the review names - the GUI apply call writing through to
-    base_config - is only reachable through gui.apply_settings; if A3 ships
-    that route alone, this fork-level pin stays red and A3 must re-point it at
-    the GUI apply call rather than delete it.
+    Before A3 the respawn reforked straight from base_config, so the reader went
+    back to the pre-Apply action mid-session and nothing said so - the data-loss
+    lane Item 2 reports. Until A3 landed, this lane pinned that loss as an
+    expected failure; it now fails red if the write-through regresses.
     """
     monkeypatch.chdir(tmp_path)
-    base = DriverConfig()
-    base.action_mapping["btn1_press"] = BASE_ACTION
+    monkeypatch.setattr(gui, "messagebox", _FakeMessageBox())
+    monkeypatch.setattr(gui, "ToastNotification", lambda *args, **kwargs: None)
+    base = live_base_config({"btn1_press": BASE_ACTION})
     fake_hid.enumerate = lambda: wired_pair(789, "VID_056A&PID_0315")
     fake_hid._queue.extend(PlainDevice() for _ in range(4))
 
     enabled = threading.Event()
     enabled.set()
     stop = threading.Event()
-    manager = DeviceManagerThread(enabled, stop, poll_interval=0.1,
-                                  base_config=base)
     all_threads = []
     try:
-        manager.manage_connections()
+        manager = start_manager(enabled, stop, base)
         conn = manager.get_primary_connection()
         assert conn is not None, "the fake pair produced no connection"
         all_threads.extend(conn["threads"].values())
-        fork = conn["config"]
-        assert fork.action_mapping["btn1_press"] == BASE_ACTION
-        assert fork is not base
+        assert conn["config"] is not base
+        grant_live_vocabulary(base, conn)
 
-        fork.action_mapping["btn1_press"] = APPLIED_ACTION  # == Apply Live
+        win = ApplyWindow(conn["config"],
+                          {"connection": conn, "base_config": base},
+                          {"btn1_press": APPLIED_ACTION})
+        assert win.apply_settings() is True, "the apply lane rejected its own values"
+        assert conn["config"].action_mapping["btn1_press"] == APPLIED_ACTION
 
-        enabled.clear()   # pause: the readers break out
+        respawned = churn(manager, enabled, all_threads)
+        assert respawned, "no connection after the respawn"
+        fresh = next(c for c in respawned if c["product_id"] == 789)
+        all_threads = list(fresh["threads"].values())
+
+        survived = fresh["config"].action_mapping["btn1_press"]
+        assert survived == APPLIED_ACTION, (
+            f"Apply Live was lost across the churn: the respawn reads '{survived}' "
+            f"although the user applied '{APPLIED_ACTION}' through "
+            "gui.SettingsWindow.apply_settings - the apply call has to write the "
+            "applied sections through to the focused device's entry so the refork "
+            "inherits them (Item 2 / A3).")
+    finally:
+        stop.set()
         join_readers(*all_threads)
-        enabled.set()     # resume
 
-        manager.manage_connections()   # the churn pass: drop the entry, respawn
-        respawned = manager.get_primary_connection()
-        assert respawned is not None, "no connection after the respawn"
-        all_threads = list(respawned["threads"].values())
 
-        survived = respawned["config"].action_mapping["btn1_press"]
-        if survived != APPLIED_ACTION:
-            pytest.xfail(
-                "A3 (review Item 2): Apply Live lost across pause/reconnect - "
-                "the manager deletes the connection entry on pause "
-                "(touch_controller.py:3192-3204) and the respawn forks a fresh "
-                "config from base_config (:3235), so the reader reads "
-                f"'{survived}' again although the user applied "
-                f"'{APPLIED_ACTION}'.")
-        # Green condition: the respawned connection carries APPLIED_ACTION.
+def test_apply_live_does_not_leak_between_devices(fake_hid, monkeypatch, tmp_path):
+    """Item 2 / A3, divergence leg: an Apply reaches one device, never the other.
+
+    Two wired pairs share one base config. Apply on A, then on B, then churn
+    both: A's respawn must read A's value and B's respawn B's. The entry the
+    apply call writes is keyed by the connection's identity, which is what keeps
+    the devices apart - so the entries themselves are asserted too, in both
+    directions, and a leak or a clobber shows up whether or not the reader sees
+    it.
+    """
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(gui, "messagebox", _FakeMessageBox())
+    monkeypatch.setattr(gui, "ToastNotification", lambda *args, **kwargs: None)
+    base = live_base_config({"btn1_press": BASE_ACTION})
+    fake_hid.enumerate = lambda: (wired_pair(789, "VID_056A&PID_0315")
+                                  + wired_pair(788, "VID_056A&PID_030C"))
+    fake_hid._queue.extend(PlainDevice() for _ in range(4))
+    third = "volume_mute"
+
+    enabled = threading.Event()
+    enabled.set()
+    stop = threading.Event()
+    all_threads = []
+    try:
+        manager = start_manager(enabled, stop, base)
+        conns = manager.list_connections()
+        assert len(conns) == 2, f"expected two connections, got {len(conns)}"
+        all_threads.extend(t for c in conns for t in c["threads"].values())
+        a = next(c for c in conns if c["product_id"] == 789)
+        b = next(c for c in conns if c["product_id"] == 788)
+        grant_live_vocabulary(base, a)
+
+        ApplyWindow(a["config"], {"connection": a, "base_config": base},
+                    {"btn1_press": APPLIED_ACTION}).apply_settings()
+        assert a["config"].action_mapping["btn1_press"] == APPLIED_ACTION
+        assert b["config"].action_mapping["btn1_press"] == BASE_ACTION, (
+            "device A's Apply live-mutated device B's config")
+        assert (base.device_settings.get(b["identity"], {})
+                .get("action_mapping", {})
+                .get("btn1_press", BASE_ACTION) == BASE_ACTION), (
+            "device A's Apply wrote into device B's entry")
+
+        ApplyWindow(b["config"], {"connection": b, "base_config": base},
+                    {"btn1_press": third}).apply_settings()
+        assert (base.device_settings[a["identity"]]["action_mapping"]["btn1_press"]
+                == APPLIED_ACTION), "device B's Apply clobbered device A's entry"
+        assert (base.device_settings[b["identity"]]["action_mapping"]["btn1_press"]
+                == third)
+
+        respawned = churn(manager, enabled, all_threads)
+        assert len(respawned) == 2, "both devices should have respawned"
+        all_threads = [t for c in respawned for t in c["threads"].values()]
+        ra = next(c for c in respawned if c["product_id"] == 789)
+        rb = next(c for c in respawned if c["product_id"] == 788)
+        assert ra["config"].action_mapping["btn1_press"] == APPLIED_ACTION, (
+            "device A lost its own Apply across the churn")
+        assert rb["config"].action_mapping["btn1_press"] == third, (
+            "device B did not inherit its own Apply, or picked up device A's")
     finally:
         stop.set()
         join_readers(*all_threads)
