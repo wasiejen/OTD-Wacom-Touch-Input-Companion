@@ -4,6 +4,29 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261114-2329:
+
+  - APPLY LIVE DURABILITY (estate WTD plan Phase A unit A3, review Item 2):
+    "Apply Live" now writes the applied settings through to the focused
+    device's entry in the base config (`_write_through_focused_entry`, the same
+    identity-keyed subset the device Save button stores), so a pause, a resume,
+    or a reconnect refork starts from what the user applied instead of from the
+    pre-Apply values. Only the in-memory base config is written: Apply Live
+    stays the non-persisting path, the file still takes the Save button, and the
+    entry is keyed by the connection's identity, so one device's Apply never
+    reaches another. `save_to_focused_device` reuses the new helper (single
+    write path, its messages unchanged). Side effect to know (reviewer note):
+    the global Save button runs the same apply lane, so a Save now also
+    refreshes the focused device's identity entry in memory before writing the
+    file - previously only "Save to device" touched it.
+    The A1 pin `test_apply_live_survives_pause_reconnect` flipped from pinned
+    red to green; the new `test_apply_live_does_not_leak_between_devices` pins
+    the divergence in both directions. RED-before: with `gui.py` at the pre-A3
+    commit both lanes fail (no write-through surface), and with the apply call
+    removed but the helper present the survival lane fails with its own
+    durability message. Gate: pin module `9 passed, 1 xfailed` (only the A4 lane
+    stays pinned red), full suite green.
+
 261114-2312:
 
   - OWNED SHUTDOWN (estate WTD plan Phase A unit A2, review Item 1): quitting

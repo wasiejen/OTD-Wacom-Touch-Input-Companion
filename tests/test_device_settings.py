@@ -404,6 +404,8 @@ class FakeDeviceWindow:
         self.save_to_file = types.MethodType(gui.SettingsWindow.save_to_file, self)
         self.save_to_focused_device = types.MethodType(
             gui.SettingsWindow.save_to_focused_device, self)
+        self._write_through_focused_entry = types.MethodType(
+            gui.SettingsWindow._write_through_focused_entry, self)
         self.assign_alias = types.MethodType(gui.SettingsWindow.assign_alias, self)
         self.copy_settings_to_alias = types.MethodType(
             gui.SettingsWindow.copy_settings_to_alias, self)

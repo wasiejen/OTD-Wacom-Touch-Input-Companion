@@ -41,11 +41,16 @@ The shutdown lanes are green since the owned-shutdown fix (estate plan A2):
 bounded budget, then force-releases through each connection's dispatcher, so
 even a wedged HID read cannot leave a key down or hang the exit.
 
-Two of those pins still state a requirement today's build does not meet, so
-they report `xfailed` with the fix unit named in the reason (A3 Apply-Live
-durability, A4 held-input lock): when the fix unit lands, its pin flips to
-green. An xfail whose printed reason does not match its stated lane means the
-mechanism broke - read the reason, do not re-mark it.
+One of those pins still states a requirement today's build does not meet, so it
+reports `xfailed` with the fix unit named in the reason (A4 held-input lock):
+when the fix unit lands, its pin flips to green. An xfail whose printed reason
+does not match its stated lane means the mechanism broke - read the reason, do
+not re-mark it.
+
+Apply-Live durability across the churn (A3) is green since the write-through:
+`gui.SettingsWindow.apply_settings` also stores the applied sections under the
+focused device's identity key, so a pause/resume/reconnect refork inherits what
+the user applied, and one device's Apply never reaches another.
 
 The thread lanes synchronize on `threading` events and on the fake device's
 `SignalDevice.first_read` / `closed_event` signals (conftest). Do not add
