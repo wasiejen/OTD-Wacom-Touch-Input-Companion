@@ -4,6 +4,31 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261115-0043:
+
+  - RELEASE WORKFLOW (estate WTD plan Phase B unit B3, review Item 11 minus the
+    logging half, which moved to C1): `.github/workflows/release.yml` builds the
+    Windows executable on a `v*` tag push - `windows-latest`, Python 3.12,
+    `requirements.txt` plus PyInstaller, then the repo's own
+    `OTD_Wacom_Touch_Driver.spec`, and uploads `dist/OTD_Wacom_Touch_Driver.exe`
+    as a build artifact (`actions/upload-artifact@v4`, failing if the build
+    produced nothing) and attaches it to the tag's release
+    (`softprops/action-gh-release@v2`). CI (`ci.yml`) is untouched. The workflow
+    creates no tag and pushes nothing: it runs on the maintainer's next tag, and
+    tagging stays his action. Because the spec bundles
+    `.venv/Lib/site-packages/hid.cp312-win_amd64.pyd`, the job builds inside a
+    `.venv` it creates, mirroring the local build instead of editing the spec.
+  - DEVELOPMENT SETUP in README: the exact fresh-clone steps to run the suite
+    (venv, `pip install -r requirements.txt`, `pip install pytest`,
+    `python -m pytest tests -q`), the reason the venv and the repo root are
+    required, the `tests/conftest.py` CWD guard, and that the suite is device-free
+    and injects no live input.
+  - Removed the stale root `test/` directory: `git ls-files test/` tracked
+    nothing and the folder held only `__pycache__`, so it was a local artifact of
+    an earlier name. `.gitignore` was not touched (it ignores `/testing`, not
+    `/test`, and `__pycache__` is what kept the folder out of `git status`).
+    Gate: `597 passed, 0 xfailed` (unchanged); both workflow files parse as YAML.
+
 261115-0025:
 
   - ONE PARSER FOR THE START LINE (estate WTD plan Phase B unit B2, review
