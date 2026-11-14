@@ -494,6 +494,11 @@ def churn(manager, enabled, all_threads):
     """
     enabled.clear()
     join_readers(*all_threads)
+    stuck = live_threads(all_threads)
+    assert not stuck, (
+        f"{len(stuck)} reader(s) outlived the pause: the manager keeps a live "
+        "connection in that case, so this lane would certify survival without "
+        "ever reforking anything")
     enabled.set()
     manager.manage_connections()
     return manager.list_connections()
@@ -544,6 +549,9 @@ def test_apply_live_survives_pause_reconnect(fake_hid, monkeypatch, tmp_path):
         respawned = churn(manager, enabled, all_threads)
         assert respawned, "no connection after the respawn"
         fresh = next(c for c in respawned if c["product_id"] == 789)
+        assert fresh["config"] is not conn["config"], (
+            "the respawn handed back the very same config object: nothing "
+            "reforked, so a surviving value here would prove nothing")
         all_threads = list(fresh["threads"].values())
 
         survived = fresh["config"].action_mapping["btn1_press"]

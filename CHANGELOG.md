@@ -15,7 +15,10 @@ on GitHub mark shipped states — `v0.2.2` is the latest release.
     stays the non-persisting path, the file still takes the Save button, and the
     entry is keyed by the connection's identity, so one device's Apply never
     reaches another. `save_to_focused_device` reuses the new helper (single
-    write path, its messages unchanged).
+    write path, its messages unchanged). Side effect to know (reviewer note):
+    the global Save button runs the same apply lane, so a Save now also
+    refreshes the focused device's identity entry in memory before writing the
+    file - previously only "Save to device" touched it.
     The A1 pin `test_apply_live_survives_pause_reconnect` flipped from pinned
     red to green; the new `test_apply_live_does_not_leak_between_devices` pins
     the divergence in both directions. RED-before: with `gui.py` at the pre-A3
