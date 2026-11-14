@@ -59,6 +59,28 @@ def _guard_test_cwd_free_of_config():
 
 _guard_test_cwd_free_of_config()
 
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_appdata_config_lane(tmp_path_factory):
+    """Point the %APPDATA% config lane (unit B1 / Item 5) at a throwaway folder.
+
+    The approved search order falls back to %APPDATA%/wtd/user.cfg, and several
+    lanes run main() or a save path inside a tmp folder; without this fixture a
+    test could read - or on a first save create - the developer's real per-user
+    config. Pins that must own the lane pass appdata_path to
+    resolve_config_paths explicitly instead of relying on this default.
+    """
+    root = tmp_path_factory.mktemp("appdata-isolation")
+    previous = os.environ.get("APPDATA")
+    os.environ["APPDATA"] = str(root)
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("APPDATA", None)
+        else:
+            os.environ["APPDATA"] = previous
+
 # Make the product modules importable from tests/ without packaging changes.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 

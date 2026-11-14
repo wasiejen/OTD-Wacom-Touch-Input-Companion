@@ -4,6 +4,35 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261115-0004:
+
+  - CONFIG SEARCH ORDER (estate WTD plan Phase B unit B1, review Item 5,
+    maintainer-approved order): the start now resolves the config file once, in
+    `main()`, through the single lane `resolve_config_paths` - an explicit
+    `--config` first, else `user.cfg` in the current folder ONLY when it exists
+    (an existing portable install keeps reading its own file), else the per-user
+    lane `%APPDATA%\wtd\user.cfg` (new `appdata_config_path()`; on a non-Windows
+    host the same per-user spot comes from the home directory). The folder for
+    the per-user lane is created by the first save instead of failing.
+  - No more file I/O at import: the module-global `config = DriverConfig()`
+    stays a defaults object, and `DriverConfig` only loads when a file is named.
+    The config the driver actually uses is built once in `main()` from the
+    resolved lane. The `tests/conftest.py` CWD guard (TODO #425) stays as the
+    belt-and-braces check, and the suite now also isolates `%APPDATA%` so no
+    test can touch a real profile.
+  - One-time migration notice (`[Config Migration]`): printed at start when the
+    current folder's `user.cfg` was chosen while `%APPDATA%\wtd\user.cfg` also
+    exists with a different modification time - the current folder wins and
+    nothing is moved or copied.
+    New pin module `tests/test_config_path_resolution.py` (7 pins: the order
+    matrix, the profile-lane derivation, first-save folder, the import probe in a
+    subprocess, and the notice's three cases). RED-before: with the pre-B1
+    `touch_controller.py` the module cannot import the new lane symbols; with the
+    B1 seams kept and only the behaviors reverted, exactly the four
+    discriminators fail (fresh-install order, first-save folder, no-I/O-at-import,
+    migration notice) while the two labeled regression guards stay green.
+    Gate: `555 passed, 0 xfailed` (548 baseline + 7 pins).
+
 261114-2347:
 
   - HELD-INPUT LOCK (estate WTD plan Phase A unit A4, review Item 7 - closes

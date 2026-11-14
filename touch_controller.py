@@ -13,6 +13,8 @@ import hashlib
 from vk_codes import vk_codes_dict  # Import vk_code dictionary
 
 CONFIG_FILE_PATH = "user.cfg"
+# Per-user config folder inside %APPDATA% (unit B1 / review Item 5).
+APPDATA_DIR_NAME = "wtd"
 
 DEBUG = False 
 # DEBUG = True  
@@ -1009,8 +1011,12 @@ class DriverConfig:
         }
         
         
-        # Attempt auto-load on startup
-        self.load_from_file()
+        # Unit B1 / review Item 5: constructing a config never touches the disk.
+        # The import-time module global is therefore a defaults object, and
+        # main() builds the real one from the resolved lane; a caller that names
+        # a file explicitly still gets it loaded here.
+        if filepath:
+            self.load_from_file()
         self.sync_sensitivities()
         
     def set_available_actions(self, actions):
@@ -1038,6 +1044,11 @@ class DriverConfig:
 
     def save_to_file(self, filepath=None):
         filepath = filepath or self.save_path
+        # The per-user lane may not exist yet (B1): create its folder on the
+        # first save instead of failing on a missing directory.
+        folder = os.path.dirname(filepath)
+        if folder:
+            os.makedirs(folder, exist_ok=True)
         data = {
             "motion_and_thresholds": {key: getattr(self, key) for key in self.MOTION_KEYS},
             "feature_toggles": self.feature_toggles,
@@ -3461,17 +3472,64 @@ def shutdown_readers(manager, budget=SHUTDOWN_JOIN_BUDGET_SECONDS):
 # MAIN ENTRY POINT
 # ==============================================================================
 
-def resolve_config_paths(args):
+def appdata_config_path(env=None):
+    """The per-user config lane: %APPDATA%\\wtd\\user.cfg (unit B1 / Item 5).
+
+    Part of the maintainer-approved search order: an explicit --config first,
+    then a cwd user.cfg ONLY when one exists (so an existing portable install is
+    never broken), then this per-user lane. Windows provides APPDATA; elsewhere
+    the same per-user roaming folder is derived from the home directory so the
+    lane exists on every platform instead of failing.
+    """
+    environment = os.environ if env is None else env
+    base = environment.get("APPDATA")
+    if not base:
+        base = os.path.join(os.path.expanduser("~"), "AppData", "Roaming")
+    return os.path.join(base, APPDATA_DIR_NAME, CONFIG_FILE_PATH)
+
+
+def config_lane_notes(cwd_path, appdata_path, path_exists, path_mtime):
+    """One-time notice when a cwd config wins over a differing per-user file.
+
+    Both files existing with different modification times means the user has two
+    live copies. The current folder wins (search order, Item 5) and nothing is
+    moved or copied, so say exactly that once at start instead of letting the
+    user guess which file the driver read.
+    """
+    if not (path_exists(cwd_path) and path_exists(appdata_path)):
+        return []
+    try:
+        cwd_stamp = path_mtime(cwd_path)
+        appdata_stamp = path_mtime(appdata_path)
+    except OSError:
+        return []
+    if cwd_stamp == appdata_stamp:
+        return []
+    return [f"[Config Migration] Using '{cwd_path}' from the current folder while "
+            f"'{appdata_path}' also exists (different modification time) - the "
+            "current folder wins; nothing was moved or copied."]
+
+
+def resolve_config_paths(args, path_exists=None, path_mtime=None, appdata_path=None):
     """Resolve the --config/--save-as start arguments from a raw argv slice.
 
     '--config <path>' sets the load path; '--save-as <path>' the save path;
-    '--save-as' omitted means the save path follows '--config'. Neither option
-    present keeps both lanes on CONFIG_FILE_PATH. Accepts '--config=<path>'
-    too, and treats '-config'/'-save-as' as the same options.
+    '--save-as' omitted means the save path follows '--config'. Accepts
+    '--config=<path>' too, and treats '-config'/'-save-as' as the same options.
+
+    Without --config the search order is the approved one (unit B1 / Item 5):
+    CONFIG_FILE_PATH in the current folder when it exists, otherwise the
+    per-user lane from appdata_config_path(). The probes are injectable so the
+    order is testable without touching a real profile: path_exists and path_mtime
+    default to the os.path checks and appdata_path to this user's lane.
     Returns (config_path, save_path, notes, other_args); ``other_args`` are the
     tokens left for the flag parser, so a path value never reads as a flag.
     """
-    config_path = CONFIG_FILE_PATH
+    exists = os.path.exists if path_exists is None else path_exists
+    get_mtime = os.path.getmtime if path_mtime is None else path_mtime
+    appdata = appdata_config_path() if appdata_path is None else appdata_path
+
+    config_path = None
     save_path = None
     notes = []
     other_args = []
@@ -3501,6 +3559,17 @@ def resolve_config_paths(args):
         else:
             save_path = value
         index += 1
+
+    if config_path is None:
+        # No --config: the current folder wins when it carries a config, so an
+        # existing portable install keeps reading exactly what it read before;
+        # a fresh install lands on the per-user lane.
+        if exists(CONFIG_FILE_PATH):
+            config_path = CONFIG_FILE_PATH
+            notes.extend(config_lane_notes(CONFIG_FILE_PATH, appdata, exists,
+                                           get_mtime))
+        else:
+            config_path = appdata
 
     if save_path is None:
         save_path = config_path
@@ -3728,8 +3797,9 @@ def main():
 
     if config_path != CONFIG_FILE_PATH:
         print(f"[Start Parameter] Config file: '{config_path}'")
-        # Rebuild from defaults so only the named file shapes the settings.
-        config = DriverConfig(config_path)
+    # Unit B1: one config object, built here from the resolved lane. The
+    # import-time global carries defaults only, so no file is read at import.
+    config = DriverConfig(config_path)
     if save_path != config_path:
         print(f"[Start Parameter] Save file: '{save_path}'")
     config.save_path = save_path
