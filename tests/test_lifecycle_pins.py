@@ -641,10 +641,10 @@ def test_two_sequential_reader_exits_release_the_modifier_once(fake_hid,
     """Item 7 / A4, serialized leg: the second exit releases nothing again.
 
     Both readers share one dispatcher, exactly as the Pen and Touch threads of
-    one connection do (:3240-3241). With the exits serialized, the second
+    one connection do. With the exits serialized, the second
     release_held_inputs pass finds held_keys empty and must inject no second
-    Ctrl-up. This leg is green today: the idempotence holds without a lock as
-    long as only one reader exits at a time.
+    Ctrl-up. This leg pins idempotence across serialized exits; the next leg
+    pins the once-only claim when the two exits overlap.
     """
     state = TabletState()
     dispatcher = ActionDispatcher(state)
@@ -683,9 +683,10 @@ def test_concurrent_reader_exits_release_the_modifier_once(fake_hid,
                                                            monkeypatch):
     """Item 7 / A4, overlapping leg: two exits in one release window.
 
-    release_held_inputs walks a snapshot of held_keys (:361-363) and
-    release_key injects the key-up BEFORE it discards from the set (:341-343);
-    no lock guards that set (Item 7). The barrier below does not rewrite the
+    Before A4, release_held_inputs walked the live held_keys set while
+    release_key injected the key-up BEFORE it discarded, so two exits standing
+    in that window both released the same modifier (Item 7). The barrier below
+    does not rewrite the
     algorithm - it only widens the window the product already has: both
     threads stand inside send_key(release=True), i.e. both have snapshotted the
     held Ctrl and neither has discarded, before either injects. The two exits
@@ -696,9 +697,10 @@ def test_concurrent_reader_exits_release_the_modifier_once(fake_hid,
     caller that drained the held modifier injects its key-up and exactly one
     Ctrl-up lands. The seam window (SEAM_WAIT_SECONDS) is the release race's own
     budget and stays shorter than the join budget, so the lone arrival wakes,
-    injects and finishes inside the joins; the seam's own arrival count then
-    proves the single Ctrl-up was measured against a starved peer rather than
-    merely observed.
+    injects and finishes inside the joins. The seam arrival count is a harness
+    sanity check, not the proof: post-A4 the loser never reaches the seam, so a
+    serialized run reports the same counts - the once-only guarantee itself is
+    what the ups == 1 assert pins.
     """
     state = TabletState()
     dispatcher = ActionDispatcher(state)

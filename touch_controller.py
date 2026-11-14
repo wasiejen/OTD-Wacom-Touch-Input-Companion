@@ -364,9 +364,13 @@ class ActionDispatcher():
         the shutdown sweep (unit A2) - so two callers can be inside this method
         at the same moment. The whole held-input registry is therefore drained
         under self._held_lock first, and every injection happens after the
-        drain: whichever caller drained a held input is the only one that can
-        release it, which is the duplicate key-up Item 7 reports. Injection
-        order and the printed names are unchanged.
+        drain: for the keys, touch slots, pen buttons and tablet buttons,
+        whichever caller drained a held input is the only one that can release
+        it - the duplicate key-up Item 7 reports. Injection order and the printed
+        names are unchanged. The left button is the exception that stays outside
+        that guarantee: handle_left_hold_release still injects its key-up
+        unconditionally instead of claiming the flag, so a drain and a concurrent
+        left-release can each send one (benign, filed to the estate todo_inbox).
         """
         with self._held_lock:
             touch_held = dict(self.touch_held)
@@ -374,6 +378,9 @@ class ActionDispatcher():
             # The touch pass below releases these modifiers, so the generic pass
             # must not pick them up from the snapshot either - that is the same
             # second key-up the live drain used to avoid by discarding first.
+            # Scope of the dedup: the held_keys overlap only. Two touch slots
+            # sharing one modifier still take two release paths here (pre-existing,
+            # estate todo_inbox), because the per-slot release has no claim.
             touch_modifiers = set(touch_held.values())
             keys = [vk_code for vk_code in self.held_keys
                     if vk_code not in touch_modifiers]
@@ -2094,11 +2101,14 @@ class TabletState:
     no read path pays for one.
 
     Exceptions, stated so the rule stays checkable:
-    - is_left_held / active_gesture / is_dragging_cursor: written by the reader
-      thread that owns the gesture AND by ActionDispatcher release lanes
-      (handle_left_hold_release, release_held_inputs), which is why the held
-      INPUT itself is not tracked here but in ActionDispatcher, under
-      ActionDispatcher._held_lock.
+    - is_left_held: the one flag with a genuine cross-thread writer. The reader
+      thread that owns the gesture sets it; ActionDispatcher's
+      release_held_inputs drain clears it from the shutdown/sweep thread. That is
+      why the held INPUT itself lives in ActionDispatcher, under
+      ActionDispatcher._held_lock, and not here.
+    - active_gesture / is_dragging_cursor: written only by the reader thread that
+      owns the gesture (handle_left_hold sets them, handle_left_hold_release
+      clears them), so they stay single-writer like every field above.
     - The dispatcher's held-input registry (held_keys, left_held,
       pen_pressure_held and the touch/pen/button held dicts) is the ONE place
       two threads may meet; it is guarded there, never here. Its drain in
@@ -3416,13 +3426,11 @@ def shutdown_readers(manager, budget=SHUTDOWN_JOIN_BUDGET_SECONDS):
     its own finally (the release lane at the end of run_interface), so every
     live connection's dispatcher is swept once here: that force-releases the
     modifier or button a stuck reader was holding, which is the stuck-Ctrl after
-    quit that Item 1 reports. release_held_inputs is idempotent SEQUENTIALLY, so
-    a reader that exited normally contributes nothing to the sweep. Against a
-    reader that is still running the two release lanes (this one and the reader's
-    own finally at the end of run_interface) can overlap on the unlocked held-key
-    set - the same shape Item 7 reports, which unit A4 must close by putting the
-    held-input sets under one lock; until then the sweep buys the stuck-key
-    guarantee at the price of a possible duplicate key-up.
+    quit that Item 1 reports. Since A4 the two release lanes cannot both claim
+    the same held input: ActionDispatcher.release_held_inputs drains its registry
+    under the per-dispatcher lock, so whichever caller drained a held key is the
+    only one that injects its release, and a reader that exited normally
+    contributes nothing to the sweep.
     """
     deadline = time.monotonic() + max(budget, 0.0)
     for thread in manager.live_reader_threads():
