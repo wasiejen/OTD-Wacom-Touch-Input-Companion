@@ -50,8 +50,11 @@ def _guard_test_cwd_free_of_config():
             "the CWD, so this file would silently override the mapping "
             "defaults every DriverConfig()-without-chdir test assumes "
             "(deterministic touch/pen thread failures - estate TODO #425). "
-            "A debug run left it behind: move or delete that file, then "
-            "re-run the suite. This guard never touches the file itself.")
+            "Either a debug run left it here, or the app itself was run "
+            "from this directory and saved its live config here. MOVE it "
+            "out of the run CWD - do NOT delete it if it is your live app "
+            "config - then re-run the suite. This guard never touches the "
+            "file itself.")
 
 
 _guard_test_cwd_free_of_config()
