@@ -4,6 +4,32 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261114-2241:
+
+  - LIFECYCLE PINS (estate WTD improvement plan Phase A unit A1, tests only):
+    new `tests/test_lifecycle_pins.py` pins the four lifetime lanes the
+    architecture review found uncovered - held-input release on shutdown
+    within a bounded join window, the shutdown path leaving no reader alive
+    behind it, Apply-Live survival across pause/reconnect, concurrent reader
+    exits on one dispatcher, and the multi-device primary bind. Three lanes
+    stay red on purpose with `pytest.xfail` reasons naming the fix units and
+    carrying the measurement: A2 (main()'s finally leaves both readers
+    running), A3 (the applied value is lost when the respawn forks a fresh
+    config from base), A4 (two exits inside one release window inject the
+    Ctrl-up twice). Every red lane is proven to flip: with one lock around
+    `release_held_inputs` the A4 pin goes green, with `main()`'s finally joining
+    its readers the A2 pin goes green, and with a per-identity config fork kept
+    across the churn the A3 pin goes green (scratch fix probes; a join timeout
+    below the bounded reader park stays red by design). RED control: removing
+    `run_interface`'s `release_held_inputs` call turns four release lanes red,
+    so no pin passes vacuously. Green suite runs: 543 passed, 3 xfailed.
+    `conftest.py` gains `SignalDevice`, a plain fake device that signals its
+    first read and its close with events, so the thread lanes never sleep. Two
+    reviewer fires (P0=0/P1=1/P2=9, then P0=0/P1=3/P2=3) folded in: the A4 seam
+    got its own shorter wait plus a seam arrival count, the reader park is
+    bounded so a joining shutdown path can actually finish, and the named
+    liveness and cleanup gaps are closed.
+
 261114-1755:
 
   - TEST-CWD GUARD (estate TODO #425, tests only): the test suite now
