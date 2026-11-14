@@ -16,14 +16,19 @@ on GitHub mark shipped states — `v0.2.2` is the latest release.
     carrying the measurement: A2 (main()'s finally leaves both readers
     running), A3 (the applied value is lost when the respawn forks a fresh
     config from base), A4 (two exits inside one release window inject the
-    Ctrl-up twice). RED control: removing `run_interface`'s
-    `release_held_inputs` call turns the three release pins red, so no pin
-    passes vacuously. Suite: 543 passed, 3 xfailed. `conftest.py` gains
-    `SignalDevice`, a plain fake device that signals its first read and its
-    close with events, so the thread lanes never sleep. Reviewer fire
-    (P0=0/P1=1/P2=9) folded in: the A4 seam tolerates a stranded barrier so
-    the pin can actually go green once A4 lands, the seam is scoped to the
-    test's own dispatcher, and the liveness/cleanup gaps it named are closed.
+    Ctrl-up twice). Every red lane is proven to flip: with one lock around
+    `release_held_inputs` the A4 pin goes green, with `main()`'s finally joining
+    its readers the A2 pin goes green, and with a per-identity config fork kept
+    across the churn the A3 pin goes green (scratch fix probes; a join timeout
+    below the bounded reader park stays red by design). RED control: removing
+    `run_interface`'s `release_held_inputs` call turns four release lanes red,
+    so no pin passes vacuously. Green suite runs: 543 passed, 3 xfailed.
+    `conftest.py` gains `SignalDevice`, a plain fake device that signals its
+    first read and its close with events, so the thread lanes never sleep. Two
+    reviewer fires (P0=0/P1=1/P2=9, then P0=0/P1=3/P2=3) folded in: the A4 seam
+    got its own shorter wait plus a seam arrival count, the reader park is
+    bounded so a joining shutdown path can actually finish, and the named
+    liveness and cleanup gaps are closed.
 
 261114-1755:
 

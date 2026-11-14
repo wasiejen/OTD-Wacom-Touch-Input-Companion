@@ -55,6 +55,12 @@ from conftest import PlainDevice, SignalDevice
 
 JOIN_WINDOW_SECONDS = 1.0
 EVENT_WAIT_SECONDS = 2.0
+# The seam window is the release race's own budget, deliberately SHORTER than
+# the join budget above: under a fixed product one release call arrives at the
+# seam alone and must wake, inject, and finish long before the joins time out.
+SEAM_WAIT_SECONDS = 0.5
+# One bounded device-level park: see GateDevice.
+PARK_SECONDS = 2.0
 TICK = 0.02
 
 BASE_ACTION = "volume_up"
@@ -62,12 +68,19 @@ APPLIED_ACTION = "volume_down"
 
 
 class GateDevice(PlainDevice):
-    """Plain device that parks its reader inside read() until the test lets go.
+    """Plain device that parks its reader inside read() for a bounded time.
 
-    The shutdown lane needs readers that are provably still running when the
-    product's own shutdown path returns, so an arriving report would not do:
-    read() blocks on gate with no bound and records the reader handle. The
-    lane always releases the gate in its finally.
+    The shutdown lane needs readers that are still running when the product's
+    own shutdown path returns, so read() parks the reader instead of handing
+    back a report, and records the handle.
+
+    The park is BOUNDED on purpose (PARK_SECONDS): the product owns no handle
+    on this device, so an unbounded park would hang any shutdown path that
+    really does join its readers - the very fix the lane pins. The bound sits
+    above main()'s 1.0 s startup readout (touch_controller.py:3626) so the
+    readers are still parked when main() returns with today's code. A fix that
+    joins with a shorter timeout than the park reports the lane red: the loud
+    direction, never a silent pass.
     """
 
     def __init__(self):
@@ -79,13 +92,8 @@ class GateDevice(PlainDevice):
     def read(self, max_size=64):
         self.reader_threads.append(threading.current_thread())
         self.first_read.set()
-        while not self.gate.is_set():
-            self.gate.wait(0.5)
+        self.gate.wait(PARK_SECONDS)
         return []
-
-    def close(self):
-        super().close()
-        self.reader_threads = []
 
 
 def key_ups(events, vk_code):
@@ -208,17 +216,22 @@ def test_shutdown_stop_event_releases_left_button_in_join_window(fake_hid,
     assert dev.closed is True
 
 
-def test_shutdown_path_leaves_no_reader_alive_behind_it(fake_hid, monkeypatch,
-                                                        tmp_path):
+def test_shutdown_path_leaves_no_reader_alive_behind_it(fake_hid, stub_send_input,
+                                                        monkeypatch, tmp_path):
     """Item 1 / A2: main()'s own shutdown path has to wait for its readers.
 
     The two pins above show the release lands when somebody joins; this lane
     pins the joiner. The gate devices park both readers inside read(), so at
-    the moment main() returns they are provably still running. Today main()'s
-    finally (:3662-3666) sets stop_event, prints, and returns: nothing joins
-    the readers, the interpreter is free to exit, and both daemon threads die
-    wherever they stand - the stuck-Ctrl class Item 1 reports. A2's bounded
-    join (or non-daemon readers) makes this lane green.
+    the moment main() returns they are still running. Today main()'s finally
+    (:3662-3666) sets stop_event, prints, and returns: nothing joins the
+    readers, the interpreter is free to exit, and both daemon threads die
+    wherever they stand - the stuck-Ctrl class Item 1 reports.
+
+    What the lane measures is the outcome, not the mechanism: it goes green as
+    soon as main() returns with no reader still running. Any route that gets
+    there counts - a join whose timeout outlives GateDevice's bounded park, or
+    a shutdown that releases the readers before returning. What stays red is a
+    path that returns while readers are still in flight.
 
     This is the only lane that runs main(): it patches argv, the module config,
     and the gui import, so the stub GUI closes as soon as it is launched. The
@@ -240,6 +253,7 @@ def test_shutdown_path_leaves_no_reader_alive_behind_it(fake_hid, monkeypatch,
     gui_stub.launch_gui = stub_launch_gui
     monkeypatch.setitem(sys.modules, "gui", gui_stub)
 
+    readers = []
     try:
         touch_controller.main()   # returns when the stub GUI closes
 
@@ -260,7 +274,13 @@ def test_shutdown_path_leaves_no_reader_alive_behind_it(fake_hid, monkeypatch,
     finally:
         for dev in gates:
             dev.gate.set()
-        join_readers(*[t for dev in gates for t in dev.reader_threads])
+        join_readers(*readers)
+
+    # Reached only when the body neither failed nor xfailed: the released
+    # readers ran their finallys by now, and this lane holds nothing they
+    # could release, so a single injected event would mean a new leak lane.
+    assert stub_send_input == [], (
+        "the shutdown path injected on teardown: %s" % stub_send_input)
 
 
 # ==============================================================================
@@ -400,26 +420,32 @@ def test_concurrent_reader_exits_release_the_modifier_once(fake_hid,
 
     Today both readers see the held modifier, so two Ctrl-ups land: the
     requirement (one) fails, and A4 (one lock over the held-input sets) is the
-    unit that must close it.
+    unit that must close it. The seam window (SEAM_WAIT_SECONDS) is the
+    release race's own budget and stays shorter than the join budget, so a
+    fixed product's lone arrival wakes, injects and finishes inside the joins;
+    the seam's own arrival count then proves the single Ctrl-up was measured
+    against a starved peer rather than merely observed.
     """
     state = TabletState()
     dispatcher = ActionDispatcher(state)
     dispatcher.press_key("ctrl")
     stub_send_input.clear()
 
-    inside_release = threading.Barrier(2, timeout=EVENT_WAIT_SECONDS)
+    inside_release = threading.Barrier(2, timeout=SEAM_WAIT_SECONDS)
+    release_calls = []
     original_send_key = ActionDispatcher.send_key
 
     def widened_send_key(self, vk_code, release=False, *args, **kwargs):
         # Scoped to this test's dispatcher: a class-wide seam would let any
         # other releasing dispatcher join the barrier and skew the count.
         if release and self is dispatcher:
+            release_calls.append(vk_code)
             try:
                 inside_release.wait()
             except threading.BrokenBarrierError:
-                # Only one arrival means A4 already turned the second exit
-                # into a no-op. Inject anyway: the count below is the
-                # measurement, and the one release must still land.
+                # Only one arrival means the release side already turned the
+                # second exit into a no-op (the A4 shape). Inject anyway: the
+                # counts below are the measurement.
                 pass
         return original_send_key(self, vk_code, release, *args, **kwargs)
 
@@ -446,7 +472,11 @@ def test_concurrent_reader_exits_release_the_modifier_once(fake_hid,
             "A4 (review Item 7): concurrent reader exits released the held "
             f"modifier {ups} times - held_keys has no owner and no lock, so "
             "both finallys (:3041-3045) snapshotted the Ctrl as still held.")
-    # Green condition: exactly one Ctrl-up, and the held set is empty.
+    assert len(release_calls) == 1, (
+        f"the seam saw {len(release_calls)} release calls while {ups} Ctrl-up "
+        "landed: a reader was starved past the seam window, so the single "
+        "count is not a release measurement")
+    # Green condition: exactly one Ctrl-up, one seam arrival, empty held set.
     assert dispatcher.held_keys == set()
     assert dev1.closed is True and dev2.closed is True, (
         "a reader exited without closing its device")
