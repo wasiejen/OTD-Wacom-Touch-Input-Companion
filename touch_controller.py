@@ -3357,8 +3357,13 @@ def shutdown_readers(manager, budget=SHUTDOWN_JOIN_BUDGET_SECONDS):
     its own finally (the release lane at the end of run_interface), so every
     live connection's dispatcher is swept once here: that force-releases the
     modifier or button a stuck reader was holding, which is the stuck-Ctrl after
-    quit that Item 1 reports. release_held_inputs is idempotent, so a reader that
-    exited normally simply contributes nothing to the sweep.
+    quit that Item 1 reports. release_held_inputs is idempotent SEQUENTIALLY, so
+    a reader that exited normally contributes nothing to the sweep. Against a
+    reader that is still running the two release lanes (this one and the reader's
+    own finally at the end of run_interface) can overlap on the unlocked held-key
+    set - the same shape Item 7 reports, which unit A4 must close by putting the
+    held-input sets under one lock; until then the sweep buys the stuck-key
+    guarantee at the price of a possible duplicate key-up.
     """
     deadline = time.monotonic() + max(budget, 0.0)
     for thread in manager.live_reader_threads():
@@ -3367,6 +3372,10 @@ def shutdown_readers(manager, budget=SHUTDOWN_JOIN_BUDGET_SECONDS):
             break
         thread.join(remaining)
 
+    # Accepted window: a wedged handle at the head can spend the whole budget, so
+    # a later reader may get no join time at all. Its held input is still swept
+    # here; only input it presses AFTER the sweep can outlive it, and that reader
+    # is a daemon the interpreter is free to cut off at exit.
     stragglers = manager.live_reader_threads()
     swept = []
     for dispatcher in manager.dispatchers():

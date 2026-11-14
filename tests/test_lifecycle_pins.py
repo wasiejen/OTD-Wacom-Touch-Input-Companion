@@ -23,8 +23,12 @@ injected event is counted through the conftest stub_send_input stub, the
 opt-in side of the session injection guard), and no fixed sleeps. The lanes
 synchronize on threading events and on the fake devices' own lifecycle
 signals, so a slow machine waits longer but never reads state that has not
-happened yet. The one product-internal wait this module inherits is main()'s
-own 1.0 s startup readout (touch_controller.py:3626), not a test sleep.
+happened yet. Two bounded waits are exempt, and both are device-side rather
+than test-side: main()'s own 1.0 s startup readout (touch_controller.py:3626),
+which the driver cannot skip, and READER_DWELL_SECONDS inside the fake devices
+(conftest's FakeDevice.read_timeout models the same dwell) - the shutdown
+lanes' margin has to be owned by the device, not by machine speed, so removing
+that dwell would silently kill the red-without-join margin.
 
 Pins that cannot pass with today's code call pytest.xfail with a reason
 naming the unit that must flip them (A3, A4). No lane pins a defect as
