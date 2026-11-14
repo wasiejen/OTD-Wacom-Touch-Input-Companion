@@ -1453,6 +1453,12 @@ IDLE_POLL_SECONDS = 0.05
 # Shortest idle wait; grows up to the poll tick and resets on every report.
 IDLE_BACKOFF_MIN_SECONDS = 0.002
 
+# Owned-shutdown join budget (Item 1 / A2), in seconds, for ONE whole shutdown
+# (not per thread). Readers stay daemon threads on purpose: a wedged HID read
+# can then cost at most this much, never a hang. Whatever is still running
+# afterwards gets its dispatcher force-released by shutdown_readers().
+SHUTDOWN_JOIN_BUDGET_SECONDS = 1.0
+
 STATUS_TOUCH_DOWN = 0xC0
 STATUS_RELEASE_TERMINAL = {0x20}
 STATUS_ACTIVE_CONTACTS = {0x80, 0x90, 0x88, 0x98}
@@ -3318,6 +3324,62 @@ class DeviceManagerThread(threading.Thread):
         with self.lock:
             return list(self.active_connections.values())
 
+    def live_reader_threads(self):
+        """Reader handles this manager recorded, live ones only (Item 1 / A2).
+
+        These are the per-connection 'threads' dicts the staleness scan already
+        keeps, so shutdown joins exactly the threads it knows by name instead of
+        guessing from threading.enumerate().
+        """
+        with self.lock:
+            threads = [t for conn in self.active_connections.values()
+                       for t in conn['threads'].values()]
+        return [t for t in threads if t.is_alive()]
+
+    def dispatchers(self):
+        """The live per-connection dispatchers, for the last-resort sweep.
+
+        One per connection, matching live_reader_threads() by ownership: a
+        reader that never returned cannot run its own release lane, so this is
+        the handle the shutdown path force-releases through.
+        """
+        with self.lock:
+            return [conn['action'] for conn in self.active_connections.values()]
+
+
+def shutdown_readers(manager, budget=SHUTDOWN_JOIN_BUDGET_SECONDS):
+    """Owned shutdown (Item 1 / A2): join the recorded readers, then sweep.
+
+    Call after stop_event is set. Every reader handle the manager recorded is
+    joined inside ONE total budget (not per thread), so a wedged HID read costs
+    at most the budget and never a hang - readers stay daemon threads on
+    purpose. Anything still running afterwards can no longer be trusted to run
+    its own finally (the release lane at the end of run_interface), so every
+    live connection's dispatcher is swept once here: that force-releases the
+    modifier or button a stuck reader was holding, which is the stuck-Ctrl after
+    quit that Item 1 reports. release_held_inputs is idempotent, so a reader that
+    exited normally simply contributes nothing to the sweep.
+    """
+    deadline = time.monotonic() + max(budget, 0.0)
+    for thread in manager.live_reader_threads():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        thread.join(remaining)
+
+    stragglers = manager.live_reader_threads()
+    swept = []
+    for dispatcher in manager.dispatchers():
+        try:
+            released = dispatcher.release_held_inputs()
+        except Exception as e:
+            print(f"[Shutdown] Dispatcher sweep failed: {e}")
+            continue
+        swept.extend(released)
+
+    print(f"[Shutdown] Readers joined; still running: {len(stragglers)}. "
+          f"Last-resort sweep released: {swept if swept else 'nothing'}")
+
 
 # ==============================================================================
 # MAIN ENTRY POINT
@@ -3661,6 +3723,7 @@ def main():
             pass
     finally:
         stop_event.set()
+        shutdown_readers(manager)
         print("\n=== Wacom Touch Driver successfully stopped ===")
 
     return 0
