@@ -11,7 +11,7 @@ From the repo root with the tree venv (system Python lacks pytest - estate knowl
 Do not name `test/` in the command: it was a local leftover dir with no tracked
 files (removed in unit B3, estate plan Phase B), and a command that names a
 missing directory makes pytest abort. The historical KW-06 command includes it -
-run the one above instead.)
+run the one above instead.
 
 ## TEST-CWD GUARD (estate TODO #425)
 
