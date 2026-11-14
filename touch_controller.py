@@ -112,6 +112,12 @@ class ActionDispatcher():
         # Per-connection config instance (U73); None keeps the module config.
         self.config = cfg
         # Inputs this dispatcher currently holds; released on thread exit.
+        # A4 (review Item 7): one lock per dispatcher over this held-input
+        # registry (held_keys, left_held, pen_pressure_held, and the drain in
+        # release_held_inputs). It guards the bookkeeping only - never an
+        # injection - so the gesture and decode paths pay a single lock around a
+        # set op and nothing else.
+        self._held_lock = threading.Lock()
         self.held_keys = set()
         self.left_held = False
         # Pen-held inputs: pressure left-hold and the two pen buttons.
@@ -245,12 +251,18 @@ class ActionDispatcher():
     def press_pen_pressure(self):
         """Pressure above threshold holds the left button like a mouse click."""
         self.send_mouse_click(self.MOUSEEVENTF_LEFTDOWN)
-        self.pen_pressure_held = True
+        with self._held_lock:
+            self.pen_pressure_held = True
 
     def release_pen_pressure(self):
-        if self.pen_pressure_held:
-            self.send_mouse_click(self.MOUSEEVENTF_LEFTUP)
+        # The claim is the lock's point: whoever clears the flag is the one that
+        # releases, so a second caller in the same window injects nothing
+        # (Item 7). The injection itself happens outside the lock.
+        with self._held_lock:
+            held = self.pen_pressure_held
             self.pen_pressure_held = False
+        if held:
+            self.send_mouse_click(self.MOUSEEVENTF_LEFTUP)
 
     def press_pen_button(self, slot, action_name):
         """Press edge of a pen button; mapped mouse buttons hold, others tap."""
@@ -336,51 +348,74 @@ class ActionDispatcher():
 
     def press_key(self, vk_code):
         self.send_key(vk_codes_dict[vk_code], release=False)
-        self.held_keys.add(vk_code)
+        with self._held_lock:
+            self.held_keys.add(vk_code)
         
     def release_key(self, vk_code):
         self.send_key(vk_codes_dict[vk_code], release=True)
-        self.held_keys.discard(vk_code)
+        with self._held_lock:
+            self.held_keys.discard(vk_code)
 
     def release_held_inputs(self):
         """Releases every modifier key and the left button this dispatcher holds.
 
         Called on interface-thread exit so a pause or disconnect mid-gesture
-        cannot leave Ctrl or the left button pressed system-wide.
+        cannot leave Ctrl or the left button pressed system-wide, and also by
+        the shutdown sweep (unit A2) - so two callers can be inside this method
+        at the same moment. The whole held-input registry is therefore drained
+        under self._held_lock first, and every injection happens after the
+        drain: whichever caller drained a held input is the only one that can
+        release it, which is the duplicate key-up Item 7 reports. Injection
+        order and the printed names are unchanged.
         """
+        with self._held_lock:
+            touch_held = dict(self.touch_held)
+            self.touch_held.clear()
+            # The touch pass below releases these modifiers, so the generic pass
+            # must not pick them up from the snapshot either - that is the same
+            # second key-up the live drain used to avoid by discarding first.
+            touch_modifiers = set(touch_held.values())
+            keys = [vk_code for vk_code in self.held_keys
+                    if vk_code not in touch_modifiers]
+            self.held_keys.clear()
+            left_held = self.left_held
+            self.left_held = False
+            pressure_held = self.pen_pressure_held
+            self.pen_pressure_held = False
+            pen_buttons_held = dict(self.pen_button_held)
+            self.pen_button_held.clear()
+            buttons_held = dict(self.button_held)
+            self.button_held.clear()
+
         released = []
 
         # Touch holds first: their modifier names also sit in held_keys, and
         # releasing them here keeps the generic pass below from sending a
         # second key-up for the same modifier (U381 / #381).
-        for slot, modifier in list(self.touch_held.items()):
+        for slot, modifier in touch_held.items():
             self.release_key(modifier)
             released.append(f"touch_{modifier}_{slot}")
-        self.touch_held.clear()
 
-        for vk_code in list(self.held_keys):
+        for vk_code in keys:
             self.release_key(vk_code)
             released.append(vk_code)
 
-        if self.left_held:
+        if left_held:
             self.send_mouse_click(self.MOUSEEVENTF_LEFTUP)
-            self.left_held = False
             self.state.is_left_held = False
             released.append("left_button")
 
-        if self.pen_pressure_held:
-            self.release_pen_pressure()
+        if pressure_held:
+            self.send_mouse_click(self.MOUSEEVENTF_LEFTUP)
             released.append("pen_pressure")
 
-        for slot, action_name in list(self.pen_button_held.items()):
+        for slot, action_name in pen_buttons_held.items():
             self.send_mouse_click(self.PEN_BUTTON_FLAGS[action_name][1])
             released.append(f"pen_button_{slot}")
-        self.pen_button_held.clear()
 
-        for slot, action_name in list(self.button_held.items()):
+        for slot, action_name in buttons_held.items():
             self.send_mouse_click(self.PEN_BUTTON_FLAGS[action_name][1])
             released.append(f"button_{slot}")
-        self.button_held.clear()
 
         if released:
             print(f"[Safety] Released held input on thread exit: {released}")
@@ -389,14 +424,16 @@ class ActionDispatcher():
 
     def handle_left_hold(self):
         self.send_mouse_click(self.MOUSEEVENTF_LEFTDOWN)
-        self.left_held = True
+        with self._held_lock:
+            self.left_held = True
         self.state.is_left_held = True
         self.state.is_dragging_cursor = True
         self.state.active_gesture = None
         
     def handle_left_hold_release(self):
         self.send_mouse_click(self.MOUSEEVENTF_LEFTUP)
-        self.left_held = False
+        with self._held_lock:
+            self.left_held = False
         self.state.is_left_held = False
         self.state.active_gesture = None
 
@@ -2046,6 +2083,28 @@ def pen_effective_specs(pen_specs, state):
 # STATE TRACKER
 # ==============================================================================
 class TabletState:
+    """Mutable gesture/session state one connection's threads share.
+
+    Threading rule (unit A4 / review Item 7): the fields here stay deliberately
+    LOCK-FREE with a single writer each. Every field has exactly one owner thread
+    by design - the interface reader thread that decodes the reports writes the
+    contact, gesture, proximity and tracking fields; the GUI and the shutdown
+    path only read them. A single write per field from its owner is atomic enough
+    for the CPython runtime this driver targets, so no field carries a lock and
+    no read path pays for one.
+
+    Exceptions, stated so the rule stays checkable:
+    - is_left_held / active_gesture / is_dragging_cursor: written by the reader
+      thread that owns the gesture AND by ActionDispatcher release lanes
+      (handle_left_hold_release, release_held_inputs), which is why the held
+      INPUT itself is not tracked here but in ActionDispatcher, under
+      ActionDispatcher._held_lock.
+    - The dispatcher's held-input registry (held_keys, left_held,
+      pen_pressure_held and the touch/pen/button held dicts) is the ONE place
+      two threads may meet; it is guarded there, never here. Its drain in
+      release_held_inputs is the only cross-thread mutation, and it is atomic.
+    """
+
     def __init__(self):
         self.pen_in_proximity = False
         
