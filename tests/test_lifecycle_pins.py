@@ -23,11 +23,15 @@ injected event is counted through the conftest stub_send_input stub, the
 opt-in side of the session injection guard), and no fixed sleeps. The lanes
 synchronize on threading events and on the fake devices' own lifecycle
 signals, so a slow machine waits longer but never reads state that has not
-happened yet. The one product-internal wait this module inherits is main()'s
-own 1.0 s startup readout (touch_controller.py:3626), not a test sleep.
+happened yet. Two bounded waits are exempt, and both are device-side rather
+than test-side: main()'s own 1.0 s startup readout (touch_controller.py:3626),
+which the driver cannot skip, and READER_DWELL_SECONDS inside the fake devices
+(conftest's FakeDevice.read_timeout models the same dwell) - the shutdown
+lanes' margin has to be owned by the device, not by machine speed, so removing
+that dwell would silently kill the red-without-join margin.
 
 Pins that cannot pass with today's code call pytest.xfail with a reason
-naming the unit that must flip them (A2, A3, A4). No lane pins a defect as
+naming the unit that must flip them (A3, A4). No lane pins a defect as
 the desired outcome: the gate states the requirement once, and the xfail
 branch only records that the current build does not meet it. The gate is
 deliberately imperative instead of a strict marker: a blanket marker would
@@ -37,6 +41,7 @@ which are different bugs the reader must see as failures.
 
 import sys
 import threading
+import time
 import types
 
 import pytest
@@ -59,40 +64,77 @@ EVENT_WAIT_SECONDS = 2.0
 # the join budget above: under a fixed product one release call arrives at the
 # seam alone and must wake, inject, and finish long before the joins time out.
 SEAM_WAIT_SECONDS = 0.5
-# One bounded device-level park: see GateDevice.
-PARK_SECONDS = 2.0
+# Device-side dwell: how long a fake reader stays inside read() AFTER the
+# product set stop_event - a real read hands back its next report or times out
+# rather than waking on the flag (conftest's FakeDevice.read_timeout models the
+# same dwell with a bounded sleep). The shutdown lanes' margin IS this dwell,
+# so it does not depend on machine speed: a shutdown that only sets the flag
+# returns inside it (readers still in flight), a shutdown that joins waits it
+# out. Kept well below the product's SHUTDOWN_JOIN_BUDGET_SECONDS.
+READER_DWELL_SECONDS = 0.3
+# Upper bound for main() returning: its own 1.0 s startup readout plus one full
+# join budget, with slack for a slow machine.
+MAIN_RETURN_LIMIT_SECONDS = 4.0
+ATTACH_WAIT_SECONDS = 2.0
 TICK = 0.02
 
 BASE_ACTION = "volume_up"
 APPLIED_ACTION = "volume_down"
 
 
-class GateDevice(PlainDevice):
-    """Plain device that parks its reader inside read() for a bounded time.
+class SlowReaderDevice(PlainDevice):
+    """Plain device whose reader leaves read() only a dwell after stop_event.
 
-    The shutdown lane needs readers that are still running when the product's
-    own shutdown path returns, so read() parks the reader instead of handing
-    back a report, and records the handle.
-
-    The park is BOUNDED on purpose (PARK_SECONDS): the product owns no handle
-    on this device, so an unbounded park would hang any shutdown path that
-    really does join its readers - the very fix the lane pins. The bound sits
-    above main()'s 1.0 s startup readout (touch_controller.py:3626) so the
-    readers are still parked when main() returns with today's code. A fix that
-    joins with a shorter timeout than the park reports the lane red: the loud
-    direction, never a silent pass.
+    read() blocks until the test attaches the product's stop_event (the
+    shutdown lane hands it over from the stub GUI launch, which happens before
+    main()'s finally sets it), then dwells READER_DWELL_SECONDS longer before
+    handing back an empty report. A shutdown path that only sets the flag
+    therefore returns while these readers are still in flight; a shutdown path
+    that joins the recorded handles finds them gone. Every parked handle is
+    recorded so the lane can name its own threads.
     """
 
     def __init__(self):
         super().__init__()
-        self.gate = threading.Event()
         self.first_read = threading.Event()
         self.reader_threads = []
+        self._attached = threading.Event()
+        self._stop_event = None
+
+    def attach_stop_event(self, stop_event):
+        self._stop_event = stop_event
+        self._attached.set()
 
     def read(self, max_size=64):
         self.reader_threads.append(threading.current_thread())
         self.first_read.set()
-        self.gate.wait(PARK_SECONDS)
+        if self._attached.wait(ATTACH_WAIT_SECONDS) and self._stop_event is not None:
+            self._stop_event.wait(ATTACH_WAIT_SECONDS)
+            # A read woken by the flag still owes the rest of its dwell.
+            # Nothing ever sets this event, so the wait is exactly the dwell.
+            threading.Event().wait(READER_DWELL_SECONDS)
+        return []
+
+
+class WedgedDevice(PlainDevice):
+    """Plain device whose read() never returns until the test lets it go.
+
+    Models the wedged HID read Item 1 names: the reader cannot reach its own
+    release lane at all, so only the shutdown path's last-resort dispatcher
+    sweep can put a held input down. The lane always releases the wedge in its
+    finally, and the product is never asked to - that is the point.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.first_read = threading.Event()
+        self.reader_threads = []
+        self.wedge = threading.Event()
+
+    def read(self, max_size=64):
+        self.reader_threads.append(threading.current_thread())
+        self.first_read.set()
+        self.wedge.wait()
         return []
 
 
@@ -216,71 +258,143 @@ def test_shutdown_stop_event_releases_left_button_in_join_window(fake_hid,
     assert dev.closed is True
 
 
-def test_shutdown_path_leaves_no_reader_alive_behind_it(fake_hid, stub_send_input,
-                                                        monkeypatch, tmp_path):
-    """Item 1 / A2: main()'s own shutdown path has to wait for its readers.
+def drive_main(fake_hid, monkeypatch, tmp_path, devices, on_launch=None):
+    """Run touch_controller.main() device-free over the given fake devices.
 
-    The two pins above show the release lands when somebody joins; this lane
-    pins the joiner. The gate devices park both readers inside read(), so at
-    the moment main() returns they are still running. Today main()'s finally
-    (:3662-3666) sets stop_event, prints, and returns: nothing joins the
-    readers, the interpreter is free to exit, and both daemon threads die
-    wherever they stand - the stuck-Ctrl class Item 1 reports.
-
-    What the lane measures is the outcome, not the mechanism: it goes green as
-    soon as main() returns with no reader still running. Any route that gets
-    there counts - a join whose timeout outlives GateDevice's bounded park, or
-    a shutdown that releases the readers before returning. What stays red is a
-    path that returns while readers are still in flight.
-
-    This is the only lane that runs main(): it patches argv, the module config,
-    and the gui import, so the stub GUI closes as soon as it is launched. The
-    inherited 1.0 s cost is main()'s own startup readout (:3626).
+    argv, the module config and the gui import are patched; the stub GUI closes
+    as soon as it is launched. At that moment every device is handed the
+    product's own stop_event (before main()'s finally sets it) and on_launch
+    runs, so a lane can put the runtime mid-gesture exactly while the GUI is
+    open. Returns the seconds main() spent, so a lane can assert a bounded
+    shutdown without sleeping. The 1.0 s main() costs on its own is its startup
+    readout (touch_controller.py:3626).
     """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["touch_controller.py"])
     monkeypatch.setattr(touch_controller, "config", DriverConfig())
     fake_hid.enumerate = lambda: wired_pair(789, "VID_056A&PID_0315")
-    gates = [GateDevice(), GateDevice()]
-    fake_hid._queue.extend(gates)
+    fake_hid._queue.extend(devices)
 
     gui_stub = types.ModuleType("gui")
 
     def stub_launch_gui(state, gui_config, touch_enabled_event, stop_event,
                         device_info=None):
+        for dev in devices:
+            attach = getattr(dev, "attach_stop_event", None)
+            if attach is not None:
+                attach(stop_event)
+        if on_launch is not None:
+            on_launch(state, device_info, stop_event)
         return None
 
     gui_stub.launch_gui = stub_launch_gui
     monkeypatch.setitem(sys.modules, "gui", gui_stub)
 
+    started = time.monotonic()
+    touch_controller.main()
+    return time.monotonic() - started
+
+
+def test_shutdown_path_leaves_no_reader_alive_behind_it(fake_hid, stub_send_input,
+                                                        monkeypatch, tmp_path):
+    """Item 1 / A2: main()'s own shutdown path waits for the readers it recorded.
+
+    The two pins above show the release lands when somebody joins; this lane
+    pins the joiner, and A2 owns it: main()'s finally sets stop_event and then
+    shutdown_readers() joins the handles DeviceManagerThread.live_reader_threads()
+    reports, inside one bounded budget.
+
+    SlowReaderDevice keeps the margin honest: its reader leaves read() only
+    READER_DWELL_SECONDS after the flag goes up, so a shutdown that only sets
+    the flag returns while the readers are still in flight, while a shutdown
+    that joins them finds them gone. The lane measures the outcome, not the
+    mechanism: any route that returns with zero live readers passes, and
+    returning while readers are still running is what fails here.
+    """
+    slow = [SlowReaderDevice(), SlowReaderDevice()]
+
     readers = []
     try:
-        touch_controller.main()   # returns when the stub GUI closes
-
-        for dev in gates:
+        elapsed = drive_main(fake_hid, monkeypatch, tmp_path, slow)
+        for dev in slow:
             assert dev.first_read.wait(EVENT_WAIT_SECONDS), (
                 "main() never drove a reader into its read loop")
-        readers = [t for dev in gates for t in dev.reader_threads]
+        readers = [t for dev in slow for t in dev.reader_threads]
         assert readers, "main() spawned no reader thread"
 
         behind = live_threads(readers)
-        if behind:
-            pytest.xfail(
-                "A2 (review Item 1): main()'s shutdown path left "
-                f"{len(behind)} reader(s) alive - the finally sets stop_event "
-                "and returns with no join (touch_controller.py:3662-3666), so "
-                "the daemon threads' release lane is a race at process exit.")
-        # Green condition: main() returned with zero live readers.
+        assert not behind, (
+            "main()'s shutdown path left "
+            f"{len(behind)} reader(s) alive - the finally has to join the "
+            "reader handles the manager recorded "
+            "(DeviceManagerThread.live_reader_threads) before returning, or "
+            "the daemon threads' release lane stays a race at process exit "
+            "(Item 1 / A2).")
+        assert elapsed < MAIN_RETURN_LIMIT_SECONDS, (
+            f"main() took {elapsed:.2f}s - the shutdown join is not bounded")
     finally:
-        for dev in gates:
-            dev.gate.set()
         join_readers(*readers)
 
-    # Reached only when the body neither failed nor xfailed: the released
-    # readers ran their finallys by now, and this lane holds nothing they
-    # could release, so a single injected event would mean a new leak lane.
+    # Reached only when the body did not fail: by now the readers ran their
+    # finallys, and this lane holds nothing they could release, so a single
+    # injected event would mean a new leak lane.
     assert stub_send_input == [], (
         "the shutdown path injected on teardown: %s" % stub_send_input)
+
+
+def test_shutdown_sweeps_a_wedged_readers_held_input(fake_hid, stub_send_input,
+                                                     monkeypatch, tmp_path):
+    """Item 1 / A2: a reader that never returns must still have its input released.
+
+    The last half of owned shutdown: WedgedDevice models the wedged HID read,
+    so neither reader can reach its own release lane. The lane puts the live
+    dispatcher mid-gesture (Ctrl held) while the stub GUI is open, lets main()
+    shut down, and requires that the shutdown path force-releases through the
+    connection's dispatcher (shutdown_readers -> release_held_inputs) and still
+    returns inside its budget. Without the sweep nothing releases: the Ctrl-up
+    only appears after this test lets the wedge go, which is the stuck-key
+    class Item 1 reports.
+    """
+    wedged = [WedgedDevice(), WedgedDevice()]
+    held = {}
+
+    def mid_gesture(state, device_info, stop_event):
+        dispatcher = device_info["connection"]["action"]
+        held["dispatcher"] = dispatcher
+        dispatcher.press_key("ctrl")
+        # Keep only what the shutdown itself releases.
+        stub_send_input.clear()
+
+    readers = []
+    try:
+        elapsed = drive_main(fake_hid, monkeypatch, tmp_path, wedged,
+                             on_launch=mid_gesture)
+        for dev in wedged:
+            assert dev.first_read.wait(EVENT_WAIT_SECONDS), (
+                "main() never drove a reader into its read loop")
+        readers = [t for dev in wedged for t in dev.reader_threads]
+        assert len(readers) == 2, "both readers of the pair should be wedged"
+
+        assert elapsed < MAIN_RETURN_LIMIT_SECONDS, (
+            f"main() took {elapsed:.2f}s - a wedged read hung the shutdown "
+            "instead of costing at most the join budget")
+        assert all(t.is_alive() for t in readers), (
+            "the wedged readers exited on their own: this run did not test "
+            "the last-resort sweep at all")
+
+        assert len(key_ups(stub_send_input, vk_codes_dict["ctrl"])) == 1, (
+            "the shutdown sweep did not force-release the Ctrl a wedged "
+            f"reader was holding: {stub_send_input}")
+        assert held["dispatcher"].held_keys == set(), (
+            "the sweep left the dispatcher claiming a held key")
+    finally:
+        for dev in wedged:
+            dev.wedge.set()
+        join_readers(*readers)
+
+    assert len(key_ups(stub_send_input, vk_codes_dict["ctrl"])) == 1, (
+        "the released Ctrl-up landed twice (sweep plus the reader's own "
+        f"finally): {stub_send_input}")
 
 
 # ==============================================================================

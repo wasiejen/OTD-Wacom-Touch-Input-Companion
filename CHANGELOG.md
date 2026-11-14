@@ -4,6 +4,26 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261114-2312:
+
+  - OWNED SHUTDOWN (estate WTD plan Phase A unit A2, review Item 1): quitting
+    mid-gesture no longer leaves a modifier or the left button pressed.
+    `main()`'s finally now sets `stop_event` and calls the new
+    `shutdown_readers()`, which joins the reader handles the manager already
+    recorded per connection (`DeviceManagerThread.live_reader_threads()`)
+    inside ONE total budget (`SHUTDOWN_JOIN_BUDGET_SECONDS`, 1.0 s), then
+    force-releases every live connection's dispatcher as a last resort.
+    Readers stay daemon threads, so a wedged HID read costs at most the budget
+    and can never hang the exit - the release happens whether the reader
+    returns or not. The tray/GUI quit path flows through the same finally, so
+    both routes get the join and the sweep.
+    Flip proof: the A1 pin `test_shutdown_path_leaves_no_reader_alive_behind_it`
+    went red with the fix stashed and green with it restored; the new
+    `test_shutdown_sweeps_a_wedged_readers_held_input` pins the sweep against a
+    read that never returns and asserts the shutdown stays bounded. Gate:
+    `7 passed, 2 xfailed` in the pin module (only the A3/A4 lanes remain
+    pinned red), full suite green.
+
 261114-2241:
 
   - LIFECYCLE PINS (estate WTD improvement plan Phase A unit A1, tests only):

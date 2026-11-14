@@ -231,6 +231,15 @@ class FakeManagerThread:
     def get_primary_connection(self):
         return None
 
+    def live_reader_threads(self):
+        # Owned-shutdown surface main()'s finally drives (Item 1 / A2): this
+        # double starts no readers, so there is nothing to join and nothing to
+        # sweep - the shutdown path must still be able to ask.
+        return []
+
+    def dispatchers(self):
+        return []
+
 
 def test_main_passes_manager_bundle_without_connection(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)

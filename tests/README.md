@@ -36,11 +36,16 @@ the test (the existing pattern) or pass an explicit path - do not place a
 review found uncovered: held-input release on shutdown (including whether the
 shutdown path joins its readers), Apply-Live across pause/reconnect,
 concurrent reader exits on one dispatcher, and the multi-device primary bind.
-Some of those pins state a requirement today's build does not meet, so they
-report `xfailed` with the fix unit named in the reason (A2 shutdown join, A3
-Apply-Live durability, A4 held-input lock): when the fix unit lands, its pin
-flips to green. An xfail whose printed reason does not match its stated lane
-means the mechanism broke - read the reason, do not re-mark it.
+The shutdown lanes are green since the owned-shutdown fix (estate plan A2):
+`main()`'s finally joins the reader handles the manager recorded inside one
+bounded budget, then force-releases through each connection's dispatcher, so
+even a wedged HID read cannot leave a key down or hang the exit.
+
+Two of those pins still state a requirement today's build does not meet, so
+they report `xfailed` with the fix unit named in the reason (A3 Apply-Live
+durability, A4 held-input lock): when the fix unit lands, its pin flips to
+green. An xfail whose printed reason does not match its stated lane means the
+mechanism broke - read the reason, do not re-mark it.
 
 The thread lanes synchronize on `threading` events and on the fake device's
 `SignalDevice.first_read` / `closed_event` signals (conftest). Do not add
