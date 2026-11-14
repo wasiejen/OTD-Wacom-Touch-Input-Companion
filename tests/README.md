@@ -41,11 +41,13 @@ The shutdown lanes are green since the owned-shutdown fix (estate plan A2):
 bounded budget, then force-releases through each connection's dispatcher, so
 even a wedged HID read cannot leave a key down or hang the exit.
 
-One of those pins still states a requirement today's build does not meet, so it
-reports `xfailed` with the fix unit named in the reason (A4 held-input lock):
-when the fix unit lands, its pin flips to green. An xfail whose printed reason
-does not match its stated lane means the mechanism broke - read the reason, do
-not re-mark it.
+All of those lanes are green now: the owned shutdown (A2), the Apply-Live
+write-through (A3) and the held-input lock (A4) each flipped the requirement it
+pinned. If a lifecycle lane ever fails, read its docstring - it names the
+guarantee the product owes and the unit that established it. A future lane for
+an unmet requirement reports `xfailed` with the fix unit in the reason; an
+xfail whose reason does not match its stated lane means the mechanism broke -
+read the reason, do not re-mark it.
 
 Apply-Live durability across the churn (A3) is green since the write-through:
 `gui.SettingsWindow.apply_settings` also stores the applied sections under the

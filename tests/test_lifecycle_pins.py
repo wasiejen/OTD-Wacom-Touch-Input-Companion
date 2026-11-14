@@ -30,10 +30,13 @@ which the driver cannot skip, and READER_DWELL_SECONDS inside the fake devices
 lanes' margin has to be owned by the device, not by machine speed, so removing
 that dwell would silently kill the red-without-join margin.
 
-Pins that cannot pass with today's code call pytest.xfail with a reason
-naming the unit that must flip them (A4). No lane pins a defect as
-the desired outcome: the gate states the requirement once, and the xfail
-branch only records that the current build does not meet it. The gate is
+No lane pins an unmet requirement any more: the Phase A fix units (A2 shutdown
+join, A3 Apply-Live write-through, A4 held-input lock) all landed, so every lane
+asserts its requirement directly. The convention stays for the next one - a pin
+that cannot pass yet calls pytest.xfail with a reason naming the unit that must
+flip it, and the reason carries the measurement. No lane pins a defect as
+the desired outcome: the gate states the requirement once, and an xfail branch
+only records that the current build does not meet it. The gate is
 deliberately imperative instead of a strict marker: a blanket marker would
 also swallow a broken churn harness or a release lane that stopped injecting,
 which are different bugs the reader must see as failures.
@@ -689,13 +692,13 @@ def test_concurrent_reader_exits_release_the_modifier_once(fake_hid,
     release each other, so no sleep is needed and the interleaving is not left
     to luck.
 
-    Today both readers see the held modifier, so two Ctrl-ups land: the
-    requirement (one) fails, and A4 (one lock over the held-input sets) is the
-    unit that must close it. The seam window (SEAM_WAIT_SECONDS) is the
-    release race's own budget and stays shorter than the join budget, so a
-    fixed product's lone arrival wakes, injects and finishes inside the joins;
-    the seam's own arrival count then proves the single Ctrl-up was measured
-    against a starved peer rather than merely observed.
+    Since A4 the registry is claimed under one lock per dispatcher, so only the
+    caller that drained the held modifier injects its key-up and exactly one
+    Ctrl-up lands. The seam window (SEAM_WAIT_SECONDS) is the release race's own
+    budget and stays shorter than the join budget, so the lone arrival wakes,
+    injects and finishes inside the joins; the seam's own arrival count then
+    proves the single Ctrl-up was measured against a starved peer rather than
+    merely observed.
     """
     state = TabletState()
     dispatcher = ActionDispatcher(state)
@@ -738,11 +741,11 @@ def test_concurrent_reader_exits_release_the_modifier_once(fake_hid,
     assert ups >= 1, (
         "no Ctrl-up landed at all - the release lane itself broke: %s"
         % stub_send_input)
-    if ups > 1:
-        pytest.xfail(
-            "A4 (review Item 7): concurrent reader exits released the held "
-            f"modifier {ups} times - held_keys has no owner and no lock, so "
-            "both finallys (:3041-3045) snapshotted the Ctrl as still held.")
+    assert ups == 1, (
+        f"two concurrent reader exits released the held modifier {ups} times - "
+        "the held-input registry has to be claimed under one lock per "
+        "dispatcher, so only the caller that drained a held input injects its "
+        "key-up (Item 7 / A4).")
     assert len(release_calls) == 1, (
         f"the seam saw {len(release_calls)} release calls while {ups} Ctrl-up "
         "landed: a reader was starved past the seam window, so the single "
