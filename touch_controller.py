@@ -3,6 +3,7 @@ import time
 import math
 import threading
 import json
+import argparse
 import os
 import ctypes
 import sys
@@ -3514,69 +3515,219 @@ def config_lane_notes(cwd_path, appdata_path, path_exists, path_mtime):
 
 
 def resolve_config_paths(args, path_exists=None, path_mtime=None, appdata_path=None):
-    """Resolve the --config/--save-as start arguments from a raw argv slice.
+    """Adapter over the single start parser: the legacy four-tuple view.
 
-    '--config <path>' sets the load path; '--save-as <path>' the save path;
-    '--save-as' omitted means the save path follows '--config'. Accepts
-    '--config=<path>' too, and treats '-config'/'-save-as' as the same options.
+    Unit B2 moved the actual parsing to parse_start_args; this keeps the shape the
+    path pins already assert - (config_path, save_path, notes, other_args) - where
+    ``other_args`` are the tokens the path options did not consume. Prefer
+    parse_start_args plus resolve_config_ladder in new code.
+    """
+    namespace, notes = parse_start_args(args)
+    config_path, save_path, ladder_notes = resolve_config_ladder(
+        namespace.config,
+        namespace.save_as if namespace.save_as and looks_like_path(namespace.save_as) else None,
+        path_exists=path_exists, path_mtime=path_mtime, appdata_path=appdata_path)
 
-    Without --config the search order is the approved one (unit B1 / Item 5):
-    CONFIG_FILE_PATH in the current folder when it exists, otherwise the
-    per-user lane from appdata_config_path(). The probes are injectable so the
-    order is testable without touching a real profile: path_exists and path_mtime
-    default to the os.path checks and appdata_path to this user's lane.
-    Returns (config_path, save_path, notes, other_args); ``other_args`` are the
-    tokens left for the flag parser, so a path value never reads as a flag.
+    other_args = []
+    skip_values = {"--config", "--save-as"}
+    index = 0
+    tokens = namespace.start_tokens
+    while index < len(tokens):
+        name = tokens[index].partition("=")[0]
+        if name in skip_values:
+            if "=" not in tokens[index]:
+                index += 1
+            index += 1
+            continue
+        other_args.extend(namespace.start_origins[index])
+        index += 1
+
+    return config_path, save_path, notes + ladder_notes, other_args
+
+
+class StartArgumentError(ValueError):
+    """One bad start argument. The text is what the user reads, verbatim."""
+
+
+# Compat spellings the driver has always accepted: the same long option written
+# with a single dash, in any case. argparse reaches '--config' and '--config=X'
+# on its own but cannot be given '-config' as a long option, and its own
+# abbreviation matching would also guess at things like '-wirelessize' - so the
+# compat layer is this exact table, applied before parsing. Anything not listed
+# here reaches argparse and is reported as an unknown flag (unit B2 / Item 9:
+# the old substring match let '-wirelessize' turn on wireless mode).
+START_FLAG_FOLD = {
+    "--list": "--list",
+    "--restore-with": "--restore-with",
+    "--save-device": "--save-device",
+    "--save-as": "--save-as",
+    "--config": "--config",
+    "--wireless": "--wireless",
+    "--debug": "--debug",
+    "-list": "--list",
+    "-restore-with": "--restore-with",
+    "-save-device": "--save-device",
+    "-save-as": "--save-as",
+    "-config": "--config",
+    "-wireless": "--wireless",
+    "-debug": "--debug",
+}
+
+# Value-taking options and the word each legacy note used for the value.
+START_VALUE_WORDS = {
+    "--config": "path",
+    "--save-as": "path",
+    "--restore-with": "device name",
+    "--save-device": "device alias",
+}
+
+
+class _StartArgumentParser(argparse.ArgumentParser):
+    """argparse that reports through StartArgumentError instead of exiting.
+
+    main() owns the exit code and the bracket prefix, so a bad command line reads
+    like every other start note instead of dumping argparse's usage block.
+    """
+
+    def error(self, message):
+        raise StartArgumentError(message)
+
+
+def build_start_parser():
+    """The one parser for the whole start line (unit B2 / review Item 9).
+
+    add_help stays off: a help screen is new surface this unit did not design, so
+    -h/--help is an unknown flag like any other (filed as a follow-up).
+    allow_abbrev is off so no spelling is invented: only the flags listed here
+    and the folded compat spellings parse.
+    """
+    parser = _StartArgumentParser(prog="touch_controller.py")
+    parser.add_argument("--config")
+    parser.add_argument("--save-as")
+    parser.add_argument("--save-device")
+    parser.add_argument("--restore-with")
+    parser.add_argument("--list", action="store_true")
+    parser.add_argument("--wireless", action="store_true")
+    parser.add_argument("--debug", action="store_true")
+    return parser
+
+
+def normalize_start_args(argv):
+    """Fold compat spellings and apply the legacy value rules, in one pass.
+
+    Returns (tokens, notes, origins). '-DEBUG' becomes '--debug' and
+    '--config=X' passes through argparse's own '=' handling; a value option that
+    got no value (end of line, or followed by another flag) is dropped with the
+    exact note the old hand-written parsers printed, so the note contracts
+    survive strict parsing, and the token a note names is the spelling the user
+    typed. ``origins`` maps each emitted token back to the argv item it came
+    from (a list, because one folded token can carry two of them), so the legacy
+    adapters can still report what the user typed.
+    """
+    tokens = []
+    origins = []
+    notes = []
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        name, sep, value = arg.partition("=")
+        folded = START_FLAG_FOLD.get(name.lower())
+        if folded is None:
+            tokens.append(arg)
+            origins.append([arg])
+            index += 1
+            continue
+
+        canonical = folded + (sep + value if sep else "")
+        word = START_VALUE_WORDS.get(folded)
+        if word is None:
+            tokens.append(canonical)
+            origins.append([arg])
+            index += 1
+            continue
+
+        if value:
+            tokens.append(canonical)
+            origins.append([arg])
+            index += 1
+            continue
+        following = argv[index + 1] if index + 1 < len(argv) else None
+        if following is not None and not following.startswith("-"):
+            tokens.append(folded + "=" + following)
+            origins.append([arg, following])
+            index += 2
+            continue
+        notes.append(f"[Start Parameter] {name} needs a {word} - ignored")
+        index += 1
+    return tokens, notes, origins
+
+
+def parse_start_args(argv):
+    """Parse a start command line once: folded tokens in, namespace and notes out.
+
+    This is the single lane every start argument reaches. Returns
+    (namespace, notes); an unknown flag or an unexpected value raises
+    StartArgumentError, which main() prints as one start note. The namespace also
+    carries the tokens argparse saw and the argv each token came from.
+    """
+    tokens, notes, origins = normalize_start_args(argv)
+    parser = build_start_parser()
+    namespace = parser.parse_args(tokens)
+    namespace.start_tokens = tokens
+    namespace.start_origins = origins
+    return namespace, notes
+
+
+def resolve_start_lanes(namespace, notes):
+    """Decide which lane the parsed line means, and note the deprecated spelling.
+
+    '--save-device <alias>' is that lane's own flag (U413 ruling option 2);
+    '--save-as <bare-name>' is its deprecated spelling and still routes, loudly,
+    with the note text kept byte-stable from the pre-B2 parser because pins read
+    it; '--save-as <path>' keeps the save-file lane. When both alias spellings
+    appear, '--save-device' wins. Returns (list_devices, restore_with,
+    save_as_alias, save_as_path).
+    """
+    save_as_alias = namespace.save_device
+    save_as_path = namespace.save_as
+    if save_as_alias:
+        save_as_path = None
+    if namespace.save_as and not looks_like_path(namespace.save_as):
+        save_as_alias = namespace.save_as
+        save_as_path = None
+        notes.append(
+            f"[Start Parameter] '--save-as {namespace.save_as}' used the "
+            f"device-alias lane - deprecated, use '--save-device "
+            f"{namespace.save_as}'; '--save-as <path>' keeps the save-file lane")
+    return (namespace.list, namespace.restore_with, save_as_alias, save_as_path)
+
+
+def resolve_config_ladder(explicit_config, explicit_save_as,
+                          path_exists=None, path_mtime=None, appdata_path=None):
+    """Apply the approved search order to the parsed values (unit B1 / Item 5).
+
+    An explicit --config wins; otherwise a cwd config is used when it exists and
+    the per-user lane otherwise. The probes stay injectable so the ladder can be
+    pinned without touching a real profile. Returns (config_path, save_path,
+    notes); --save-as omitted follows the loaded file.
     """
     exists = os.path.exists if path_exists is None else path_exists
     get_mtime = os.path.getmtime if path_mtime is None else path_mtime
     appdata = appdata_config_path() if appdata_path is None else appdata_path
-
-    config_path = None
-    save_path = None
     notes = []
-    other_args = []
 
-    index = 0
-    while index < len(args):
-        arg = args[index]
-        name, _, inline_value = arg.partition("=")
-        option = name.lower()
+    if explicit_config:
+        config_path = explicit_config
+    elif exists(CONFIG_FILE_PATH):
+        config_path = CONFIG_FILE_PATH
+        notes.extend(config_lane_notes(CONFIG_FILE_PATH, appdata, exists, get_mtime))
+    else:
+        config_path = appdata
 
-        if option not in ("--config", "-config", "--save-as", "-save-as"):
-            other_args.append(arg)
-            index += 1
-            continue
+    save_path = explicit_save_as or config_path
+    return config_path, save_path, notes
 
-        value = inline_value
-        if not value and index + 1 < len(args):
-            value = args[index + 1]
-            index += 1
-        if not value:
-            notes.append(f"[Start Parameter] {name} needs a path - ignored")
-            index += 1
-            continue
 
-        if option.endswith("config"):
-            config_path = value
-        else:
-            save_path = value
-        index += 1
-
-    if config_path is None:
-        # No --config: the current folder wins when it carries a config, so an
-        # existing portable install keeps reading exactly what it read before;
-        # a fresh install lands on the per-user lane.
-        if exists(CONFIG_FILE_PATH):
-            config_path = CONFIG_FILE_PATH
-            notes.extend(config_lane_notes(CONFIG_FILE_PATH, appdata, exists,
-                                           get_mtime))
-        else:
-            config_path = appdata
-
-    if save_path is None:
-        save_path = config_path
-    return config_path, save_path, notes, other_args
 
 
 # CLI device lanes (U88 Part C): config-file maintenance without the driver.
@@ -3595,85 +3746,37 @@ def looks_like_path(value):
 
 
 def resolve_cli_lanes(args):
-    """Pull the device-lane start arguments out of a raw argv slice.
+    """Adapter over the single start parser: the legacy five-tuple view.
 
-    '--list' takes no value; '--restore-with <name>' names one stored device
-    and '--save-device <alias>' (U413, cli-flag-naming ruling option 2)
-    stores the current settings under a new alias. A '--save-as <bare-name>'
-    still routes to the alias lane but adds a deprecation note naming
-    '--save-device'; a '--save-as' value that looks like a path keeps the
-    Part A save-path lane: the option and its value pass through into
-    ``path_args`` untouched. Accepts the '=' form and the single-dash
-    spellings ('-save-device' etc.). Returns
-    (list_devices, restore_with, save_as_alias, notes, path_args);
-    ``path_args`` keeps every token the path and flag parsers should still see.
+    Unit B2 moved the actual parsing to parse_start_args; this keeps the shape the
+    device-lane pins already assert - (list_devices, restore_with, save_as_alias,
+    notes, path_args) - where ``path_args`` are the tokens the lane options did
+    not consume, so the path and flag lanes still see them. Unknown flags raise
+    StartArgumentError instead of passing through silently. Prefer
+    parse_start_args plus resolve_start_lanes in new code.
     """
-    list_devices = False
-    restore_with = None
-    save_as_alias = None
-    notes = []
+    namespace, notes = parse_start_args(args)
+    list_devices, restore_with, save_as_alias, _ = resolve_start_lanes(namespace, notes)
+
     path_args = []
-
+    skip_values = {"--restore-with", "--save-device"}
+    skip_flags = {"--list"}
+    tokens = namespace.start_tokens
     index = 0
-    while index < len(args):
-        arg = args[index]
-        name, _, inline_value = arg.partition("=")
-        option = name.lower()
-
-        if option in ("--list", "-list"):
-            list_devices = True
+    while index < len(tokens):
+        token = tokens[index]
+        name = token.partition("=")[0]
+        if name in skip_flags:
             index += 1
             continue
-
-        if option in ("--restore-with", "-restore-with"):
-            value = inline_value
-            if not value and index + 1 < len(args):
-                value = args[index + 1]
+        # '--save-as' belongs to the path lane unless its value routed to the
+        # device-alias lane, so only the alias form is consumed here.
+        if name in skip_values or (name == "--save-as" and save_as_alias):
+            if "=" not in token:
                 index += 1
-            if not value:
-                notes.append(f"[Start Parameter] {name} needs a device name - ignored")
-                index += 1
-                continue
-            restore_with = value
             index += 1
             continue
-
-        if option in ("--save-device", "-save-device"):
-            # U413 (cli-flag-naming ruling, option 2): the device-alias lane
-            # lives here now; the value is an alias by definition, so the
-            # path shake rule does not apply to this flag.
-            value = inline_value
-            paired = not value and index + 1 < len(args)
-            if paired:
-                value = args[index + 1]
-            if not value:
-                notes.append(f"[Start Parameter] {name} needs a device alias - ignored")
-                index += 1
-                continue
-            save_as_alias = value
-            index += 2 if paired else 1
-            continue
-
-        if option in ("--save-as", "-save-as"):
-            value = inline_value
-            paired = not value and index + 1 < len(args)
-            if paired:
-                value = args[index + 1]
-            if value and not looks_like_path(value):
-                save_as_alias = value
-                # Deprecation (U413 ruling): the alias lane moved to
-                # '--save-device'; bare-name values still route, loudly.
-                notes.append(
-                    f"[Start Parameter] '--save-as {value}' used the device-alias "
-                    f"lane - deprecated, use '--save-device {value}'; "
-                    f"'--save-as <path>' keeps the save-file lane")
-                index += 2 if paired else 1
-                continue
-            path_args.append(arg)
-            index += 1
-            continue
-
-        path_args.append(arg)
+        path_args.extend(namespace.start_origins[index])
         index += 1
 
     return list_devices, restore_with, save_as_alias, notes, path_args
@@ -3777,26 +3880,33 @@ def main():
     global config
     prefer_wireless = False
 
-    list_devices, restore_with, save_as_alias, lane_notes, path_args = \
-        resolve_cli_lanes(sys.argv[1:])
-    for note in lane_notes:
-        print(note)
+    try:
+        start, start_notes = parse_start_args(sys.argv[1:])
+    except StartArgumentError as exc:
+        # Strict since unit B2 (review Item 9): a start argument the driver does
+        # not know is a mistake in the command line, so it is reported and the
+        # driver does not start. The loop this replaces matched substrings, which
+        # let '-wirelessize' quietly turn on wireless mode.
+        print(f"[Start Parameter] {exc}")
+        return 1
 
-    config_path, save_path, path_notes, other_args = resolve_config_paths(path_args)
-    for note in path_notes:
+    list_devices, restore_with, save_as_alias, save_as_path = \
+        resolve_start_lanes(start, start_notes)
+    config_path, save_path, ladder_notes = resolve_config_ladder(
+        start.config, save_as_path)
+    for note in start_notes + ladder_notes:
         print(note)
 
     # U412 / TODO #412: opt-in startup metrics readout (env WTD_METRICS_DIAG=1),
     # silent by default; diagnostic only, no mapping is consulted or changed.
     log_metrics_diagnostic()
 
-    for arg in other_args:
-        if "-DEBUG" in arg.upper():
-            DEBUG = True
-            print("[Start Parameter] DEBUG active")
-        elif "-wireless" in arg:
-            prefer_wireless = True
-            print("[Start Parameter] Wireless preference active")
+    if start.debug:
+        DEBUG = True
+        print("[Start Parameter] DEBUG active")
+    if start.wireless:
+        prefer_wireless = True
+        print("[Start Parameter] Wireless preference active")
 
     if config_path != CONFIG_FILE_PATH:
         print(f"[Start Parameter] Config file: '{config_path}'")
