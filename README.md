@@ -1,6 +1,8 @@
 # OpenTabletDriver - Wacom Touch Companion
 
-A lightweight Python driver companion for **OpenTabletDriver (OTD)** that unlocks touch input and multi-touch gesture support on Wacom Intuos Pro tablets. 
+A lightweight Python driver companion for **OpenTabletDriver (OTD)** that unlocks touch input and multi-touch gesture support on Wacom Intuos Pro tablets.
+
+**Current version: v0.4.0** (November 2026) - since v0.3.0: tri-modal pen mapping (relative / stretched with per-screen selection / 1:1 pen-area with px-mm sensitivity editor), tablet buttons + dial + touch-modifier support, wireless tablet-size lane, orientation-synced editor, live Apply with persistence, `--save-device`. 
 
 Touch support on certain older Wacom devices requires specialized parsing. This driver captures HID touch reports and maps them to custom mouse cursor movements, multi-finger gestures, continuous scrolling, and Windows productivity shortcuts. Pen input is handled natively as well (cursor movement, pressure clicks, pen button clicks), replacing the external OpenTabletDriver dependency.
 
