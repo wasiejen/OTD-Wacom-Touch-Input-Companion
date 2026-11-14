@@ -4,6 +4,15 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261114-1755:
+
+  - TEST-CWD GUARD (estate TODO #425, tests only): the test suite now
+    refuses to run when a stray `user.cfg` sits in the pytest CWD - a debug
+    run leaving one behind silently overrode the `DriverConfig()` mapping
+    defaults several tests assume (deterministic touch/pen thread failures).
+    The guard aborts at conftest import time with the file path named and
+    never touches the file; see tests/README.md.
+
 261113-2100:
 
   - ROUND-5 FIXES (U424r5 / TODO #424): changing the tablet orientation

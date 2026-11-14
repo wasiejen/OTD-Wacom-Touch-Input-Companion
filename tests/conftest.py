@@ -22,6 +22,40 @@ import types
 
 import pytest
 
+# ==============================================================================
+# TEST-CWD GUARD (estate TODO #425) - runs at conftest IMPORT time, i.e.
+# during COLLECTION, so a poisoned CWD fails the run BEFORE any test executes.
+#
+# WHY import-time and not an autouse session fixture (the TODO #425 wording
+# named a fixture): an autouse session fixture runs in SETUP, after
+# collection, so it can only error every test - the #425 acceptance requires
+# COLLECTION to fail with a named message. A module-level raise in this file
+# is what pytest reports as a collection error.
+#
+# WHY the guard exists: touch_controller.CONFIG_FILE_PATH is the bare
+# relative name "user.cfg", and several test modules instantiate
+# DriverConfig() without chdir - any user.cfg left in the pytest CWD by a
+# debug run silently overrides the mapping defaults those tests assume
+# (deterministic touch/pen thread failures, measured in the U424 debug run).
+# The live app config must never sit in the test CWD; the file is NEVER
+# deleted or moved by this guard - it only refuses to run.
+# ==============================================================================
+def _guard_test_cwd_free_of_config():
+    stray = os.path.join(os.getcwd(), "user.cfg")
+    if os.path.exists(stray):
+        raise RuntimeError(
+            "TEST-CWD GUARD: stray user.cfg found in the pytest CWD: "
+            f"{stray}\n"
+            'DriverConfig() resolves CONFIG_FILE_PATH="user.cfg" against '
+            "the CWD, so this file would silently override the mapping "
+            "defaults every DriverConfig()-without-chdir test assumes "
+            "(deterministic touch/pen thread failures - estate TODO #425). "
+            "A debug run left it behind: move or delete that file, then "
+            "re-run the suite. This guard never touches the file itself.")
+
+
+_guard_test_cwd_free_of_config()
+
 # Make the product modules importable from tests/ without packaging changes.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
