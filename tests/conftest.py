@@ -292,6 +292,29 @@ class ExplodingDevice(FakeDevice):
         raise OSError("device disconnected")
 
 
+class SignalDevice(PlainDevice):
+    """Plain device that signals its own lifecycle with events, not sleeps.
+
+    first_read sets when a reader entered its read loop, closed_event sets
+    when run_interface's finally closed the device: the two points the
+    lifetime pins in tests/test_lifecycle_pins.py synchronize on, so a slow
+    machine waits longer but never reads state that has not happened yet.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.first_read = threading.Event()
+        self.closed_event = threading.Event()
+
+    def read(self, max_size=64):
+        self.first_read.set()
+        return super().read(max_size)
+
+    def close(self):
+        super().close()
+        self.closed_event.set()
+
+
 def make_hid_module(devices=None, device_queue=None):
     """Build a fake `hid` module exposing enumerate() and device()."""
     module = types.ModuleType("hid")

@@ -4,6 +4,22 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261114-2241:
+
+  - LIFECYCLE PINS (estate WTD improvement plan Phase A unit A1, tests only):
+    new `tests/test_lifecycle_pins.py` pins the four lifetime lanes the
+    architecture review found uncovered - held-input release on shutdown
+    within a bounded join window, Apply-Live survival across pause/reconnect,
+    concurrent reader exits on one dispatcher, and the multi-device primary
+    bind. Two lanes stay red on purpose with `pytest.xfail` reasons naming the
+    fix units: A3 (the applied value is lost when the respawn forks a fresh
+    config from base) and A4 (two exits inside one release window inject the
+    Ctrl-up twice). RED control: removing `run_interface`'s
+    `release_held_inputs` call turns the three release pins red, so no pin
+    passes vacuously. Suite: 543 passed, 2 xfailed. `conftest.py` gains
+    `SignalDevice`, a plain fake device that signals its first read and its
+    close with events, so the thread lanes never sleep.
+
 261114-1755:
 
   - TEST-CWD GUARD (estate TODO #425, tests only): the test suite now

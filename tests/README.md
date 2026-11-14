@@ -29,3 +29,19 @@ it if it is your live app config.
 If you want to test config loading on purpose, chdir into a tmp dir inside
 the test (the existing pattern) or pass an explicit path - do not place a
 `user.cfg` in the run CWD.
+
+## Lifecycle pins (estate WTD plan Phase A / unit A1)
+
+`tests/test_lifecycle_pins.py` covers the four lifetime lanes the architecture
+review found uncovered: held-input release on shutdown, Apply-Live across
+pause/reconnect, concurrent reader exits on one dispatcher, and the
+multi-device primary bind. The run therefore ends in `543 passed, 2 xfailed`.
+The two xfails state a requirement today's build does not meet and name the
+fix unit in the reason (A3 Apply-Live durability, A4 held-input lock): when a
+fix unit lands, its pin flips to green. An xfail whose printed reason does not
+match its stated lane means the mechanism broke - read the reason, do not
+re-mark it.
+
+The thread lanes synchronize on `threading` events and on the fake device's
+`SignalDevice.first_read` / `closed_event` signals (conftest). Do not add
+sleeps there: a sleep both slows the suite and hides a release that never ran.
