@@ -4,6 +4,28 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261114-2347:
+
+  - HELD-INPUT LOCK (estate WTD plan Phase A unit A4, review Item 7 - closes
+    Phase A): each `ActionDispatcher` now owns one `threading.Lock` over its
+    held-input registry - `held_keys` add/discard, the left-hold flag pair, the
+    pressure-held pair, and the drain in `release_held_inputs`. Two callers
+    inside a release at the same moment (an interface thread's own exit lane and
+    the A2 shutdown sweep) can no longer both claim the same held input and
+    inject the key-up twice: the registry is drained under the lock and every
+    injection happens afterwards, in the unchanged order, with the touch-slot
+    modifiers still excluded from the generic pass (U381 behaviour kept). The
+    lock guards bookkeeping only - no injection ever runs under it, and nothing
+    was added to the mapping/decode paths. `TabletState` gained a class docstring
+    stating that its own fields stay deliberately lock-free single-writer, with
+    the exceptions listed.
+    The A1 pin `test_concurrent_reader_exits_release_the_modifier_once` flipped
+    from pinned red to a hard green assertion. RED-before: with
+    `touch_controller.py` at `9c2ea53~1` that one lane fails ("released the held
+    modifier 2 times") while the other nine lifecycle lanes stay green.
+    Gate: pin module `10 passed`, full suite green - every Phase A lifecycle pin
+    is green, no xfail left.
+
 261114-2329:
 
   - APPLY LIVE DURABILITY (estate WTD plan Phase A unit A3, review Item 2):
