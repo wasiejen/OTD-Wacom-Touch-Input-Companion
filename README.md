@@ -162,6 +162,32 @@ then rewritten with the live state.
 
 ---
 
+## Development setup
+
+The steps a contributor (or a reviewer) needs to run this repo's suite from a
+fresh clone on Windows:
+
+```bash
+python -m venv .venv
+.venv/scripts/python.exe -m pip install -r requirements.txt
+.venv/scripts/python.exe -m pip install pytest
+.venv/scripts/python.exe -m pytest tests -q
+```
+
+* The suite needs the venv: `requirements.txt` carries `hidapi`, `pystray` and
+  `pillow`, and every test module imports the product modules from the repo root.
+* Run pytest from the repo root. `tests/conftest.py` refuses to collect if a
+  `user.cfg` sits in the current folder, so an app config left there stops the
+  suite instead of silently overriding the mapping defaults (estate TODO #425).
+* The suite is device-free: no tablet is needed and no live input is injected
+  (the conftest installs a guard over every Win32 injection entry point).
+* Continuous integration runs the same commands on a Windows runner
+  (`.github/workflows/ci.yml`); `.github/workflows/release.yml` builds the
+  executable with `OTD_Wacom_Touch_Driver.spec` when the maintainer pushes a
+  `v*` tag.
+
+---
+
 ## License
 
 Distributed under the MIT License. See `LICENSE` for more information.
