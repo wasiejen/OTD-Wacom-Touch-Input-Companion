@@ -103,18 +103,34 @@ def test_appdata_lane_derives_from_the_profile_dir(monkeypatch, tmp_path):
     assert derived.startswith(os.path.expanduser("~"))
 
 
-def test_first_save_creates_the_missing_profile_folder(tmp_path):
-    """DISCRIMINATOR: pre-B1 a save into a folder that does not exist failed.
+def test_first_save_creates_the_missing_profile_folder(tmp_path, monkeypatch):
+    """DISCRIMINATOR: pre-B1 the per-user lane had no folder to save into.
 
-    A fresh install picks the per-user lane, whose folder arrives with nothing in
-    it, so the first save has to create it rather than raise.
+    A fresh install picks that lane, whose folder does not exist yet, so the
+    first save creates it instead of raising. Only that lane is treated this way:
+    any other missing folder stays a mistake the driver does not repair (a
+    mistyped --save-as path must not leave stray folders behind).
     """
-    target = tmp_path / "wtd" / CONFIG_FILE_PATH
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    target = appdata_config_path()
+    assert not os.path.isdir(os.path.dirname(target))
+
     cfg = DriverConfig()
-    cfg.save_path = str(target)
+    cfg.save_path = target
     cfg.save_to_file()
-    assert target.exists()
-    assert json.loads(target.read_text())["motion_and_thresholds"]
+    assert os.path.isfile(target)
+    with open(target, encoding="utf-8") as handle:
+        assert json.load(handle)["motion_and_thresholds"]
+
+    stray = os.path.join(str(tmp_path), "typo-folder", CONFIG_FILE_PATH)
+    cfg.save_path = stray
+    try:
+        cfg.save_to_file()
+    except OSError:
+        pass
+    assert not os.path.isdir(os.path.dirname(stray)), (
+        "save_to_file created an arbitrary missing folder - only the per-user "
+        "lane's folder is created on demand")
 
 
 def test_importing_the_product_reads_no_config_file(tmp_path):

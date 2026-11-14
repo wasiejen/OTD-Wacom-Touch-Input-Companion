@@ -240,7 +240,7 @@ def test_config_option_accepts_equals_form_and_flags_missing_value():
     # path_exists stubbed True: this pin owns the flag parser, not the
     # search-order ladder (the ladder has its own module since unit B1).
     load_path, save_path, notes, _ = resolve_config_paths(
-        ["--config"], path_exists=lambda path: True)
+        ["--config"], path_exists=lambda path: True, path_mtime=lambda path: 0.0)
     assert load_path == "user.cfg"
     assert save_path == "user.cfg"
     assert len(notes) == 1 and "config" in notes[0]

@@ -99,7 +99,7 @@ Everything in the driver is exposed and editable via the GUI:
 
 ### Using the portable Executable
 
-On the Release Page there is now an "OTD_Wacom_Touch_Driver_%VERSION%_win64.exe" to be downloaded, which can be used directly. When saving your configuration the user.cfg will be created in the same folder the executable is residing in.
+On the Release Page there is now an "OTD_Wacom_Touch_Driver_%VERSION%_win64.exe" to be downloaded, which can be used directly. When saving your configuration the user.cfg will be created in the same folder the executable is residing in - that file keeps being the one the driver reads, so a portable install you already set up is unaffected. Without such a file the driver uses your per-user file instead (see Configuration File).
 
 [Releases](https://github.com/wasiejen/Wacom-Touch-Enabler/releases/)
 
@@ -109,7 +109,13 @@ On the Release Page there is now an "OTD_Wacom_Touch_Driver_%VERSION%_win64.exe"
 
 ## Configuration File (`user.cfg`)
 
-When you hit **Save to File** in the settings GUI, a `user.cfg` file is automatically created or updated in the application directory. On startup, the driver automatically loads your saved configuration from this file.
+The driver picks one config file at start, in this order (the order is the approved one, estate review Item 5 / plan unit B1):
+
+1. the file named by `--config <path>` on the command line;
+2. `user.cfg` in the current folder (the application directory), but only if that file already exists - so an existing portable install keeps reading its own file;
+3. your per-user file `%APPDATA%\wtd\user.cfg`. Its folder is created by the first save, so a fresh install needs no setup.
+
+When you hit **Save to File** in the settings GUI, the chosen file is created or updated; nothing else is written. If a `user.cfg` in the current folder and a per-user file both exist with different modification times, the current folder wins and the start prints one `[Config Migration]` line naming both files - the driver never moves or copies your data. The search runs once, at start, so `--save-as` and the GUI always follow the file that was actually loaded.
 
 ### Wireless tablet size (`wireless_tablet_size`)
 

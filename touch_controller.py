@@ -1044,10 +1044,13 @@ class DriverConfig:
 
     def save_to_file(self, filepath=None):
         filepath = filepath or self.save_path
-        # The per-user lane may not exist yet (B1): create its folder on the
-        # first save instead of failing on a missing directory.
+        # B1: only the per-user lane's folder is created on demand - a fresh
+        # install has no %APPDATA%\wtd yet and its first save must not fail. A
+        # different missing folder stays a user mistake the driver does not
+        # repair silently (reviewer note on the first draft).
         folder = os.path.dirname(filepath)
-        if folder:
+        if folder and os.path.normcase(folder) == os.path.normcase(
+                os.path.dirname(appdata_config_path())):
             os.makedirs(folder, exist_ok=True)
         data = {
             "motion_and_thresholds": {key: getattr(self, key) for key in self.MOTION_KEYS},
