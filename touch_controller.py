@@ -3605,7 +3605,7 @@ def build_start_parser():
     allow_abbrev is off so no spelling is invented: only the flags listed here
     and the folded compat spellings parse.
     """
-    parser = _StartArgumentParser(prog="touch_controller.py")
+    parser = _StartArgumentParser(prog="touch_controller.py", allow_abbrev=False)
     parser.add_argument("--config")
     parser.add_argument("--save-as")
     parser.add_argument("--save-device")
@@ -3695,8 +3695,10 @@ def resolve_start_lanes(namespace, notes):
     save_as_alias = namespace.save_device
     save_as_path = namespace.save_as
     if save_as_alias:
+        # '--save-device' owns the lane for this line: a bare '--save-as' beside
+        # it does not steal the alias and does not get the deprecation note.
         save_as_path = None
-    if namespace.save_as and not looks_like_path(namespace.save_as):
+    elif namespace.save_as and not looks_like_path(namespace.save_as):
         save_as_alias = namespace.save_as
         save_as_path = None
         notes.append(

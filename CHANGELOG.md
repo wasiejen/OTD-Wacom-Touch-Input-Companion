@@ -4,6 +4,39 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261115-0025:
+
+  - ONE PARSER FOR THE START LINE (estate WTD plan Phase B unit B2, review
+    Item 9 + the C1-enabler half of Item 3): `parse_start_args` (compat folding +
+    one argparse parser) is now the only component that reads start tokens, and
+    `main()` reads its result. The lanes stay as they were (run by default,
+    `--list`, `--restore-with <name>`, `--save-device <alias>`, `--config` /
+    `--save-as`), the flags come from the parsed namespace, and `--save-device`
+    now routes through the one lane decision (it wins over a bare `--save-as`).
+    Compat spellings are kept by folding them through an exact table - single-dash
+    long flags in any case (`-wireless`, `-DEBUG`, `-save-device`), `=` value
+    forms, paired values - while `allow_abbrev` stays off so no new spelling is
+    invented, and a value option with no value keeps the legacy note it always
+    printed. What changed on purpose: an unknown start flag is now an ERROR
+    instead of being skipped, so `-wirelessize` no longer turns on wireless mode
+    (the old substring match); `resolve_cli_lanes` and `resolve_config_paths`
+    remain as tuple adapters over the single parser.
+  - No more config fallbacks in the reader lanes: `process_touch_report` and
+    `run_interface` required nothing and silently used the module-level `config`
+    when a caller passed nothing; both now require the caller to name the config
+    it reads. Every spawn site names its config (in the product it already did;
+    the harnesses now do too), so no reader can inherit whatever the import-time
+    global happened to hold.
+  - New pins `tests/test_cli_parser_pins.py`: a 28-row compat matrix asserting
+    every accepted spelling parses to the same effective values through both the
+    namespace and the legacy adapters, the unknown-flag lanes (including
+    `-wirelessize`), the byte-stable `--save-device` deprecation line, and the
+    legacy missing-value notes. RED-before: with the pre-B2 `touch_controller.py`
+    the pin module cannot import the parser surface; with only strictness
+    reverted (`parse_known_args`) exactly the 6 strictness lanes fail while the
+    30 contract lanes stay green.
+    Gate: `591 passed, 0 xfailed` (555 baseline + 36 pins).
+
 261115-0004:
 
   - CONFIG SEARCH ORDER (estate WTD plan Phase B unit B1, review Item 5,
