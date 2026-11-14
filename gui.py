@@ -2090,8 +2090,47 @@ class SettingsWindow(tk.Toplevel):
         # the combo nor the notice.
         if wireless_combo is not None:
             self._refresh_wireless_notice()
+        # A3 / review Item 2: the applied values also go through to the focused
+        # device's base-config entry, so a pause/resume/reconnect refork starts
+        # from what the user sees now instead of from the pre-Apply values.
+        # Duck-typed apply_settings callers (the FakeWindow pins) carry no
+        # helper, so they keep today's fork-only behavior.
+        write_through = getattr(self, "_write_through_focused_entry", None)
+        if write_through is not None:
+            write_through()
+
         ToastNotification(self, "Success", "Settings applied directly to driver!", timeout_ms=1500)
         return True
+
+    def _write_through_focused_entry(self):
+        """Store the live-applied values under the focused device's identity key.
+
+        A3 (review Item 2): Apply Live used to reach the running connection's
+        config fork only. A pause, a resume, or a reconnect rebuilt that fork
+        from base_config, which still carried the pre-Apply values, so a change
+        the user applied mid-session silently came back as the old one. Writing
+        the same section subset the device Save button stores - and nothing else
+        - makes every later refork of THAT identity inherit what is live now,
+        while another device's entry stays untouched.
+
+        Only the in-memory base config is written here: Apply Live stays the
+        non-persisting path, the file still takes the Save button. Returns
+        'written', or why nothing was written ('no_connection', 'no_identity',
+        'no_base_config'), so callers keep their own messaging.
+        """
+        device_info = getattr(self, "device_info", None) or {}
+        conn = device_info.get("connection")
+        if conn is None:
+            return "no_connection"
+        base = device_info.get("base_config")
+        if base is None:
+            return "no_base_config"
+        identity = conn.get("identity")
+        if identity is None:
+            return "no_identity"
+        base.set_device_identity_settings(
+            identity, collect_config_sections(conn["config"], DEVICE_TRANSFER_SECTIONS))
+        return "written"
 
     def save_to_focused_device(self):
         """Subset save (U87 e): only the focused device's values, under its key.
@@ -2102,22 +2141,25 @@ class SettingsWindow(tk.Toplevel):
         if not self.apply_settings():
             return False
 
-        conn = self.device_info.get("connection")
-        if conn is None:
+        status = self._write_through_focused_entry()
+        if status == "no_connection":
             messagebox.showerror(
                 "No Device Focused",
                 "Wake the device and pick it in the device list first.")
             return False
-        base = self.device_info["base_config"]
-        identity = conn.get("identity")
-        if identity is None:
+        if status == "no_identity":
             messagebox.showerror(
                 "No Device Identity",
                 "This connection carries no identity key; nothing was saved.")
             return False
+        if status != "written":
+            messagebox.showerror(
+                "No Base Config",
+                "This window carries no base config; nothing was saved.")
+            return False
 
-        base.set_device_identity_settings(
-            identity, collect_config_sections(conn["config"], DEVICE_TRANSFER_SECTIONS))
+        base = self.device_info["base_config"]
+        conn = self.device_info["connection"]
         filepath = getattr(base, "save_path", "user.cfg")
         base.save_to_file(filepath)
 
