@@ -130,6 +130,12 @@ Start the driver with `python touch_controller.py [options]`:
 | `-DEBUG` | print raw touch reports on the console |
 | `-wireless` | prefer the wireless interface when a tablet exposes both |
 | `--config <path>` | load and save `<path>` instead of `user.cfg` |
+
+A start argument the driver does not know is a fatal error: it prints one
+`[Start Parameter]` line and the driver does not start (previously such an
+argument was skipped quietly, and a misspelling such as `-wirelessize` could
+switch an option on by matching part of its name). `-h` / `--help` prints the
+available start options and exits.
 | `--save-as <path>` | save to `<path>` while loading from `--config` |
 | `--list` | print every stored device entry (alias + identity key) and exit |
 | `--restore-with <name>` | apply one device's saved values, then re-save the live values |

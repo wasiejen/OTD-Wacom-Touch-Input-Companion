@@ -3527,9 +3527,11 @@ def resolve_config_paths(args, path_exists=None, path_mtime=None, appdata_path=N
     parse_start_args plus resolve_config_ladder in new code.
     """
     namespace, notes = parse_start_args(args)
+    # The lane decision lives in resolve_start_lanes only; the adapter borrows
+    # its answer so the save-file target cannot drift from the alias routing.
+    _, _, _, save_as_path = resolve_start_lanes(namespace, [])
     config_path, save_path, ladder_notes = resolve_config_ladder(
-        namespace.config,
-        namespace.save_as if namespace.save_as and looks_like_path(namespace.save_as) else None,
+        namespace.config, save_as_path,
         path_exists=path_exists, path_mtime=path_mtime, appdata_path=appdata_path)
 
     other_args = []
@@ -3600,10 +3602,11 @@ class _StartArgumentParser(argparse.ArgumentParser):
 def build_start_parser():
     """The one parser for the whole start line (unit B2 / review Item 9).
 
-    add_help stays off: a help screen is new surface this unit did not design, so
-    -h/--help is an unknown flag like any other (filed as a follow-up).
-    allow_abbrev is off so no spelling is invented: only the flags listed here
-    and the folded compat spellings parse.
+    Help stays argparse's own: -h/--help prints the usage block and exits 0
+    before the driver starts anything (unit B2 reviewer round: pre-B2 a '-h' was
+    skipped silently and the driver started anyway). allow_abbrev is off so no
+    spelling is invented: only the flags listed here and the folded compat
+    spellings parse.
     """
     parser = _StartArgumentParser(prog="touch_controller.py", allow_abbrev=False)
     parser.add_argument("--config")
@@ -3645,6 +3648,14 @@ def normalize_start_args(argv):
         canonical = folded + (sep + value if sep else "")
         word = START_VALUE_WORDS.get(folded)
         if word is None:
+            # A boolean flag that was handed a value ('--debug=x', '--list=yes')
+            # keeps the pre-B2 reading: the flag is on, the value is ignored.
+            # Passing the inline value through would make argparse refuse a line
+            # the driver has always accepted.
+            if sep:
+                canonical = folded
+                notes.append(f"[Start Parameter] {name} takes no value - '{value}' "
+                             "ignored")
             tokens.append(canonical)
             origins.append([arg])
             index += 1
@@ -3694,17 +3705,21 @@ def resolve_start_lanes(namespace, notes):
     """
     save_as_alias = namespace.save_device
     save_as_path = namespace.save_as
-    if save_as_alias:
-        # '--save-device' owns the lane for this line: a bare '--save-as' beside
-        # it does not steal the alias and does not get the deprecation note.
-        save_as_path = None
-    elif namespace.save_as and not looks_like_path(namespace.save_as):
-        save_as_alias = namespace.save_as
-        save_as_path = None
+    bare_save_as = namespace.save_as and not looks_like_path(namespace.save_as)
+    if bare_save_as:
+        # The deprecated alias spelling always gets its note, whichever order the
+        # two alias flags appear in, so the warning cannot be hidden by a second
+        # flag. '--save-device' still owns the alias when both are present.
         notes.append(
             f"[Start Parameter] '--save-as {namespace.save_as}' used the "
             f"device-alias lane - deprecated, use '--save-device "
             f"{namespace.save_as}'; '--save-as <path>' keeps the save-file lane")
+        if not save_as_alias:
+            save_as_alias = namespace.save_as
+        # Only the ALIAS reading consumes --save-as; a path-form value stays the
+        # save-file target even next to --save-device (reviewer P1: dropping it
+        # silently redirected an alias save into the loaded config file).
+        save_as_path = None
     return (namespace.list, namespace.restore_with, save_as_alias, save_as_path)
 
 
@@ -3763,6 +3778,7 @@ def resolve_cli_lanes(args):
     """
     namespace, notes = parse_start_args(args)
     list_devices, restore_with, save_as_alias, _ = resolve_start_lanes(namespace, notes)
+    bare_save_as = bool(namespace.save_as) and not looks_like_path(namespace.save_as)
 
     path_args = []
     skip_values = {"--restore-with", "--save-device"}
@@ -3775,9 +3791,10 @@ def resolve_cli_lanes(args):
         if name in skip_flags:
             index += 1
             continue
-        # '--save-as' belongs to the path lane unless its value routed to the
-        # device-alias lane, so only the alias form is consumed here.
-        if name in skip_values or (name == "--save-as" and save_as_alias):
+        # '--save-as' belongs to the path lane unless ITS OWN value routed to the
+        # device-alias lane, so only the alias form is consumed here (a path-form
+        # value survives even when --save-device also set the alias).
+        if name in skip_values or (name == "--save-as" and bare_save_as):
             if "=" not in token:
                 index += 1
             index += 1

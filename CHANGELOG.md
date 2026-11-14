@@ -14,13 +14,20 @@ on GitHub mark shipped states — `v0.2.2` is the latest release.
     `--save-as`), the flags come from the parsed namespace, and `--save-device`
     now routes through the one lane decision (it wins over a bare `--save-as`).
     Compat spellings are kept by folding them through an exact table - single-dash
-    long flags in any case (`-wireless`, `-DEBUG`, `-save-device`), `=` value
-    forms, paired values - while `allow_abbrev` stays off so no new spelling is
-    invented, and a value option with no value keeps the legacy note it always
+    long flags (`-wireless`, `-DEBUG`, `-save-device`), `=` value forms, paired
+    values - while `allow_abbrev` stays off so no new spelling is invented. Two
+    small widenings came with the fold: `-WIRELESS` now counts (the old lowercase
+    test skipped it) and a value glued to a boolean flag (`--debug=x`) still turns
+    the flag on, with one note naming the ignored value. and a value option with no value keeps the legacy note it always
     printed. What changed on purpose: an unknown start flag is now an ERROR
     instead of being skipped, so `-wirelessize` no longer turns on wireless mode
     (the old substring match); `resolve_cli_lanes` and `resolve_config_paths`
-    remain as tuple adapters over the single parser.
+    remain as tuple adapters over the single parser. Two combinations are
+    documented rather than preserved: when both alias spellings appear
+    `--save-device` owns the alias (pre-B2 the later flag won) while the
+    deprecated bare `--save-as` still prints its note, and a repeated `--save-as`
+    keeps only its last value (pre-B2 both took effect). `-h`/`--help` prints the
+    start options and exits instead of being skipped and starting the driver.
   - No more config fallbacks in the reader lanes: `process_touch_report` and
     `run_interface` required nothing and silently used the module-level `config`
     when a caller passed nothing; both now require the caller to name the config
@@ -35,7 +42,10 @@ on GitHub mark shipped states — `v0.2.2` is the latest release.
     the pin module cannot import the parser surface; with only strictness
     reverted (`parse_known_args`) exactly the 6 strictness lanes fail while the
     30 contract lanes stay green.
-    Gate: `591 passed, 0 xfailed` (555 baseline + 36 pins).
+    The reviewer round added six more lanes (the alias/path combinations
+    above, the inline boolean values, the help lane, the note order) and a
+    README line on the new strictness.
+    Gate: `597 passed, 0 xfailed` (555 baseline + 42 pins).
 
 261115-0004:
 
