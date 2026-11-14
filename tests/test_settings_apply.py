@@ -40,13 +40,29 @@ class FakeMessageBox:
 class FakeWindow:
     """Duck-typed SettingsWindow widget surface used by apply/save."""
 
-    def __init__(self, config, entries, accel=(True, True), features=None, actions=None):
+    def __init__(self, config, entries, accel=(True, True), features=None, actions=None,
+                 pen_mode=None, pen_buttons=None, buttons=None, button_toggles=None,
+                 touches=None, touch_toggles=None):
         self.config = config
         self.entries = {key: FakeEntry(value) for key, value in entries.items()}
         self.cursor_accel_var = FakeVar(accel[0])
         self.scroll_accel_var = FakeVar(accel[1])
         self.feature_vars = {key: FakeVar(value) for key, value in (features or {}).items()}
         self.action_combos = {key: FakeEntry(value) for key, value in (actions or {}).items()}
+        if pen_mode is not None:
+            # U424: the Pen tab applies the ONE mode (the old absolute
+            # toggle write is retired; harness re-pinned with it).
+            self.pen_mode_var = FakeVar(pen_mode)
+        if pen_buttons is not None:
+            self.pen_combos = {key: FakeEntry(value) for key, value in pen_buttons.items()}
+        if buttons is not None:
+            self.button_combos = {key: FakeEntry(value) for key, value in buttons.items()}
+        if button_toggles is not None:
+            self.button_vars = {key: FakeVar(value) for key, value in button_toggles.items()}
+        if touches is not None:
+            self.touch_combos = {key: FakeEntry(value) for key, value in touches.items()}
+        if touch_toggles is not None:
+            self.touch_vars = {key: FakeVar(value) for key, value in touch_toggles.items()}
         # Bind the real SettingsWindow.apply_settings body onto this surface.
         self.apply_settings = types.MethodType(gui.SettingsWindow.apply_settings, self)
 
@@ -172,3 +188,119 @@ def test_save_writes_file_when_valid(window_surface, tmp_path):
     data = json.loads(path.read_text())
     assert data["motion_and_thresholds"]["cursor_speed_low"] == 7.0
     assert data["motion_and_thresholds"]["cursor_speed_high"] == 90.0
+
+
+def test_apply_pen_settings_updates_config(window_surface):
+    config, box = window_surface
+    win = make_window(config, {"pen_speed": "11.5"}, pen_mode="relative",
+                      pen_buttons={"pen_button_1": "left_click"})
+
+    applied = types.MethodType(gui.SettingsWindow.apply_settings, win)()
+
+    assert applied is True
+    assert config.pen_speed == 11.5
+    assert config.pen_mode == "relative"
+    assert config.action_mapping["pen_button_1"] == "left_click"
+
+
+def test_save_writes_pen_settings(window_surface, tmp_path):
+    config, box = window_surface
+    win = make_window(config, {"pen_speed": "9.5"}, pen_mode="stretched",
+                      pen_buttons={"pen_button_2": "right_click"})
+
+    saved = types.MethodType(gui.SettingsWindow.save_to_file, win)()
+
+    assert saved is True
+    data = json.loads((tmp_path / "user.cfg").read_text())
+    assert data["motion_and_thresholds"]["pen_speed"] == 9.5
+    assert data["motion_and_thresholds"]["pen_mode"] == "stretched"
+    assert data["action_mapping"]["pen_button_2"] == "right_click"
+
+
+def test_apply_pen_invalid_number_leaves_config_untouched(window_surface):
+    config, box = window_surface
+    win = make_window(config, {"pen_speed": "abc"}, pen_mode="relative")
+
+    applied = types.MethodType(gui.SettingsWindow.apply_settings, win)()
+
+    assert applied is False
+    assert config.pen_speed == 8.0
+    assert config.pen_mode is None  # all-or-nothing: mode not applied
+    assert box.errors
+
+
+def test_apply_button_settings_updates_config(window_surface):
+    config, box = window_surface
+    win = make_window(
+        config,
+        {"dial_step_threshold": "6.0"},
+        buttons={"btn1_press": "task_view", "dial_cw": "next"},
+        button_toggles={"btn1_press": False, "central_press": True},
+    )
+
+    applied = types.MethodType(gui.SettingsWindow.apply_settings, win)()
+
+    assert applied is True
+    assert config.dial_step_threshold == 6.0
+    assert config.action_mapping["btn1_press"] == "task_view"
+    assert config.action_mapping["dial_cw"] == "next"
+    assert config.feature_toggles["btn1_press"] is False
+    assert config.feature_toggles["central_press"] is True
+
+
+def test_save_writes_button_settings(window_surface, tmp_path):
+    config, box = window_surface
+    win = make_window(config, {}, buttons={"btn5_press": "undo", "dial_ccw": "prev"},
+                      button_toggles={"btn5_press": True})
+
+    saved = types.MethodType(gui.SettingsWindow.save_to_file, win)()
+
+    assert saved is True
+    data = json.loads((tmp_path / "user.cfg").read_text())
+    assert data["action_mapping"]["btn5_press"] == "undo"
+    assert data["action_mapping"]["dial_ccw"] == "prev"
+    assert data["feature_toggles"]["btn5_press"] is True
+    assert "dial_step_threshold" in data["motion_and_thresholds"]
+
+
+def test_apply_button_invalid_number_leaves_config_untouched(window_surface):
+    config, box = window_surface
+    win = make_window(config, {"dial_step_threshold": "abc"},
+                      buttons={"btn1_press": "task_view"})
+
+    applied = types.MethodType(gui.SettingsWindow.apply_settings, win)()
+
+    assert applied is False
+    assert config.dial_step_threshold == 4.0
+    assert config.action_mapping["btn1_press"] == "undo"
+    assert box.errors
+
+
+def test_apply_touch_settings_updates_config(window_surface):
+    """U381 / #381: the touch part rides the button apply lane."""
+    config, box = window_surface
+    win = make_window(config, {},
+                      touches={"btn1_touch": "shift", "btn2_touch": "none"},
+                      touch_toggles={"btn1_touch": True, "btn2_touch": False})
+
+    applied = types.MethodType(gui.SettingsWindow.apply_settings, win)()
+
+    assert applied is True
+    assert config.action_mapping["btn1_touch"] == "shift"
+    assert config.action_mapping["btn2_touch"] == "none"
+    assert config.feature_toggles["btn1_touch"] is True
+    assert config.feature_toggles["btn2_touch"] is False
+
+
+def test_save_writes_touch_settings(window_surface, tmp_path):
+    """U381 / #381: the touch part lands in the saved sections."""
+    config, box = window_surface
+    win = make_window(config, {}, touches={"btn3_touch": "alt"},
+                      touch_toggles={"btn3_touch": True})
+
+    saved = types.MethodType(gui.SettingsWindow.save_to_file, win)()
+
+    assert saved is True
+    data = json.loads((tmp_path / "user.cfg").read_text())
+    assert data["action_mapping"]["btn3_touch"] == "alt"
+    assert data["feature_toggles"]["btn3_touch"] is True

@@ -6,6 +6,43 @@ from PIL import Image, ImageDraw, ImageFont
 import pystray
 from pystray import MenuItem as item
 
+from touch_controller import (
+    ORIENTATION_MAX_DEGREES,
+    TOUCH_ACTION_CHOICES,
+    WIRELESS_RECEIVER_PRODUCT_ID,
+    WIRELESS_TABLET_SIZES,
+    display_key_for_records,
+    monitor_records,
+    pen_area_rect_aspect_lock,
+    pen_mm_per_px,
+    pen_specs_for_product,
+    resolved_pen_mode,
+    reset_pen_area_key_cache,
+    rotate_point,
+    rotated_pen_box_mm,
+    select_pen_area_entry,
+    snapshot_device_sections,
+    union_rect_from_records,
+    virtual_desktop_dpi,
+    virtual_desktop_metrics,
+    PEN_MODES,
+    PEN_SPECS_BY_PRODUCT,
+)
+
+# Wireless tablet size GUI lane (U386 / TODO #385). The combo offers the
+# explicit unset label plus the tablet-size vocabulary; the notice text is
+# the loud GUI face of the planner ruling (unset + non-detecting receiver
+# id 132 = never a silent default). WIRELESS_SIZE_NOTICE_TEXT is pinned
+# byte-exact by tests/test_wireless_tablet_size.py.
+WIRELESS_SIZE_UNSET_LABEL = "(unset)"
+WIRELESS_SIZE_NOTICE_TEXT = (
+    "Wireless tablet size NOT SET: the receiver (id 132) cannot detect its "
+    "paired tablet. Choose small (788) / medium (789) / large (791) below - "
+    "until chosen the driver maps the MEDIUM extents (789). A size change "
+    "applies at the next device reconnect."
+)
+_KEEP_WIRELESS_SIZE = object()  # apply_settings_to_config sentinel: leave the attr
+
 
 class ToolTip:
     """Hover tooltip for Tkinter widgets with robust cleanup on leave, click, scroll, and window move."""
@@ -126,6 +163,40 @@ class ToastNotification(tk.Toplevel):
 
 INVALID_ACTION_PREFIX = "! invalid: "
 
+# Sections a focused device transfers to another alias (U73 d).
+DEVICE_TRANSFER_SECTIONS = ("motion_and_thresholds", "feature_toggles", "action_mapping")
+
+# No live connection when the window was built (U383): the section still
+# shows above the tabs and its focus is picked up from the live list.
+NO_DEVICE_LABEL = "No device connected yet"
+
+
+def collect_config_sections(config, section_names):
+    """Snapshot the named sections of a live config instance as plain dicts."""
+    return snapshot_device_sections(config, section_names)
+
+
+def device_display_name(conn):
+    """Device-bar label: the user alias when set, else the interface name (U87 a)."""
+    alias = conn.get("alias")
+    if alias:
+        return alias
+    return conn.get("product_string") or "unknown device"
+
+
+# Touch button and dial controls (U71): one toggle plus one mapping per control.
+BUTTON_CONTROL_KEYS = tuple(f"btn{n}_press" for n in range(1, 9)) + (
+    "central_press", "dial_cw", "dial_ccw")
+
+# Touch part of each express key (U381 / #381): one toggle plus one modifier
+# choice per button, shown only for the 8 express keys. The value vocabulary
+# is TOUCH_ACTION_CHOICES ("none" plus the modifier names), not the tap-action
+# list; the part defaults to off.
+BUTTON_TOUCH_KEYS = tuple(f"btn{n}_touch" for n in range(1, 9))
+# Explicit press -> touch pairing (no string slicing): the tab builds the two
+# widgets of one express key from this map.
+BUTTON_TOUCH_BY_PRESS = {f"btn{n}_press": f"btn{n}_touch" for n in range(1, 9)}
+
 
 def action_display_value(action, options):
     """Combo display text: the saved action, marked when it is not a valid option."""
@@ -160,16 +231,638 @@ def parse_numeric_values(values):
     return parsed
 
 
-def apply_settings_to_config(config, numeric_values, accel_toggles, feature_toggles, action_mappings):
+# Device orientation (U74 c): direct numeric entry in 1° steps plus presets.
+ORIENTATION_PRESETS = (0, 90, 180, 270)
+# Generalized tablet aspect for the pictogram (PTH-651 digitizer, mm).
+PICTOGRAM_WIDTH = 223.52
+PICTOGRAM_HEIGHT = 139.7
+
+# Tablet drawing geometry (U415 / #407 ruling): the Motion-tab pictogram is
+# a REDRAWN vector tablet (tkinter-native shapes; the PNG
+# images/wacom_intuos_pro_medium.png is CONSTRUCTION REFERENCE ONLY - button
+# placement 1-8 + central ring + pen-area placement - and is never
+# displayed). One entry per selected tablet size: body = the physical pad
+# outline, digitizer = the active area (mirrors the PEN_SPECS mm so the
+# drawing tracks the mapping the driver actually uses). The express-key
+# strip is LEFT ONLY on every size (the old graphic mirrored an empty
+# column to the right); the digitizer sits right of the strip.
+TABLET_DRAWINGS = {
+    "small": {"body_mm": (210.0, 140.0),
+              "digitizer_mm": (PEN_SPECS_BY_PRODUCT[788]["width_mm"],
+                               PEN_SPECS_BY_PRODUCT[788]["height_mm"])},
+    "medium": {"body_mm": (277.0, 189.0),
+               "digitizer_mm": (PEN_SPECS_BY_PRODUCT[789]["width_mm"],
+                                PEN_SPECS_BY_PRODUCT[789]["height_mm"])},
+    "large": {"body_mm": (378.0, 262.0),
+              "digitizer_mm": (PEN_SPECS_BY_PRODUCT[791]["width_mm"],
+                               PEN_SPECS_BY_PRODUCT[791]["height_mm"])},
+}
+
+
+def parse_orientation_degrees(raw):
+    """Whole degrees 0..359 from an entry string; None when invalid."""
+    try:
+        degrees = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if degrees != int(degrees) or not 0 <= degrees <= ORIENTATION_MAX_DEGREES:
+        return None
+    return int(degrees)
+
+
+def _drawing_layout_rects(width, height, digitizer):
+    """(strip_width, digitizer_width, digitizer_height, right_margin) (U415).
+
+    The express-key strip is the leftover body width right of it sits the
+    digitizer rect, leaving a thin right margin. Without an explicit
+    digitizer the body degrades to fixed ratios (legacy default shape).
+    """
+    if digitizer is None:
+        strip = width * 0.22
+        right_margin = width * 0.05
+        return strip, width - strip - right_margin, height * 0.76, right_margin
+    digitizer_w, digitizer_h = float(digitizer[0]), float(digitizer[1])
+    right_margin = width * 0.045
+    strip = width - digitizer_w - right_margin
+    return strip, digitizer_w, digitizer_h, right_margin
+
+
+def tablet_pictogram_layout(degrees, width=PICTOGRAM_WIDTH, height=PICTOGRAM_HEIGHT,
+                            digitizer=None):
+    """Rotated tablet pictogram geometry, centered at the origin (U74 d, U415).
+
+    Unrotated layout (U416 re-measured against the product PNG, STEP-0):
+    body rectangle spanning +-width/2 x +-height/2; the express-key strip
+    LEFT ONLY; the dial ring + central round SIT IN THE STRIP (same column
+    as the keys, vertically centered between the groups - NOT at the body
+    center, that was the U415 defect); keys 1-4 tightly above the ring and
+    5-8 tightly below (numbered top-to-bottom, all circles inside the
+    body); the digitizer (pen-area) rect right of the strip. Every point
+    rotates clockwise by degrees with the same matrix the input transform
+    uses, so widget and cursor mapping stay consistent. Return keys:
+    rect, pen_area, strip_right, seam, center (body center), ring_center
+    (dial center, in the strip), dial_radius, button_radius, buttons.
+    """
+    half_w, half_h = width / 2, height / 2
+    strip_w, digitizer_w, digitizer_h, right_margin = _drawing_layout_rects(
+        width, height, digitizer)
+    # Ratios from images/wacom_intuos_pro_medium.png (viewed 2026-11-12):
+    # tight groups (key pitch 0.155, inner gap 0.06), key circles fully
+    # inside the body edge, ring ~0.24 of half-height BUT CAPPED to the
+    # strip (U416 reviewer P1: the strip is narrower than the body height
+    # on every size, and on `large` a height-sized ring crossed the body
+    # and the seam - the ring must fit the STRIP it lives in).
+    dial_radius = min(half_h * 0.24, strip_w / 2 - half_h * 0.02)
+    button_radius = half_h * 0.075
+    step = half_h * 0.155
+    inner_offset = dial_radius + half_h * 0.06 + button_radius
+    column_x = -half_w + strip_w / 2
+    ring_x, ring_y = column_x, 0.0
+    pen_left = -half_w + strip_w
+    pen_right = half_w - right_margin
+
+    offsets = {
+        1: -inner_offset - 3 * step, 2: -inner_offset - 2 * step,
+        3: -inner_offset - step, 4: -inner_offset,
+        5: inner_offset, 6: inner_offset + step,
+        7: inner_offset + 2 * step, 8: inner_offset + 3 * step,
+    }
+
+    def rotated(x, y):
+        if degrees == 0:
+            return (x, y)
+        return rotate_point(x, y, degrees, 0, 0)
+
+    corners = [(-half_w, -half_h), (half_w, -half_h),
+               (half_w, half_h), (-half_w, half_h)]
+    pen_corners = [(pen_left, -digitizer_h / 2), (pen_right, -digitizer_h / 2),
+                   (pen_right, digitizer_h / 2), (pen_left, digitizer_h / 2)]
+    seam_raw = [(strip_w - half_w, -half_h), (strip_w - half_w, half_h)]
+    buttons = [(number, *rotated(column_x, offset))
+                for number, offset in offsets.items()]
+    return {
+        "rect": [rotated(x, y) for x, y in corners],
+        "seam": [rotated(x, y) for x, y in seam_raw],
+        "pen_area": [rotated(x, y) for x, y in pen_corners],
+        "strip_right": strip_w - half_w,
+        "center": rotated(0, 0),
+        "ring_center": rotated(ring_x, ring_y),
+        "dial_radius": dial_radius,
+        "button_radius": button_radius,
+        "buttons": buttons,
+    }
+
+
+TABLET_SIZE_BY_PRODUCT = {788: "small", 789: "medium", 791: "large"}
+
+
+def resolve_drawing_size(product_id=None, wireless_tablet_size=None):
+    """Which tablet drawing to show (U415 / #407 ruling: size-driven).
+
+    Wired products map directly; the wireless receiver (132) cannot detect
+    its tablet, so the user's Pen-tab choice drives the drawing and an
+    unset choice falls back to the driver's medium mapping (mirrors the
+    U386 mapping default). Unknown/missing falls back to medium.
+    """
+    if product_id in TABLET_SIZE_BY_PRODUCT:
+        return TABLET_SIZE_BY_PRODUCT[product_id]
+    if product_id == WIRELESS_RECEIVER_PRODUCT_ID and wireless_tablet_size \
+            in WIRELESS_TABLET_SIZES:
+        return wireless_tablet_size
+    return "medium"
+
+
+def pictogram_view_scale(layout, canvas_w, canvas_h, safety=0.93):
+    """Canvas px per mm that fits the ROTATED layout inside the canvas (U415).
+
+    The U74d defect: the widget scale was fixed on the UNROTATED height, so
+    at 90 deg the drawing left the drawing area. The view scale is refit
+    from the rotated bounding box of EVERY drawn feature (frame corners,
+    digitizer corners, button circles, dial ring), times a small safety
+    margin for text extents.
+    """
+    features = ([(x, y, 0.0) for x, y in layout["rect"]]
+                + [(x, y, 0.0) for x, y in layout["pen_area"]]
+                + [(x, y, layout["button_radius"]) for _, x, y in layout["buttons"]]
+                # U416 P2-2: the DRAWN ring sits at ring_center (the old
+                # body-center reference was stale and unbounded the fit).
+                + [(*layout["ring_center"], layout["dial_radius"])])
+    extents_x = max(abs(x) + radius for x, _, radius in features)
+    extents_y = max(abs(y) + radius for _, y, radius in features)
+    return min(canvas_w / 2 / extents_x, canvas_h / 2 / extents_y) * safety
+
+
+class OrientationWidget(tk.Canvas):
+    """Orientation pictogram (U74 d, redrawn in U415): the tablet as a
+    tkinter-native DRAWING (no image file; the product PNG is construction
+    reference only). Body outline, left-only express-key strip, the digitizer
+    (pen-area) rect, central dial ring + round, keys 1-4 above and 5-8
+    mirrored below; the whole drawing rotates clockwise with the orientation
+    angle and REFITS its scale per angle (the old fit used the unrotated
+    height and escaped the canvas at 90 deg). Key labels do not renumber.
+    """
+    CANVAS_WIDTH = 220
+    CANVAS_HEIGHT = 150
+
+    def __init__(self, parent, degrees=0, size="medium", **kwargs):
+        super().__init__(parent, width=self.CANVAS_WIDTH, height=self.CANVAS_HEIGHT,
+                         background="#2b2b2b", highlightthickness=1,
+                         highlightbackground="#666", **kwargs)
+        self.size = size
+        self.degrees = degrees
+        self.draw_degrees(degrees)
+
+    def _canvas_point(self, x, y):
+        return (self.CANVAS_WIDTH / 2 + x * self._scale,
+                self.CANVAS_HEIGHT / 2 + y * self._scale)
+
+    def draw_degrees(self, degrees):
+        """Redraw the pictogram at the given angle for the widget's size."""
+        self.degrees = degrees
+        drawing = TABLET_DRAWINGS.get(self.size, TABLET_DRAWINGS["medium"])
+        body_w, body_h = drawing["body_mm"]
+        layout = tablet_pictogram_layout(degrees, body_w, body_h,
+                                         digitizer=drawing["digitizer_mm"])
+        self._scale = pictogram_view_scale(layout, self.CANVAS_WIDTH,
+                                           self.CANVAS_HEIGHT)
+        scale = self._scale
+        self.delete("all")
+
+        self.create_polygon(*[p for corner in layout["rect"]
+                              for p in self._canvas_point(*corner)],
+                            fill="#3a3a3a", outline="#8a8a8a")
+
+        # Pen-area (digitizer) rect right of the strip + the strip seam.
+        self.create_polygon(*[p for corner in layout["pen_area"]
+                              for p in self._canvas_point(*corner)],
+                            fill="#31435a", outline="#6a9fd8")
+        # U416 / #407 defect 3: the seam is a LAYOUT element now - both
+        # endpoints go through the rotation transform like everything else
+        # (it used to be drawn from unrotated corners and stayed vertical).
+        (sx1, sy1), (sx2, sy2) = (self._canvas_point(*end)
+                                  for end in layout["seam"])
+        self.create_line(sx1, sy1, sx2, sy2, fill="#5a5a5a",
+                         tags="penarea_seam")
+
+        # Dial ring + central round IN THE STRIP (U416 / PNG): same column
+        # as the keys, centered between the groups.
+        cx, cy = self._canvas_point(*layout["ring_center"])
+        dial = layout["dial_radius"] * scale
+        self.create_oval(cx - dial, cy - dial, cx + dial, cy + dial,
+                         outline="#6a9fd8")
+        # U416 P2-3 (PNG): the central button carries NO text (the label
+        # sprawled across the small round); keep it a plain filled round,
+        # capped inside the ring.
+        central = min(layout["button_radius"] * 1.2,
+                      layout["dial_radius"] * 0.55) * scale
+        self.create_oval(cx - central, cy - central, cx + central, cy + central,
+                         fill="#2e5a86", outline="#6a9fd8")
+
+        button = layout["button_radius"] * scale
+        for number, x, y in layout["buttons"]:
+            bx, by = self._canvas_point(x, y)
+            self.create_oval(bx - button, by - button, bx + button, by + button,
+                             fill="#575757", outline="#9a9a9a")
+            self.create_text(bx, by, text=str(number), fill="#e6e6e6",
+                             font=("Segoe UI", 8))
+
+
+def _screen_label(record):
+    """Human label for a monitor record 'PATH|left|top|WxH' (U424)."""
+    try:
+        path, left, top, dims = record.split("|")
+        return f"{path.split(chr(92))[-1].lstrip('.')} {left},{top} {dims}"
+    except ValueError:
+        return record
+
+
+class PenAreaCanvasModel:
+    """Pure model behind the pen-area rect editor (U414 / #406 option A).
+
+    Owns the virtual-desktop geometry, the canvas scale, and the rect in
+    virtual-desktop px measured FROM THE DESKTOP ORIGIN (the datum of
+    `pen_area_norm_projection`). No tkinter lives here, so the editor's
+    math is pinned headless (tests/test_pen_area_editor.py); the widget
+    only maps canvas events into these calls.
+    """
+
+    MIN_RECT_PX = 16.0
+
+    def __init__(self, metrics, records, canvas_w, canvas_h, box_mm_w, box_mm_h,
+                 rect_px=None):
+        left, top, width, height = metrics
+        self.origin_x, self.origin_y = float(left), float(top)
+        self.desktop_w, self.desktop_h = float(width), float(height)
+        self.records = [str(rec) for rec in records]
+        self.box_mm = (float(box_mm_w), float(box_mm_h))
+        self.canvas_w, self.canvas_h = float(canvas_w), float(canvas_h)
+        self.scale = min(canvas_w / self.desktop_w, canvas_h / self.desktop_h)
+        # U424r4 R4-A (#424 item A): the drawn screen union is CENTERED
+        # in the canvas - slack lives as equal margins, not as dead area
+        # on one side. Every canvas-space conversion adds the offsets;
+        # drag deltas are offset-free, so the datum stays the desktop
+        # origin.
+        self.offset_x = (self.canvas_w - self.desktop_w * self.scale) / 2.0
+        self.offset_y = (self.canvas_h - self.desktop_h * self.scale) / 2.0
+        if rect_px is None:
+            start_w = min(self.desktop_w * 2.0 / 3.0,
+                          self.desktop_h * self.box_mm[0] / self.box_mm[1])
+            self.rect = [float(v) for v in pen_area_rect_aspect_lock(
+                [0, 0, start_w, 0], self.box_mm[0], self.box_mm[1])]
+        else:
+            self.rect = [float(v) for v in rect_px]
+
+    @staticmethod
+    def parse_record(record):
+        """'<path>|<left>|<top>|<W>x<H>' -> (left, top, width, height) ints."""
+        parts = record.split("|")
+        width_txt, height_txt = parts[3].split("x")
+        return int(parts[1]), int(parts[2]), int(width_txt), int(height_txt)
+
+    def apply_fields(self, x=None, y=None, w=None):
+        """Set the rect from the numeric fields (U424 / #424 ruling 2).
+
+        Width aspect-locks the height to the rotated digitizer box; every
+        value is clamped INSIDE the display union (the model bounds).
+        Returns the new rect [rx, ry, rw, rh] in px.
+        """
+        rx, ry, rw, rh = self.rect
+        if w is not None:
+            rw = min(max(float(w), self.MIN_RECT_PX), self.desktop_w)
+            rh = min(rw * self.box_mm[1] / self.box_mm[0], self.desktop_h)
+        if x is not None:
+            rx = min(max(float(x), 0.0), self.desktop_w - rw)
+        if y is not None:
+            ry = min(max(float(y), 0.0), self.desktop_h - rh)
+        self.rect = [rx, ry, rw, rh]
+        return list(self.rect)
+
+    def apply_scale(self, px_mm):
+        """Resize the footprint to the wanted sensitivity px/mm, keeping its
+        CENTER (U424r3 R3-L3, #424 item 3b; protocol DECISION: s is the
+        derived handle s = rw_px / box_mm_w - aspect-lock makes one scalar
+        suffice; footprint semantics and the pen math are unchanged)."""
+        cx = self.rect[0] + self.rect[2] / 2
+        cy = self.rect[1] + self.rect[3] / 2
+        w = min(max(float(px_mm) * self.box_mm[0], self.MIN_RECT_PX),
+                self.desktop_w)
+        h = min(w * self.box_mm[1] / self.box_mm[0], self.desktop_h)
+        rx = min(max(cx - w / 2.0, 0.0), self.desktop_w - w)
+        ry = min(max(cy - h / 2.0, 0.0), self.desktop_h - h)
+        self.rect = [rx, ry, w, h]
+        return list(self.rect)
+
+    def match_box_aspect(self, s=None):
+        """Re-derive the rect shape to the current box aspect (U424r5
+        R5-E / #424 item E, watch resolved: the SHAPE follows
+        orientation). Rule: keep the CENTER and the SENSITIVITY s
+        (new w = s x new box_w, height follows the new aspect), clamp
+        inside the union. No-op (tolerance 1e-6 rel) when the rect
+        already matches, so normal loads never move the stored rect.
+        `s` = the sensitivity of the PREVIOUS box (callers that swap
+        box_mm first pass it explicitly; None = derive from the model's
+        own box, i.e. same-box re-derivation at build).
+        """
+        bw, bh = self.box_mm
+        if bw <= 0 or bh <= 0 or self.rect[2] <= 0 or self.rect[3] <= 0:
+            return list(self.rect)
+        want = bw / bh
+        if abs(want - self.rect[2] / self.rect[3]) <= 1e-6 * want:
+            return list(self.rect)
+        if s is None:
+            s = self.rect[2] / bw
+        cx = self.rect[0] + self.rect[2] / 2.0
+        cy = self.rect[1] + self.rect[3] / 2.0
+        w = s * bw
+        h = w * bh / bw
+        # U424r5 R5-E: when the sensitivity-exact box does not FIT the
+        # union (a 90-deg tall box on a wide desktop), fit it back down
+        # with the ASPECT kept (s lowers) - the shape must always agree
+        # with the box, never clamp into a wrong aspect.
+        fit = min(1.0, self.desktop_w / w, self.desktop_h / h)
+        w *= fit
+        h *= fit
+        rx = min(max(cx - w / 2.0, 0.0), self.desktop_w - w)
+        ry = min(max(cy - h / 2.0, 0.0), self.desktop_h - h)
+        self.rect = [rx, ry, w, h]
+        return list(self.rect)
+
+    def monitor_canvas_rects(self):
+        """Monitor outline boxes in canvas px, origin = virtual-desktop origin.
+
+        U416: with no usable records (fallback bounds) it returns ONE box
+        covering the bounds, so the canvas shows the single virtual-
+        desktop rectangle instead of staying black.
+        """
+        if not self.records:
+            return [(self.offset_x, self.offset_y,
+                     self.offset_x + self.desktop_w * self.scale,
+                     self.offset_y + self.desktop_h * self.scale)]
+        boxes = []
+        for record in self.records:
+            left, top, width, height = self.parse_record(record)
+            x0 = (left - self.origin_x) * self.scale + self.offset_x
+            y0 = (top - self.origin_y) * self.scale + self.offset_y
+            boxes.append((x0, y0, x0 + width * self.scale, y0 + height * self.scale))
+        return boxes
+
+    def rect_canvas(self):
+        """The rect in canvas px (origin-relative datum times the view
+        scale, plus the centering offset - U424r4 R4-A)."""
+        rx, ry, rw, rh = self.rect
+        s = self.scale
+        ox, oy = self.offset_x, self.offset_y
+        return (rx * s + ox, ry * s + oy,
+                (rx + rw) * s + ox, (ry + rh) * s + oy)
+
+    def handle_canvas(self):
+        """Lower-right corner handle position in canvas px."""
+        rx, ry, rw, rh = self.rect
+        return ((rx + rw) * self.scale + self.offset_x,
+                (ry + rh) * self.scale + self.offset_y)
+
+    def move_by(self, delta_canvas_x, delta_canvas_y):
+        """Drag the whole rect by a canvas-px delta; clamp inside the desktop."""
+        rx, ry, rw, rh = self.rect
+        self.rect[0] = min(max(rx + delta_canvas_x / self.scale, 0.0),
+                           self.desktop_w - rw)
+        self.rect[1] = min(max(ry + delta_canvas_y / self.scale, 0.0),
+                           self.desktop_h - rh)
+
+    def resize_handle_to(self, handle_canvas_x, handle_canvas_y):
+        """Move the lower-right handle to a canvas point; aspect stays locked.
+
+        Width follows the drag; rh is re-derived from the rotated mm box
+        (`pen_area_rect_aspect_lock`), and the width shrinks first when the
+        clamped axis would leave the desktop, so the aspect never breaks.
+        """
+        rx, ry = self.rect[0], self.rect[1]
+        wanted = (handle_canvas_x - self.offset_x) / self.scale - rx
+        max_w = min(self.desktop_w - rx,
+                    (self.desktop_h - ry) * self.box_mm[0] / self.box_mm[1])
+        locked = pen_area_rect_aspect_lock(
+            [rx, ry, int(max(min(wanted, max_w), self.MIN_RECT_PX)), 0],
+            self.box_mm[0], self.box_mm[1])
+        self.rect = [float(v) for v in locked]
+
+    def readout(self):
+        """Live mm/px readout line for the editor label."""
+        rx, ry, rw, rh = self.rect
+        return ("%dx%d px at (%d,%d) | pen box %.2fx%.2f mm | %.4f px/mm"
+                % (int(rw), int(rh), int(rx), int(ry),
+                   self.box_mm[0], self.box_mm[1], rw / self.box_mm[0]))
+
+
+class PenAreaEditor(ttk.Frame):
+    """In-tab pen-area rect editor (U414 / #406, option A ruled 2026-11-11).
+
+    Scaled virtual-desktop preview (monitor outlines), draggable rect with
+    lower-right aspect-locked handle, live readout, and Save/Remove into
+    the per-display-configuration `pen_area_map_<identity>` lane. Save
+    re-resolves the running reader's display key immediately
+    (`reset_pen_area_key_cache`), the #386 Apply Live shape for this
+    feature. U416 (maintainer black-canvas host): the editor ALWAYS builds
+    - bounds from vetted metrics, else the monitor-record union, else one
+    pad-aspect fallback rectangle; device identity gates SAVE only, never
+    editing. Fallback hosts share the empty-records display key; entries
+    live in per-identity lanes so different pads cannot collide, and a
+    pad-orientation flip between fallback sessions reinterprets fractions
+    under the flipped box aspect (rare, self-healing on next save).
+    """
+
+    CANVAS_W = 320.0
+    CANVAS_H = 120.0
+    HANDLE = 8
+
+    def __init__(self, parent, config, device_info, on_change=None, **kwargs):
+        super().__init__(parent, **kwargs)
+        self.config = config
+        # U424r3 R3-L3 (#424 item 3a): the window hooks this to sync the
+        # numeric fields when the model moves (drag/resize) - the sync is
+        # bidirectional.
+        self.on_change = on_change
+        conn = (device_info or {}).get("connection") or {}
+        # U416 / #406 defect: the model ALWAYS builds (the canvas is
+        # editable everywhere); device identity names the lane, so it is
+        # required at SAVE time only, never for editing. Bounds resolve
+        # in order: vetted virtual metrics -> EnumDisplayMonitors union ->
+        # single fallback rectangle at the pad's aspect (fractions are
+        # load-stable across fallback sessions via the empty-records key).
+        self.identity = conn.get("identity")
+        metrics = virtual_desktop_metrics()
+        records = monitor_records()
+        # U416 P2-4: no magic fallback product id - pen_specs_for_product
+        # itself names the unknown-id fallback (byte-stable notice +
+        # Medium extents), which is exactly the pad to draw here.
+        product_id = conn.get("product_id")
+        specs = pen_specs_for_product(product_id, config)
+        box_mm = rotated_pen_box_mm(specs, config.orientation_degrees)
+        bounds = None
+        usable_records = []
+        if metrics is not None and metrics[2] > 0 and metrics[3] > 0:
+            bounds, usable_records = metrics, records
+        else:
+            union = union_rect_from_records(records)
+            if union is not None and union[2] > 0 and union[3] > 0:
+                bounds, usable_records = union, records
+            else:
+                bounds = (0.0, 0.0, box_mm[0], box_mm[1])
+        self.model = PenAreaCanvasModel(
+            bounds, usable_records, self.CANVAS_W, self.CANVAS_H,
+            box_mm[0], box_mm[1],
+            self._stored_rect(usable_records, bounds[2], bounds[3]))
+        # U424r5 R5-E: a legacy/stale stored rect that does not match the
+        # current box aspect is re-derived at BUILD (canvas-only; the
+        # next Apply persists).
+        self.model.match_box_aspect()
+        self.canvas = tk.Canvas(self, width=int(self.CANVAS_W),
+                                height=int(self.CANVAS_H), bg="#262626",
+                                borderwidth=1, highlightthickness=0)
+        # U424 L3 (#424 canvas jitter): the canvas is pinned to the west
+        # cell edge and the readout label carries a FIXED character width,
+        # so the rect-dependent readout can never resize the row and
+        # slide the fixed-size canvas left/right on redraw. The view
+        # transform itself derives from the screen bounds ONCE (model
+        # __init__: scale from desktop dims only, never from the rect).
+        self.canvas.grid(row=0, column=0, columnspan=2, pady=(0, 4), sticky="w")
+        self.readout_label = ttk.Label(self, text=self.model.readout(),
+                                       width=72, anchor="w")
+        self.readout_label.grid(row=1, column=0, columnspan=2, sticky="w")
+        # U424r3 R3-L2 (#424 item 2): no "Save Pen Area" - Apply Live
+        # persists the rect (persist_entry, driven by the window's Apply).
+        # U424r4 R4-D (#424 item D): "Remove Rect" REMOVED too - a
+        # modeless state change with no feedback; the mode radios already
+        # cover switching away from 1:1.
+        self._drag_anchor = None
+        self._drag_mode = "rect"
+        self.canvas.bind("<ButtonPress-1>", self._press)
+        self.canvas.bind("<B1-Motion>", self._motion)
+        self._redraw()
+
+    def _stored_rect(self, records, bounds_w, bounds_h):
+        """Stored FRACTION for the current display key, in model px."""
+        if self.identity is None:
+            return None
+        lane = self.config.pen_area_maps.get(self.identity)
+        entry = select_pen_area_entry(lane, display_key_for_records(records))
+        if entry is None:
+            return None
+        fx, fy, fw, fh = entry["rect_frac"]
+        return [fx * bounds_w, fy * bounds_h, fw * bounds_w, fh * bounds_h]
+
+    def reorient(self, pen_specs, orientation_degrees):
+        """Follow a tablet-orientation change (U424r4 R4-B / #424 item B).
+
+        PEN PATH WINS: the pen maps the STORED rect as the footprint and
+        fills it with the ROTATED extents (touch_controller
+        pen_area_norm_projection + update_pen_cursor), so the editor
+        keeps the rect px footprint EXACTLY and only updates its box_mm
+        - the mm readout, the sensitivity (w-axis) echo and the aspect
+        for future edits then match what the pen will do. No silent
+        footprint change, ever.
+        """
+        if self.model is None:
+            return
+        # U424r5 R5-E (#424 item E, watch resolved): the DRAWN SHAPE
+        # follows too - re-derived at fixed center + the OLD box's
+        # sensitivity (s rides across the swap when the union fits), no
+        # pointer interaction required. Apply persists it (the window
+        # reorients BEFORE persisting); the pen then follows the entry.
+        box = rotated_pen_box_mm(pen_specs, orientation_degrees)
+        old_bw = self.model.box_mm[0]
+        s = self.model.rect[2] / old_bw if old_bw > 0 else None
+        self.model.box_mm = (float(box[0]), float(box[1]))
+        self.model.match_box_aspect(s)
+        self._redraw()
+
+    def persist_entry(self):
+        """Write the model rect (FRACTIONS) under the current key.
+
+        U414 L1; U424r3 R3-L2: driven by the window's Apply Live (the old
+        standalone "Save Pen Area" button was removed). No file write here
+        - persistence follows Save like every other setting; the key cache
+        reset keeps the running reader live.
+        """
+        if self.model is None or self.identity is None:
+            return False
+        key = display_key_for_records(self.model.records)
+        w, h = self.model.desktop_w, self.model.desktop_h
+        rx, ry, rw, rh = self.model.rect
+        self.config.set_pen_area_entry(
+            self.identity, key, self.model.records,
+            [rx / w, ry / h, rw / w, rh / h])
+        reset_pen_area_key_cache()
+        return True
+
+    def _press(self, event):
+        self._drag_anchor = (event.x, event.y)
+        hx, hy = self.model.handle_canvas()
+        self._drag_mode = ("handle" if abs(event.x - hx) <= self.HANDLE
+                           and abs(event.y - hy) <= self.HANDLE else "rect")
+
+    def _motion(self, event):
+        if self._drag_anchor is None or self.model is None:
+            return
+        if self._drag_mode == "handle":
+            self.model.resize_handle_to(float(event.x), float(event.y))
+        else:
+            self.model.move_by(event.x - self._drag_anchor[0],
+                               event.y - self._drag_anchor[1])
+            self._drag_anchor = (event.x, event.y)
+        self._redraw()
+        if self.on_change is not None:
+            self.on_change()
+
+    def _redraw(self):
+        self.canvas.delete("all")
+        if self.model is None:
+            return
+        for box in self.model.monitor_canvas_rects():
+            self.canvas.create_rectangle(*box, outline="#888888")
+        rx0, ry0, rx1, ry1 = self.model.rect_canvas()
+        self.canvas.create_rectangle(rx0, ry0, rx1, ry1, outline="#00c8ff",
+                                     width=2, tags="penarea_rect")
+        hx, hy = self.model.handle_canvas()
+        half = self.HANDLE / 2.0
+        self.canvas.create_rectangle(hx - half, hy - half, hx + half, hy + half,
+                                     fill="#00c8ff", tags="penarea_handle")
+        self.readout_label.config(text=self.model.readout())
+
+
+def apply_settings_to_config(config, numeric_values, accel_toggles, feature_toggles,
+                             action_mappings, pen_button_actions=None, pen_mode=None,
+                             button_actions=None, button_toggles=None,
+                             wireless_tablet_size=_KEEP_WIRELESS_SIZE):
     """Apply a complete settings set to config, or apply nothing at all.
 
     numeric_values are raw entry strings; they are validated before the first
     mutation, so one bad entry cannot leave config half-applied.
+    wireless_tablet_size (U386 / TODO #385) is the Pen-tab combo choice: one
+    of WIRELESS_TABLET_SIZES, None for the explicit unset, or the sentinel
+    default to leave the attribute untouched.
     """
+    if wireless_tablet_size is not _KEEP_WIRELESS_SIZE and wireless_tablet_size is not None \
+            and wireless_tablet_size not in WIRELESS_TABLET_SIZES:
+        raise ValueError(f"Field 'wireless_tablet_size' needs one of "
+                         f"{'/'.join(WIRELESS_TABLET_SIZES)} or unset: "
+                         f"{wireless_tablet_size!r}")
+
     parsed = parse_numeric_values(numeric_values)
+
+    if "orientation_degrees" in parsed:
+        # U74: the entry feeds the 1° rotation matrix; whole degrees only.
+        degrees = parse_orientation_degrees(numeric_values["orientation_degrees"])
+        if degrees is None:
+            raise ValueError(f"Field 'orientation_degrees' needs a whole degree "
+                             f"0..{ORIENTATION_MAX_DEGREES}: "
+                             f"{numeric_values['orientation_degrees']!r}")
+        parsed["orientation_degrees"] = degrees
 
     for key, val in parsed.items():
         setattr(config, key, val)
+
+    if wireless_tablet_size is not _KEEP_WIRELESS_SIZE:
+        config.wireless_tablet_size = wireless_tablet_size
 
     config.sync_sensitivities()
 
@@ -182,21 +875,59 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
     for feat_key, action in action_mappings.items():
         config.action_mapping[feat_key] = action
 
+    if pen_mode is not None:
+        # U424: the Pen tab applies the ONE stored mode (the old
+        # pen_absolute_mode toggle write is retired - no dual control).
+        config.set_pen_mode(pen_mode)
+
+    for pen_key, action in (pen_button_actions or {}).items():
+        config.action_mapping[pen_key] = action
+
+    for key, enabled in (button_toggles or {}).items():
+        config.feature_toggles[key] = enabled
+
+    for key, action in (button_actions or {}).items():
+        config.action_mapping[key] = action
+
 
 class SettingsWindow(tk.Toplevel):
-    def __init__(self, parent, state_ref, config_ref):
+    def __init__(self, parent, state_ref, config_ref, device_info=None):
         super().__init__(parent)
         self.state = state_ref
         self.config = config_ref
-        # Shared numeric-entry registry: Motion and Advanced tabs fill this dict.
-        self.entries = {}
-
+        # {"connection": conn dict, "base_config": global config, "manager":
+        # manager} when the driver runs (U383: main() always passes this
+        # bundle; connection may be None and the section adopts the first
+        # live device); a None bundle keeps the window on plain global
+        # settings.
+        self.device_info = device_info
         self.title("Wacom Touch Driver Settings")
         self.geometry("460x650")
         self.minsize(460, 480)
 
+        # Shared numeric-entry registry: Motion, Pen and Advanced tabs fill this dict.
+        self.entries = {}
+        # Mapping values as they were when the window opened, keyed by feature.
+        # Initialized here so the Pen tab entries survive the Features tab build.
+        self.saved_actions = {}
+        # Pen button comboboxes, filled by the Pen tab.
+        self.pen_combos = {}
+        # Button/dial toggles and comboboxes (U71), filled by the Buttons tab.
+        self.button_vars = {}
+        self.button_combos = {}
+        # Touch-part toggles and modifier comboboxes (U381 / #381), also filled
+        # by the Buttons tab; the part defaults to off.
+        self.touch_vars = {}
+        self.touch_combos = {}
+
         main_container = ttk.Frame(self)
         main_container.pack(fill="both", expand=True, padx=10, pady=10)
+
+        # Focused-device controls (U73): alias assignment and subset copy.
+        # U383: main() always passes the bundle, so the section is present
+        # even when no device had connected at launch.
+        if device_info is not None:
+            self._build_device_bar(main_container)
 
         notebook = ttk.Notebook(main_container)
         notebook.pack(fill="both", expand=True)
@@ -206,12 +937,22 @@ class SettingsWindow(tk.Toplevel):
         notebook.add(self.tab_motion, text="Motion & Acceleration")
         self._build_motion_tab()
 
-        # Tab 2: Combined Features & Actions
+        # Tab 2: Pen
+        self.tab_pen = ttk.Frame(notebook)
+        notebook.add(self.tab_pen, text="Pen")
+        self._build_pen_tab()
+
+        # Tab 3: Touch Buttons & Rotary Dial
+        self.tab_buttons = ttk.Frame(notebook)
+        notebook.add(self.tab_buttons, text="Buttons")
+        self._build_buttons_tab()
+
+        # Tab 4: Combined Features & Actions
         self.tab_features_actions = ttk.Frame(notebook)
         notebook.add(self.tab_features_actions, text="Features & Actions")
         self._build_features_actions_tab()
 
-        # Tab 3: Thresholds & Advanced
+        # Tab 5: Thresholds & Advanced
         self.tab_advanced = ttk.Frame(notebook)
         notebook.add(self.tab_advanced, text="Thresholds & Advanced")
         self._build_advanced_tab()
@@ -224,6 +965,364 @@ class SettingsWindow(tk.Toplevel):
         ttk.Button(btn_frame, text="Save to File", command=self.save_to_file).pack(side="right", padx=5)
         ttk.Button(btn_frame, text="Apply Live", command=self.apply_settings).pack(side="right")
 
+    def _build_device_bar(self, container):
+        # U383: a missing launch connection is no reason to skip the section;
+        # focus the first live device from the manager, else none. The focused
+        # device becomes the editing target too -- the same config the
+        # launch-connection path passes in as config_ref -- on EVERY build, so
+        # reopens from the tray-adopted bundle bind the device config as well
+        # (reviewer P0: a first-build-only rebind falls back to the half-focus
+        # on the second open).
+        conn = self.device_info.get("connection")
+        if conn is None:
+            live = self._live_connections()
+            conn = live[0] if live else None
+            self.device_info["connection"] = conn
+        conn = self._adopt_stale_focus()
+        if conn is not None:
+            self.config = conn["config"]
+        base = self.device_info["base_config"]
+        frame = ttk.LabelFrame(container, text=" Focused Device ", padding=8)
+        frame.pack(fill="x", pady=(0, 6))
+        self._focused_device_frame = frame  # U424r3 R3-L5 lane parent pin
+
+        # Live device list (U87 a): the combo feeds on the running connections.
+        ttk.Label(frame, text="Device:").grid(row=0, column=0, sticky="w")
+        self.devices_combo = ttk.Combobox(frame, width=18, state="readonly")
+        self.devices_combo.grid(row=0, column=1, sticky="w", padx=(4, 0))
+        self.devices_combo.bind("<<ComboboxSelected>>", self._on_device_selected)
+        refresh_btn = ttk.Button(frame, text="Refresh", width=8,
+                                 command=self._refresh_device_combo)
+        refresh_btn.grid(row=0, column=2, padx=(6, 0))
+        ToolTip(refresh_btn, "Re-read the live device list from the running driver.")
+
+        self.device_label = ttk.Label(
+            frame, text=device_display_name(conn) if conn else NO_DEVICE_LABEL)
+        self.device_label.grid(row=1, column=0, columnspan=4, sticky="w")
+
+        ttk.Label(frame, text="Alias:").grid(row=2, column=0, sticky="w")
+        self.alias_entry = ttk.Entry(frame, width=16)
+        self.alias_entry.insert(0, (conn.get("alias") or "") if conn else "")
+        self.alias_entry.grid(row=2, column=1, sticky="w", padx=(4, 0))
+        btn = ttk.Button(frame, text="Assign alias", command=self.assign_alias)
+        btn.grid(row=2, column=2, padx=(6, 0))
+        ToolTip(btn, "Name this device; the name shows in the device list and "
+                     "persists in the settings file under its identity key. "
+                     "Tags the wireless receiver twin manually as well.")
+
+        ttk.Label(frame, text="Copy settings to:").grid(row=3, column=0, sticky="w", pady=(6, 0))
+        self.copy_alias_combo = ttk.Combobox(frame, values=sorted(base.devices), width=16)
+        self.copy_alias_combo.grid(row=3, column=1, sticky="w", padx=(4, 0))
+        self.copy_section_vars = {
+            name: tk.BooleanVar(value=True) for name in DEVICE_TRANSFER_SECTIONS}
+        section_labels = {
+            "motion_and_thresholds": "Motion",
+            "feature_toggles": "Toggles",
+            "action_mapping": "Mapping",
+        }
+        for idx, (name, var) in enumerate(self.copy_section_vars.items(), start=3):
+            chk = ttk.Checkbutton(frame, text=section_labels[name], variable=var)
+            chk.grid(row=idx, column=2, sticky="w")
+        copy_btn = ttk.Button(frame, text="Copy to alias", command=self.copy_settings_to_alias)
+        copy_btn.grid(row=3, column=3, sticky="e")
+        ToolTip(copy_btn, "Copies the selected sections of this device's settings into "
+                          "the chosen alias; takes effect on that device's next connection.")
+
+        device_btn = ttk.Button(frame, text="Save to Device",
+                                command=self.save_to_focused_device)
+        device_btn.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
+
+        # U424r3 R3-L5 (#424 item 5): the wireless size lane lives HERE,
+        # inside Focused Device, visible only for the receiver (id 132).
+        self._build_wireless_lane(frame)
+
+        # U424r4 R4-C (#424 item C): poll the live device list; a swap
+        # while the window is open now reaches the adopt->rebind->sync
+        # chain without waiting for a manual Refresh click.
+        self._device_poll_ms = 5000
+        self.after(self._device_poll_ms, self._device_poll_tick)
+        ToolTip(device_btn, "Save ONLY this device's current values under its "
+                            "identity key; the main Save button stays global.")
+        frame.columnconfigure(3, weight=1)
+        self._refresh_device_combo()
+
+    def _build_wireless_lane(self, parent):
+        """Wireless Tablet Size lane (U386 / #385), MOVED out of the Pen tab
+        into the Focused Device section (U424r3 R3-L5 / #424 item 5): it
+        belongs to the receiver identity, not to pen movement, and it is
+        shown ONLY while the focused device is the wireless receiver."""
+        wireless_frame = ttk.LabelFrame(
+            parent, text=" Wireless Tablet Size (receiver id 132) ", padding=10)
+        self._pen_wireless_frame = wireless_frame  # U424r3 pin name kept
+        self.wireless_size_notice = tk.Label(
+            wireless_frame, text="", wraplength=400, justify="left",
+            foreground="#a00000")
+        self.wireless_size_notice.grid(row=0, column=0, columnspan=2,
+                                       sticky="w", pady=(0, 6))
+        size_lbl = ttk.Label(wireless_frame, text="Tablet size:")
+        size_lbl.grid(row=1, column=0, sticky="w", pady=4)
+        self.wireless_size_combo = ttk.Combobox(
+            wireless_frame, values=(WIRELESS_SIZE_UNSET_LABEL,) + WIRELESS_TABLET_SIZES,
+            state="readonly", width=12)
+        self.wireless_size_combo.set(
+            getattr(self.config, "wireless_tablet_size", None) or WIRELESS_SIZE_UNSET_LABEL)
+        self.wireless_size_combo.grid(row=1, column=1, sticky="e", pady=4)
+        wireless_tip = ("Extents preset for the tablet behind the wireless receiver "
+                        "(product id 132, paired size not detectable): small = 788, "
+                        "medium = 789, large = 791. Unset shows a loud notice - there "
+                        "is no silent default. A change applies at the next device "
+                        "reconnect.")
+        ToolTip(size_lbl, wireless_tip)
+        ToolTip(self.wireless_size_combo, wireless_tip)
+        wireless_frame.columnconfigure(1, weight=1)
+        self._sync_wireless_lane()
+
+    def _sync_wireless_lane(self):
+        """Dynamic visibility (#424 item 5): render the lane ONLY when the
+        focused connection is the wireless receiver (id 132); hide and
+        refresh the combo echo on every focus/rebind change."""
+        frame = getattr(self, "_pen_wireless_frame", None)
+        if frame is None:
+            return
+        conn = self.device_info.get("connection") or {}
+        is_wireless = conn.get("product_id") == WIRELESS_RECEIVER_PRODUCT_ID
+        packed = frame.winfo_manager() == "grid"
+        if is_wireless and not packed:
+            frame.grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
+        elif not is_wireless and packed:
+            frame.grid_forget()
+        if hasattr(self, "wireless_size_combo"):
+            self._set_widget_value(
+                self.wireless_size_combo,
+                getattr(self.config, "wireless_tablet_size", None)
+                or WIRELESS_SIZE_UNSET_LABEL)
+        self._refresh_wireless_notice()
+
+    def _adopt_stale_focus(self):
+        """U424r4 R4-C (#424 item C): a stored focus that is no longer in
+        the live list (cabled unplugged, tray bundle stale at reopen) is
+        ADOPTED-REPLACED by the first live device - mirroring the
+        U383 dropped-focus adoption, but at build time too, so a
+        cabled->wireless swap can never leave a dead focus hiding the
+        wireless picker. Returns the (possibly new) focused connection."""
+        conn = self.device_info.get("connection")
+        live = self._live_connections()
+        if live and conn is not None and not any(conn is c for c in live):
+            conn = live[0]
+            self.device_info["connection"] = conn
+            sync_lane = getattr(self, "_sync_wireless_lane", None)
+            if sync_lane is not None:  # mid-build the lane does not exist yet
+                sync_lane()
+        return conn
+
+    def _device_poll_tick(self):
+        """U424r4 R4-C: the missed hook - device swaps while the window is
+        open produced NO event anywhere; this poll re-runs the (already
+        complete) refresh->adopt->rebind->lane-sync chain periodically."""
+        if not self.winfo_exists():
+            return
+        try:
+            self._refresh_device_combo()
+        finally:
+            self.after(self._device_poll_ms, self._device_poll_tick)
+
+    def _live_connections(self):
+        """The running device list; the focused connection when no manager is wired."""
+        manager = self.device_info.get("manager")
+        if manager is not None:
+            conns = manager.list_connections()
+            if conns:
+                return conns
+        conn = self.device_info.get("connection")
+        return [conn] if conn is not None else []
+
+    def _refresh_device_combo(self):
+        """Rebuild the combo from the live device list, keeping the focus."""
+        conns = self._live_connections()
+        self._device_conns = conns
+        labels = [device_display_name(conn) for conn in conns]
+        self.devices_combo["values"] = labels
+        focused = self.device_info.get("connection")
+        index = -1
+        for i, candidate in enumerate(conns):
+            if candidate is focused:
+                index = i
+                break
+        if index >= 0:
+            self.devices_combo.current(index)
+        elif labels:
+            # U383: the focused connection dropped -- adopt the first live
+            # device so combo, label, editing config and save lanes agree.
+            # Reached from window build, the Refresh button and assign_alias's
+            # internal refresh; the toast names the new focus like a manual
+            # combo selection does (reviewer P2: silent adoption).
+            self.device_info["connection"] = conns[0]
+            self.devices_combo.current(0)
+            self._rebind_focused_device()
+            ToastNotification(self, "Device Focused",
+                              f"Editing settings of {device_display_name(conns[0])}.",
+                              timeout_ms=1500)
+
+    def _on_device_selected(self, event=None):
+        """Point the window and its widgets at the selected live device."""
+        conns = getattr(self, "_device_conns", [])
+        index = self.devices_combo.current()
+        if index < 0 or index >= len(conns):
+            return False
+        conn = conns[index]
+        if conn is self.device_info["connection"]:
+            return False
+        self.device_info["connection"] = conn
+        self._rebind_focused_device()
+        ToastNotification(self, "Device Focused",
+                          f"Editing settings of {device_display_name(conn)}.",
+                          timeout_ms=1500)
+        return True
+
+    def _rebind_focused_device(self):
+        conn = self.device_info["connection"]
+        self.config = conn["config"]
+        self.alias_entry.delete(0, "end")
+        self.alias_entry.insert(0, conn.get("alias") or "")
+        self.device_label.configure(text=device_display_name(conn))
+        self._rebind_config_widgets()
+        # U424r3 R3-L5: dynamic lane on focus change; duck-typed rebind
+        # harnesses (FakeDeviceWindow) carry neither the lane nor the sync.
+        sync_lane = getattr(self, "_sync_wireless_lane", None)
+        if sync_lane is not None:
+            sync_lane()
+
+    @staticmethod
+    def _set_widget_value(widget, text):
+        """Write a value into an Entry, Combobox or variable-like widget."""
+        if hasattr(widget, "delete") and hasattr(widget, "insert"):
+            widget.delete(0, "end")
+            widget.insert(0, text)
+        elif hasattr(widget, "set"):
+            widget.set(text)
+
+    def _rebind_config_widgets(self):
+        """Reload every tab widget from the now-focused device's config."""
+        config = self.config
+        options = getattr(config, "AVAILABLE_ACTIONS", [])
+        for key, ent in self.entries.items():
+            value = getattr(config, key, None)
+            if value is not None:
+                self._set_widget_value(ent, str(value))
+        for name, var in getattr(self, "feature_vars", {}).items():
+            if name in config.feature_toggles:
+                self._set_widget_value(var, config.feature_toggles[name])
+        for name, var in (("cursor_acceleration", getattr(self, "cursor_accel_var", None)),
+                          ("scroll_acceleration", getattr(self, "scroll_accel_var", None))):
+            if var is not None and name in config.feature_toggles:
+                self._set_widget_value(var, config.feature_toggles[name])
+        for key, var in getattr(self, "button_vars", {}).items():
+            if key in config.feature_toggles:
+                self._set_widget_value(var, config.feature_toggles[key])
+        pen_mode_var = getattr(self, "pen_mode_var", None)
+        if pen_mode_var is not None:
+            self._set_widget_value(pen_mode_var, resolved_pen_mode(config))
+            self._sync_mode_panels()
+        # U424 UNIT VERDICT P1: keep the subset checkboxes honest on
+        # refresh (alias/focus change can swap the effective config).
+        for rec, var in getattr(self, "stretch_screen_vars", {}).items():
+            stored = getattr(config, "pen_stretch_screens", None)
+            var.set((not stored) or rec in stored)
+        self.saved_actions = dict(config.action_mapping)
+        for combo_map in (getattr(self, "action_combos", {}),
+                          getattr(self, "pen_combos", {}),
+                          getattr(self, "button_combos", {})):
+            for key, combo in combo_map.items():
+                self._set_widget_value(
+                    combo, action_display_value(config.action_mapping.get(key), options))
+        orientation_widget = getattr(self, "orientation_widget", None)
+        if orientation_widget is not None and hasattr(orientation_widget, "draw_degrees"):
+            # U415 / #407: the live-apply refresh re-resolves the drawing SIZE
+            # too (a Pen-tab wireless size change lands without a window
+            # rebuild - same #386 apply-live shape as the orientation angle).
+            conn = (getattr(self, "device_info", None) or {}).get("connection") or {}
+            orientation_widget.size = resolve_drawing_size(
+                conn.get("product_id"),
+                getattr(config, "wireless_tablet_size", None))
+            orientation_widget.draw_degrees(config.orientation_degrees)
+        reorient = getattr(self, "_reorient_pen_editor", None)
+        if reorient is not None:
+            reorient()
+
+    def _reorient_pen_editor(self):
+        """Re-sync the rect editor to the current product + orientation
+        (U424r4 R4-B). Called from the rebind loop AND the Apply success
+        path - the pen reads config live, so the editor must too."""
+        editor = getattr(self, "pen_area_editor", None)
+        if editor is None:
+            return
+        conn = (getattr(self, "device_info", None) or {}).get("connection") or {}
+        editor.reorient(pen_specs_for_product(conn.get("product_id"),
+                                              self.config),
+                        self.config.orientation_degrees)
+        # The numeric echo (mm rows unchanged by box, but the sensitivity
+        # w-axis basis and any future edit follow the new box) must
+        # refresh with it.
+        self._sync_rect_entries()
+
+    def assign_alias(self):
+        """Name the focused device: stores the alias under its identity key (U87 a)."""
+        alias = self.alias_entry.get().strip()
+        if not alias:
+            messagebox.showerror("Invalid Alias", "Enter an alias name before assigning it.")
+            return False
+        conn = self.device_info.get("connection")
+        if conn is None:
+            messagebox.showerror(
+                "No Device Focused",
+                "Wake the device and pick it in the device list first.")
+            return False
+        base = self.device_info["base_config"]
+        conn["alias"] = alias
+        identity = conn.get("identity")
+        if identity is not None:
+            base.set_device_alias(identity, alias)
+        # The binding lets this product id resolve to the alias on the next
+        # connection; the receiver twin is never auto-aliased.
+        base.set_device_entry(alias, {}, bindings=[conn["product_id"]])
+        self.device_label.configure(text=device_display_name(conn))
+        self._refresh_device_combo()
+        ToastNotification(self, "Alias Assigned",
+                          f"Device named '{alias}'. Save to persist.",
+                          timeout_ms=1800)
+        return True
+
+    def copy_settings_to_alias(self):
+        """Transfer a selectable subset of the focused device's settings.
+
+        Writes the subset under the target alias; applies to that device on
+        its next connection.
+        """
+        if not self.apply_settings():
+            return False
+        target = self.copy_alias_combo.get().strip()
+        if not target:
+            messagebox.showerror("Invalid Target", "Pick the alias to copy settings into.")
+            return False
+        selected = [name for name, var in self.copy_section_vars.items() if var.get()]
+        if not selected:
+            messagebox.showerror("Nothing Selected", "Select at least one section to copy.")
+            return False
+        conn = self.device_info.get("connection")
+        if conn is None:
+            messagebox.showerror(
+                "No Device Focused",
+                "Wake the device and pick it in the device list first.")
+            return False
+        base = self.device_info["base_config"]
+        entry = dict(base.devices.get(target, {}))
+        entry.update(collect_config_sections(conn["config"], selected))
+        base.devices[target] = entry
+        ToastNotification(self, "Settings Copied",
+                          f"Copied {len(selected)} section(s) to '{target}'. Save to persist.",
+                          timeout_ms=1800)
+        return True
+
     def _build_motion_tab(self):
         canvas = tk.Canvas(self.tab_motion, borderwidth=0)
         scrollbar = ttk.Scrollbar(self.tab_motion, orient="vertical", command=canvas.yview)
@@ -233,6 +1332,42 @@ class SettingsWindow(tk.Toplevel):
         canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
         canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
         canvas.configure(yscrollcommand=scrollbar.set)
+
+        # --- 0. Device Orientation Frame (U74 c/d) ---
+        orient_frame = ttk.LabelFrame(scroll_frame, text=" Device Orientation ", padding=10)
+        orient_frame.pack(fill="x", padx=10, pady=8, expand=True)
+
+        orient_lbl = ttk.Label(orient_frame, text="Rotation (degrees, 1° steps):")
+        orient_lbl.grid(row=0, column=0, sticky="w", pady=4)
+        orient_ent = ttk.Entry(orient_frame, width=8)
+        orient_ent.insert(0, str(self.config.orientation_degrees))
+        orient_ent.grid(row=0, column=1, sticky="w", padx=(4, 0))
+        self.entries["orientation_degrees"] = orient_ent
+        orient_ent.bind("<KeyRelease>", self._on_orientation_entry)
+        orient_tip = ("Rotates the interpretation of touch and pen input clockwise "
+                      "by this angle around the tablet center. 0 leaves input unchanged.")
+        ToolTip(orient_lbl, orient_tip)
+        ToolTip(orient_ent, orient_tip)
+
+        preset_frame = ttk.Frame(orient_frame)
+        preset_frame.grid(row=0, column=2, columnspan=2, sticky="e", padx=(8, 0))
+        for preset in ORIENTATION_PRESETS:
+            preset_btn = ttk.Button(preset_frame, text=f"{preset}°", width=4,
+                                    command=lambda angle=preset: self._set_orientation(angle))
+            preset_btn.pack(side="left", padx=(3, 0))
+            ToolTip(preset_btn, f"Set the orientation preset {preset} degrees.")
+
+        # U415 / #407: the drawing is sized by the SELECTED tablet size (the
+        # receiver lane falls back through the user's Pen-tab choice).
+        # Plain (no-device) windows carry no device_info: the drawing then
+        # falls back to medium, the driver's own default size.
+        conn = (getattr(self, "device_info", None) or {}).get("connection") or {}
+        self.orientation_widget = OrientationWidget(
+            orient_frame, degrees=self.config.orientation_degrees,
+            size=resolve_drawing_size(conn.get("product_id"),
+                                      getattr(self.config, "wireless_tablet_size", None)))
+        self.orientation_widget.grid(row=1, column=0, columnspan=4, pady=(6, 0))
+        orient_frame.columnconfigure(1, weight=1)
 
         # Tooltips dictionary for motion & acceleration
         cursor_tooltips = {
@@ -322,6 +1457,424 @@ class SettingsWindow(tk.Toplevel):
         canvas.pack(side="left", fill="both", expand=True)
         scrollbar.pack(side="right", fill="y")
 
+    def _on_orientation_entry(self, event=None):
+        """Live-redraw the pictogram while typing a valid angle."""
+        degrees = parse_orientation_degrees(self.entries["orientation_degrees"].get())
+        if degrees is not None:
+            self.orientation_widget.draw_degrees(degrees)
+
+    def _set_orientation(self, degrees):
+        """Preset button: write the angle into the entry and redraw the widget."""
+        entry = self.entries["orientation_degrees"]
+        entry.delete(0, "end")
+        entry.insert(0, str(degrees))
+        self.orientation_widget.draw_degrees(degrees)
+
+    # --- U424 / #424 tri-modal handlers (rulings 1-3) ----------------------
+
+    def _on_pen_mode_select(self):
+        # Ruling 3: switching modes applies LIVE (set_pen_mode, the
+        # reader re-resolves per report) and never touches the stored
+        # 1:1 rect - it stays, inactive, instantly re-usable.
+        self.config.set_pen_mode(self.pen_mode_var.get())
+        self._sync_mode_panels()
+
+    def _sync_mode_panels(self):
+        # U424r3 R3-L1 (#424 item 1): panels pack with an explicit
+        # `after=` anchor so a mode cycle can never re-append them at the
+        # tab bottom (his bug); the speed row is relative-mode-only.
+        mode = self.pen_mode_var.get()
+        for panel, visible in ((self.stretch_screen_panel,
+                                mode == "stretched"),
+                               (self.pen_rect_panel, mode == "rect_1to1")):
+            packed = panel.winfo_manager() == "pack"  # not pack_info:
+            if visible and not packed:
+                panel.pack(fill="x", padx=10, pady=(0, 8), expand=True,
+                           after=self._pen_movement_frame)
+            elif not visible and packed:
+                panel.pack_forget()
+        show_speed = mode == "relative"
+        for widget, row, col, span, sticky in self._pen_speed_widgets:
+            if show_speed and widget.winfo_manager() != "grid":
+                widget.grid(row=row, column=col, columnspan=span,
+                            sticky=sticky, pady=4)
+            elif not show_speed and widget.winfo_manager() == "grid":
+                widget.grid_remove()
+
+    def _on_stretch_screens_change(self):
+        # Ruling 1: the checkboxes RESTRICT the stretch target; all
+        # selected persists as None (= the pre-U424 full-desktop lane).
+        selected = [rec for rec, var in self.stretch_screen_vars.items()
+                    if var.get()]
+        self.config.pen_stretch_screens = (
+            selected if len(selected) < len(self.stretch_screen_vars) else None)
+
+    def _sync_rect_entries(self):
+        editor = getattr(self, "pen_area_editor", None)
+        model = editor.model if editor is not None else None
+        if model is None:
+            return
+        dpi = virtual_desktop_dpi()
+        rect = model.rect
+        for i, key in enumerate("xywh"):
+            axis = i % 2
+            self.rect_entries[f"{key}_px"].delete(0, tk.END)
+            self.rect_entries[f"{key}_px"].insert(0, f"{rect[i]:.0f}")
+            self.rect_entries[f"{key}_mm"].delete(0, tk.END)
+            self.rect_entries[f"{key}_mm"].insert(
+                0, f"{rect[i] * pen_mm_per_px(dpi, axis):.1f}")
+        self.rect_entries["s_px"].delete(0, tk.END)
+        self.rect_entries["s_px"].insert(
+            0, f"{rect[2] / model.box_mm[0]:.4f}")
+
+    def _apply_rect_field(self, source_key):
+        # Ruling 2: px and mm entries are bidirectional, aspect-locked
+        # (height edits re-derive width), clamped inside the display
+        # union by the model.
+        editor = getattr(self, "pen_area_editor", None)
+        model = editor.model if editor is not None else None
+        if model is None:
+            return
+        field, unit = source_key.rsplit("_", 1)
+        entry = self.rect_entries[source_key]
+        try:
+            raw = float(entry.get().strip().replace(",", "."))
+        except ValueError:
+            self._sync_rect_entries()  # revert the bad edit
+            return
+        if raw != raw or raw in (float("inf"), float("-inf")):
+            # U424r3 reviewer P2-2: float() accepts literal "nan"/"inf";
+            # non-finite entries revert like any bad edit (never reach the
+            # model).
+            self._sync_rect_entries()
+            return
+        if field == "s":  # sensitivity handle (U424r3 R3-L3)
+            model.apply_scale(raw)
+            editor._redraw()
+            self._sync_rect_entries()
+            return
+        dpi = virtual_desktop_dpi()
+        axis = 1 if field in ("y", "h") else 0
+        value_px = raw / pen_mm_per_px(dpi, axis) if unit == "mm" else raw
+        if field == "h":  # aspect lock: height drives width through the box
+            value_px = value_px * model.box_mm[0] / model.box_mm[1]
+            field = "w"
+        model.apply_fields(**{field: value_px})
+        editor._redraw()
+        self._sync_rect_entries()
+
+    def _build_pen_tab(self):
+        canvas = tk.Canvas(self.tab_pen, borderwidth=0)
+        scrollbar = ttk.Scrollbar(self.tab_pen, orient="vertical", command=canvas.yview)
+        scroll_frame = ttk.Frame(canvas)
+        self._pen_scroll_frame = scroll_frame  # U424r3: pack-order pin target
+
+        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        pen_tooltips = {
+            "pen_speed": "Relative-mode speed: pixels per millimeter of pen travel. Ignored in absolute mode.",
+            "pen_pressure_threshold": "Pressure units (0..2047) at which the left button is held. Below it the button releases; filters light-contact jitter.",
+        }
+
+        # --- 1. Movement Frame ---
+        movement_frame = ttk.LabelFrame(scroll_frame, text=" Pen Movement Parameters ", padding=10)
+        movement_frame.pack(fill="x", padx=10, pady=8, expand=True)
+
+        # U424 / TODO #424 (rulings 1-3): ONE mode selector replaces the
+        # old absolute checkbox (RETIRED - no dual control, reviewer
+        # P2-2 closure). Contextual sub-panels below: stretched -> screen
+        # checkboxes (default ALL = today); rect_1to1 -> numeric fields +
+        # canvas editor. Switching a mode applies LIVE.
+        self.pen_mode_var = tk.StringVar(value=resolved_pen_mode(self.config))
+        self.pen_mode_radios = []
+        mode_rows = (
+            ("relative", "Relative (movement deltas, speed below)"),
+            ("stretched", "Absolute - stretched / full fill"),
+            ("rect_1to1", "Absolute - 1:1 pen area rectangle"),
+        )
+        for idx, (mode_key, mode_label) in enumerate(mode_rows, start=1):
+            rb = ttk.Radiobutton(movement_frame, text=mode_label,
+                                 value=mode_key, variable=self.pen_mode_var,
+                                 command=self._on_pen_mode_select)
+            rb.grid(row=idx, column=0, columnspan=2, sticky="w", pady=(0, 2))
+            self.pen_mode_radios.append(rb)
+        ToolTip(self.pen_mode_radios[0],
+                "Relative: movement is sent as deltas scaled by the speed entry. "
+                "Stretched: the whole pen box fills the selected screens. "
+                "1:1: the pen box maps onto a stored rectangle at one px/mm.")
+
+        # U424r3 R3-L1 (#424 item 1): the Speed row is RELATIVE-mode-only
+        # (contextual); Pressure Threshold is mode-independent. Widgets
+        # carry their grid spec so _sync_mode_panels can hide/show rows.
+        self._pen_speed_widgets = []
+        pen_fields = [
+            ("Speed (px/mm):", "pen_speed", self.config.pen_speed, 4),
+            ("Pressure Threshold:", "pen_pressure_threshold", self.config.pen_pressure_threshold, 5),
+        ]
+
+        for label_text, key, initial_val, row_idx in pen_fields:
+            lbl = ttk.Label(movement_frame, text=label_text)
+            lbl.grid(row=row_idx, column=0, sticky="w", pady=4)
+            ent = ttk.Entry(movement_frame, width=12)
+            ent.insert(0, str(initial_val))
+            ent.grid(row=row_idx, column=1, sticky="e", pady=4)
+            self.entries[key] = ent
+            if key == "pen_speed":
+                self._pen_speed_widgets = [(lbl, row_idx, 0, 1, "w"),
+                                            (ent, row_idx, 1, 1, "e")]
+
+            if key in pen_tooltips:
+                ToolTip(lbl, pen_tooltips[key])
+                ToolTip(ent, pen_tooltips[key])
+
+        movement_frame.columnconfigure(1, weight=1)
+        self._pen_movement_frame = movement_frame
+
+        # --- 1b. Stretched-mode screen subset panel (U424 / ruling 1) ---
+        # Checkboxes RESTRICT the stretch target: unselected screens are
+        # not reachable, the box fills the union of the selected ones.
+        # Default = ALL selected = the pre-U424 full-desktop behavior.
+        self.stretch_screen_panel = ttk.LabelFrame(
+            scroll_frame, text=" Screens to stretch over ", padding=8)
+        self.stretch_screen_vars = {}
+        # U424 UNIT VERDICT P1: seed FROM the stored subset (None/empty =
+        # all) - the UI must show the actual reach on open, not all-checked.
+        stored_subset = getattr(self.config, "pen_stretch_screens", None)
+        for record in monitor_records():
+            rec_var = tk.BooleanVar(
+                value=(not stored_subset) or record in stored_subset)
+            cb = ttk.Checkbutton(
+                self.stretch_screen_panel, text=_screen_label(record),
+                variable=rec_var, command=self._on_stretch_screens_change)
+            cb.pack(anchor="w")
+            self.stretch_screen_vars[record] = rec_var
+
+        # --- 1c. Pen Area Rectangle panel (U414 / #406 + U424 ruling 2) ---
+        # 1:1 writing mode only: numeric x/y/w/h in px AND mm (editing
+        # either updates the other, aspect-locked, clamped to the display
+        # union) above the canvas editor; Save/Remove live in here.
+        self.pen_rect_panel = ttk.LabelFrame(
+            scroll_frame, text=" Pen Area Rectangle (1:1 writing area) ", padding=8)
+        self.rect_entries = {}
+        fields_frame = ttk.Frame(self.pen_rect_panel)  # grid lives here,
+        fields_frame.pack(anchor="w")                  # editor packs beside
+        for col, (field_key, field_label) in enumerate(
+                (("x", "X"), ("y", "Y"), ("w", "Width"), ("h", "Height"))):
+            ttk.Label(fields_frame, text=field_label).grid(
+                row=0, column=col, padx=4)
+            px_entry = ttk.Entry(fields_frame, width=9)
+            px_entry.grid(row=1, column=col, padx=4, pady=(0, 2))
+            mm_entry = ttk.Entry(fields_frame, width=9)
+            mm_entry.grid(row=2, column=col, padx=4)
+            px_entry.bind("<Return>", lambda e, k=f"{field_key}_px": self._apply_rect_field(k))
+            px_entry.bind("<FocusOut>", lambda e, k=f"{field_key}_px": self._apply_rect_field(k))
+            mm_entry.bind("<Return>", lambda e, k=f"{field_key}_mm": self._apply_rect_field(k))
+            mm_entry.bind("<FocusOut>", lambda e, k=f"{field_key}_mm": self._apply_rect_field(k))
+            self.rect_entries[f"{field_key}_px"] = px_entry
+            self.rect_entries[f"{field_key}_mm"] = mm_entry
+        # U424r3 R3-L4 (#424 item 4): HONEST BASIS LABEL. The px values
+        # (and the fractional-rect basis + the pen mapping) all live in
+        # the DPI-VIRTUALIZED desktop space: this process declares no DPI
+        # awareness, so GetSystemMetrics AND MOUSEEVENTF_VIRTUALDESK both
+        # address the scaled space (a 2160-physical row at 150% reads
+        # 1440). Display, rect basis and injection share ONE space - no
+        # precision is lost; switching to physical pixels would move the
+        # injection basis too and is deliberately NOT done.
+        ttk.Label(fields_frame,
+                  text="px = DPI-scaled desktop space (the same space the "
+                       "pen injection addresses); mm = physical",
+                  foreground="#888888").grid(row=4, column=0, columnspan=4,
+                                             sticky="w", pady=(2, 0))
+        # U424r3 R3-L3 (#424 item 3b): editable SENSITIVITY (px/mm) - the
+        # derived handle s = rw/box_mm_w; editing it resizes the footprint
+        # at fixed center (protocol DECISION: no schema change).
+        ttk.Label(fields_frame, text="Sensitivity (px/mm):").grid(
+            row=3, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 0))
+        s_entry = ttk.Entry(fields_frame, width=9)
+        s_entry.grid(row=3, column=2, padx=4, pady=(4, 0))
+        s_entry.bind("<Return>", lambda e: self._apply_rect_field("s_px"))
+        s_entry.bind("<FocusOut>", lambda e: self._apply_rect_field("s_px"))
+        self.rect_entries["s_px"] = s_entry
+        self.pen_area_editor = PenAreaEditor(self.pen_rect_panel, self.config,
+                                             self.device_info,
+                                             on_change=self._sync_rect_entries)
+        self.pen_area_editor.pack(fill="x", pady=(6, 0))
+        self._sync_rect_entries()
+        self._sync_mode_panels()
+
+
+        # --- 3. Pen Button Mapping Frame ---
+        button_frame = ttk.LabelFrame(scroll_frame, text=" Pen Button Mapping ", padding=10)
+        button_frame.pack(fill="x", padx=10, pady=8, expand=True)
+
+        options = getattr(self.config, "AVAILABLE_ACTIONS", [])
+        button_fields = [
+            ("Pen Button 1:", "pen_button_1",
+             "Press/release action for pen button 1 (status bit 1)."),
+            ("Pen Button 2:", "pen_button_2",
+             "Press/release action for pen button 2 (status bit 2). Mouse-button actions hold while pressed; other actions tap on the press edge."),
+        ]
+
+        for idx, (label_text, key, tip) in enumerate(button_fields, start=1):
+            lbl = ttk.Label(button_frame, text=label_text)
+            lbl.grid(row=idx, column=0, sticky="w", pady=4)
+            current_action = self.config.action_mapping.get(key)
+            combo = ttk.Combobox(button_frame, values=options, state="readonly", width=22)
+            combo.set(action_display_value(current_action, options))
+            combo.grid(row=idx, column=1, sticky="e", pady=4)
+            self.pen_combos[key] = combo
+            self.saved_actions[key] = current_action
+            ToolTip(lbl, tip)
+            ToolTip(combo, tip)
+
+        button_frame.columnconfigure(1, weight=1)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
+    def _wireless_receiver_live(self):
+        """True when a wireless receiver (product id 132) connection is live."""
+        device_info = getattr(self, "device_info", None)
+        if device_info is None:
+            return False
+        conns = []
+        conn = device_info.get("connection")
+        if conn is not None:
+            conns.append(conn)
+        manager = device_info.get("manager")
+        if manager is not None:
+            conns.extend(manager.list_connections())
+        return any(c.get("product_id") == WIRELESS_RECEIVER_PRODUCT_ID for c in conns)
+
+    def _refresh_wireless_notice(self):
+        """Show the loud unset notice while a receiver is live and the size is unset.
+
+        U386 / TODO #385 planner ruling: the non-detecting receiver must
+        never run on a silent default; the notice names all three choices.
+        """
+        unset = getattr(self.config, "wireless_tablet_size", None) is None
+        show = unset and self._wireless_receiver_live()
+        notice = self.wireless_size_notice
+        notice.configure(text=WIRELESS_SIZE_NOTICE_TEXT if show else "")
+        # U424r5 R5-F (#424 item F): an empty label still asks one line
+        # of grid height - UNMANAGE the row when there is no text, so no
+        # empty residue row stays above the tablet-size picker.
+        managed = notice.winfo_manager() == "grid"
+        if show and not managed:
+            notice.grid(row=0, column=0, columnspan=2, sticky="w",
+                        pady=(0, 6))
+        elif not show and managed:
+            notice.grid_remove()
+
+    def _build_buttons_tab(self):
+        canvas = tk.Canvas(self.tab_buttons, borderwidth=0)
+        scrollbar = ttk.Scrollbar(self.tab_buttons, orient="vertical", command=canvas.yview)
+        scroll_frame = ttk.Frame(canvas)
+
+        scroll_frame.bind("<Configure>", lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas_window = canvas.create_window((0, 0), window=scroll_frame, anchor="nw")
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(canvas_window, width=e.width))
+        canvas.configure(yscrollcommand=scrollbar.set)
+
+        button_tooltips = {
+            "btn1_press": "Action on the press edge of express key 1 (byte 4 bitmask bit 0). "
+                          "Mouse-button actions hold while pressed; other actions tap once.",
+            "central_press": "Action on the press edge of the central button (byte 3 bit 0).",
+            "dial_cw": "Action per clockwise step of the rotary touch dial. Steps accumulate "
+                       "from the reported dial angle; a decreasing angle is clockwise.",
+            "dial_ccw": "Action per counter-clockwise step of the rotary touch dial "
+                        "(increasing angle).",
+        }
+
+        # --- 1. Dial Parameters Frame ---
+        dial_frame = ttk.LabelFrame(scroll_frame, text=" Rotary Dial Parameters ", padding=10)
+        dial_frame.pack(fill="x", padx=10, pady=8, expand=True)
+
+        dial_fields = [
+            ("Step Threshold (angle units):", "dial_step_threshold", self.config.dial_step_threshold),
+        ]
+        dial_tooltips = {
+            "dial_step_threshold": "Dial angle units traversed before one CW/CCW step action fires.",
+        }
+
+        for idx, (label_text, key, initial_val) in enumerate(dial_fields, start=1):
+            lbl = ttk.Label(dial_frame, text=label_text)
+            lbl.grid(row=idx, column=0, sticky="w", pady=4)
+            ent = ttk.Entry(dial_frame, width=12)
+            ent.insert(0, str(initial_val))
+            ent.grid(row=idx, column=1, sticky="e", pady=4)
+            self.entries[key] = ent
+
+            if key in dial_tooltips:
+                ToolTip(lbl, dial_tooltips[key])
+                ToolTip(ent, dial_tooltips[key])
+
+        dial_frame.columnconfigure(1, weight=1)
+
+        # --- 2. Button Mapping Frame ---
+        mapping_frame = ttk.LabelFrame(scroll_frame, text=" Touch Button & Dial Mapping ", padding=10)
+        mapping_frame.pack(fill="x", padx=10, pady=8, expand=True)
+
+        options = getattr(self.config, "AVAILABLE_ACTIONS", [])
+        control_fields = [(f"Button {n}:", f"btn{n}_press") for n in range(1, 9)] + [
+            ("Central Button:", "central_press"),
+            ("Dial Clockwise:", "dial_cw"),
+            ("Dial Counter-Clockwise:", "dial_ccw"),
+        ]
+
+        for idx, (label_text, key) in enumerate(control_fields, start=1):
+            lbl = ttk.Label(mapping_frame, text=label_text)
+            lbl.grid(row=idx, column=0, sticky="w", pady=4)
+
+            var = tk.BooleanVar(value=self.config.feature_toggles.get(key, True))
+            chk = ttk.Checkbutton(mapping_frame, text="on", variable=var)
+            chk.grid(row=idx, column=1, sticky="w", pady=4)
+            self.button_vars[key] = var
+
+            current_action = self.config.action_mapping.get(key)
+            combo = ttk.Combobox(mapping_frame, values=options, state="readonly", width=22)
+            combo.set(action_display_value(current_action, options))
+            combo.grid(row=idx, column=2, sticky="e", pady=4)
+            self.button_combos[key] = combo
+            self.saved_actions[key] = current_action
+
+            tip = button_tooltips.get(key, "Action for this touch control; toggle enables the control.")
+            ToolTip(lbl, tip)
+            ToolTip(chk, tip)
+            ToolTip(combo, tip)
+
+            touch_key = BUTTON_TOUCH_BY_PRESS.get(key)
+            if touch_key is not None:
+                # U381 / #381: touch part of this express key -- the modifier
+                # held while the finger keeps contact, off by default.
+                touch_tip = (f"Touch part of express key {touch_key[3]}: while a finger "
+                             "keeps contact, this modifier is held down and it releases on "
+                             "the full release. Off by default.")
+                touch_var = tk.BooleanVar(value=self.config.feature_toggles.get(touch_key, False))
+                touch_chk = ttk.Checkbutton(mapping_frame, text="touch", variable=touch_var)
+                touch_chk.grid(row=idx, column=3, sticky="w", pady=4)
+                self.touch_vars[touch_key] = touch_var
+
+                current_touch = self.config.action_mapping.get(touch_key)
+                touch_combo = ttk.Combobox(mapping_frame, values=list(TOUCH_ACTION_CHOICES),
+                                           state="readonly", width=8)
+                touch_combo.set(action_display_value(current_touch, TOUCH_ACTION_CHOICES))
+                touch_combo.grid(row=idx, column=4, sticky="e", pady=4)
+                self.touch_combos[touch_key] = touch_combo
+                self.saved_actions[touch_key] = current_touch
+
+                ToolTip(touch_chk, touch_tip)
+                ToolTip(touch_combo, touch_tip)
+
+        mapping_frame.columnconfigure(2, weight=1)
+        mapping_frame.columnconfigure(4, weight=1)
+
+        canvas.pack(side="left", fill="both", expand=True)
+        scrollbar.pack(side="right", fill="y")
+
     def _build_features_actions_tab(self):
         canvas = tk.Canvas(self.tab_features_actions, borderwidth=0)
         scrollbar = ttk.Scrollbar(self.tab_features_actions, orient="vertical", command=canvas.yview)
@@ -335,12 +1888,20 @@ class SettingsWindow(tk.Toplevel):
 
         self.feature_vars = {}
         self.action_combos = {}
-        # Mapping values as they were when the window opened, keyed by feature.
-        self.saved_actions = {}
+        # self.saved_actions is initialized in __init__ so the Pen tab entries
+        # built earlier are not wiped here.
         options = getattr(self.config, "AVAILABLE_ACTIONS", [])
 
-        # Filter out cursor_acceleration & scroll_acceleration since they are in Motion tab
-        excluded_features = {"cursor_acceleration", "scroll_acceleration"}
+        # Filter out cursor_acceleration & scroll_acceleration since they are in Motion tab,
+        # pen_absolute_mode since it is in the Pen tab, and the button/dial controls
+        # since they are in the Buttons tab.
+        # U424 / #424: pen_absolute_mode AND pen_stretch_full_desktop are
+        # retired from the UI (the mode selector owns them now; the
+        # toggles stay readable in config for the migration only - no
+        # dual control, UNIT VERDICT P2-2).
+        excluded_features = ({"cursor_acceleration", "scroll_acceleration",
+                              "pen_absolute_mode", "pen_stretch_full_desktop"}
+                             | set(BUTTON_CONTROL_KEYS) | set(BUTTON_TOUCH_KEYS))
 
         for feature_key, enabled in self.config.feature_toggles.items():
             if feature_key in excluded_features:
@@ -452,32 +2013,156 @@ class SettingsWindow(tk.Toplevel):
                 )
                 for feat_key, combo in self.action_combos.items()
             }
+            pen_combos = getattr(self, "pen_combos", {})
+            pen_button_actions = {
+                pen_key: resolve_action_mapping(
+                    combo.get(),
+                    saved_actions.get(pen_key, self.config.action_mapping.get(pen_key)),
+                    options,
+                )
+                for pen_key, combo in pen_combos.items()
+            }
+            pen_mode_var = getattr(self, "pen_mode_var", None)
+            pen_mode = pen_mode_var.get() if pen_mode_var is not None else None
+            button_combos = getattr(self, "button_combos", {})
+            button_actions = {
+                key: resolve_action_mapping(
+                    combo.get(),
+                    saved_actions.get(key, self.config.action_mapping.get(key)),
+                    options,
+                )
+                for key, combo in button_combos.items()
+            }
+            button_vars = getattr(self, "button_vars", {})
+            button_toggles = {key: var.get() for key, var in button_vars.items()}
+            # U381 / #381: the touch part rides the same apply lane; its combo
+            # resolves against the modifier vocabulary, not the action list.
+            touch_combos = getattr(self, "touch_combos", {})
+            button_actions.update({
+                touch_key: resolve_action_mapping(
+                    combo.get(),
+                    saved_actions.get(touch_key, self.config.action_mapping.get(touch_key)),
+                    TOUCH_ACTION_CHOICES,
+                )
+                for touch_key, combo in touch_combos.items()
+            })
+            touch_vars = getattr(self, "touch_vars", {})
+            button_toggles.update({touch_key: var.get() for touch_key, var in touch_vars.items()})
+            # U386 / TODO #385: the wireless tablet size rides the same apply
+            # lane; the unset label means the explicit unset, not "keep".
+            wireless_combo = getattr(self, "wireless_size_combo", None)
+            if wireless_combo is None:
+                wireless_tablet_size = _KEEP_WIRELESS_SIZE
+            elif wireless_combo.get() == WIRELESS_SIZE_UNSET_LABEL:
+                wireless_tablet_size = None
+            else:
+                wireless_tablet_size = wireless_combo.get()
 
             # 2. Validate everything, then apply all-or-nothing
             apply_settings_to_config(
-                self.config, numeric_values, accel_toggles, feature_toggles, action_mappings
+                self.config, numeric_values, accel_toggles, feature_toggles, action_mappings,
+                pen_button_actions=pen_button_actions,
+                pen_mode=pen_mode,
+                button_actions=button_actions,
+                button_toggles=button_toggles,
+                wireless_tablet_size=wireless_tablet_size,
             )
         except ValueError as e:
             messagebox.showerror("Invalid Input", f"Please enter valid numeric values.\nDetails: {e}")
             return False
 
+        # U424r3 R3-L2 (#424 item 2): Apply Live is the SINGLE apply path -
+        # the 1:1 rect rides it like every other setting (the editor's old
+        # "Save Pen Area" button is gone). Duck-typed callers without the
+        # editor lane are skipped.
+        # U424r5 R5-E: reorient BEFORE persist so Apply Live stores the
+        # orientation-matched shape (order matters: persist writes the
+        # editor's current rect).
+        reorient = getattr(self, "_reorient_pen_editor", None)
+        if reorient is not None:
+            reorient()
+        editor = getattr(self, "pen_area_editor", None)
+        if editor is not None:
+            editor.persist_entry()
+
+        # Refresh only when the window actually built the wireless lane:
+        # duck-typed apply_settings callers (FakeWindow pins) carry neither
+        # the combo nor the notice.
+        if wireless_combo is not None:
+            self._refresh_wireless_notice()
         ToastNotification(self, "Success", "Settings applied directly to driver!", timeout_ms=1500)
         return True
 
-    def save_to_file(self):
-        """Apply first; the file is written only when the apply succeeded."""
+    def save_to_focused_device(self):
+        """Subset save (U87 e): only the focused device's values, under its key.
+
+        The main Save button keeps writing the global sections; this button
+        writes nothing else, so one device's values never leak into another.
+        """
         if not self.apply_settings():
             return False
-        self.config.save_to_file("user.cfg")
-        ToastNotification(self, "File Saved", "Configuration saved to user.cfg", timeout_ms=1800)
+
+        conn = self.device_info.get("connection")
+        if conn is None:
+            messagebox.showerror(
+                "No Device Focused",
+                "Wake the device and pick it in the device list first.")
+            return False
+        base = self.device_info["base_config"]
+        identity = conn.get("identity")
+        if identity is None:
+            messagebox.showerror(
+                "No Device Identity",
+                "This connection carries no identity key; nothing was saved.")
+            return False
+
+        base.set_device_identity_settings(
+            identity, collect_config_sections(conn["config"], DEVICE_TRANSFER_SECTIONS))
+        filepath = getattr(base, "save_path", "user.cfg")
+        base.save_to_file(filepath)
+
+        ToastNotification(self, "Device Saved",
+                          f"Saved {device_display_name(conn)} under its identity key.",
+                          timeout_ms=1800)
+        return True
+
+    def save_to_file(self):
+        """Apply first; the file is written only when the apply succeeded.
+
+        With a focused device the device settings are written into its
+        devices entry under its alias; the global sections stay untouched.
+        """
+        if not self.apply_settings():
+            return False
+
+        device_info = getattr(self, "device_info", None)
+        conn = device_info.get("connection") if device_info is not None else None
+        if conn is not None:
+            base = device_info["base_config"]
+            alias = conn.get("alias")
+            if alias is None:
+                messagebox.showerror(
+                    "No Device Alias",
+                    "Assign an alias before saving per-device settings.")
+                return False
+            base.set_device_entry(alias, collect_config_sections(
+                conn["config"], DEVICE_TRANSFER_SECTIONS))
+            filepath = getattr(base, "save_path", "user.cfg")
+            base.save_to_file(filepath)
+        else:
+            filepath = getattr(self.config, "save_path", "user.cfg")
+            self.config.save_to_file(filepath)
+
+        ToastNotification(self, "File Saved", f"Configuration saved to {filepath}", timeout_ms=1800)
         return True
 
 
 class DriverTrayApp:
-    def __init__(self, root, state_ref, config_ref, enabled_event_ref, stop_event_ref):
+    def __init__(self, root, state_ref, config_ref, enabled_event_ref, stop_event_ref, device_info=None):
         self.root = root
         self.state = state_ref
         self.config = config_ref
+        self.device_info = device_info
         self.touch_enabled_event = enabled_event_ref
         self.stop_event = stop_event_ref
         self.icon = None
@@ -510,7 +2195,7 @@ class DriverTrayApp:
         if self.settings_window is not None and self.settings_window.winfo_exists():
             self.settings_window.lift()
             return
-        self.settings_window = SettingsWindow(self.root, self.state, self.config)
+        self.settings_window = SettingsWindow(self.root, self.state, self.config, self.device_info)
 
     def quit_driver(self, icon=None, item=None):
         print("[Tray] Exiting Wacom Touch Driver...")
@@ -541,11 +2226,12 @@ class DriverTrayApp:
         self.icon.run()
 
 
-def launch_gui(state_ref, config_ref, pause_event_ref, stop_event_ref):
+def launch_gui(state_ref, config_ref, pause_event_ref, stop_event_ref, device_info=None):
     root = tk.Tk()
     root.withdraw()
 
-    app = DriverTrayApp(root, state_ref, config_ref, pause_event_ref, stop_event_ref)
+    app = DriverTrayApp(root, state_ref, config_ref, pause_event_ref, stop_event_ref,
+                        device_info=device_info)
     tray_thread = threading.Thread(target=app.run_tray, daemon=True)
     tray_thread.start()
 

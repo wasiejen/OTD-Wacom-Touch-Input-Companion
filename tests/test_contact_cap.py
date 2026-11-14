@@ -55,7 +55,9 @@ def test_start_time_table_is_sized_from_the_slot_count():
     assert len(TabletState().start_time) == MAX_TOUCH_CONTACTS + 1
 
 
-def test_eleven_contact_report_processes_without_exception():
+def test_eleven_contact_report_processes_without_exception(stub_send_input):
+    # 5+ contacts drive the mapped gesture lanes (5f_alt_tab -> ctrl+alt+tab),
+    # so the dispatcher needs the input stub: record the events, inject none.
     state = TabletState()
     ad = ActionDispatcher(state)
 
@@ -66,7 +68,9 @@ def test_eleven_contact_report_processes_without_exception():
     assert state.last_num_active == 11
 
 
-def test_twelve_contact_report_processes_without_exception():
+def test_twelve_contact_report_processes_without_exception(stub_send_input):
+    # Same lane as the 11-contact case: the input stub keeps the gesture real
+    # in the dispatcher and the events out of the desktop.
     state = TabletState()
     ad = ActionDispatcher(state)
 
@@ -77,7 +81,9 @@ def test_twelve_contact_report_processes_without_exception():
     assert state.peak_contact_count == 12
 
 
-def test_state_still_processes_reports_after_an_over_cap_report():
+def test_state_still_processes_reports_after_an_over_cap_report(stub_send_input):
+    # The release report closes the 5f_alt_tab lane (ctrl_alt_tab_commit), so
+    # this case injects on both legs without the input stub in place.
     state = TabletState()
     ad = ActionDispatcher(state)
 

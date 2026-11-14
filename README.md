@@ -1,8 +1,10 @@
 # OpenTabletDriver - Wacom Touch Companion
 
-A lightweight Python driver companion for **OpenTabletDriver (OTD)** that unlocks touch input and multi-touch gesture support on Wacom Intuos Pro tablets. 
+A lightweight Python driver companion for **OpenTabletDriver (OTD)** that unlocks touch input and multi-touch gesture support on Wacom Intuos Pro tablets.
 
-While OpenTabletDriver excels at handling pen input, touch support on certain older Wacom devices requires specialized parsing. This background driver runs alongside OTD to capture HID touch reports and map them to custom mouse cursor movements, multi-finger gestures, continuous scrolling, and Windows productivity shortcuts.
+**Current version: v0.4.0** (November 2026) - since v0.3.0: tri-modal pen mapping (relative / stretched with per-screen selection / 1:1 pen-area with px-mm sensitivity editor), tablet buttons + dial + touch-modifier support, wireless tablet-size lane, orientation-synced editor, live Apply with persistence, `--save-device`. 
+
+Touch support on certain older Wacom devices requires specialized parsing. This driver captures HID touch reports and maps them to custom mouse cursor movements, multi-finger gestures, continuous scrolling, and Windows productivity shortcuts. Pen input is handled natively as well (cursor movement, pressure clicks, pen button clicks), replacing the external OpenTabletDriver dependency.
 
 ---
 
@@ -35,6 +37,7 @@ Specifically designed and tested for the **Wacom Intuos5 / Intuos Pro (PTH-x51)*
 ## Key Features
 
 * **Palm Rejection:** Automatically disables touch input instantly whenever the pen enters proximity/hover range above the tablet surface.
+* **Pen Pointer Support:** Built-in pen input without an external driver: cursor movement (absolute tablet-to-screen mapping or relative deltas with speed setting), pen tip pressure behaves like a left mouse button press/release, and the two pen buttons default to right-click and middle-click (customizable). Touch stays suppressed while the pen is active.
 * **Accelerated Cursor Motion:** Smooth 1-finger tracking with piecewise linear acceleration and configurable deadzones.
 * **Rich Multi-Finger Gestures:**
   * **1-Finger:** Tap, press-and-hold drag, and double-tap drag.
@@ -52,8 +55,9 @@ Specifically designed and tested for the **Wacom Intuos5 / Intuos Pro (PTH-x51)*
 Everything in the driver is exposed and editable via the GUI:
 
 1. **Motion & Speed:** Fine-tune base cursor sensitivity, acceleration curves (`speed_low`, `speed_high`), deadzone thresholds, and natural scroll speeds.
-2. **Features & Actions:** Individual check-box toggles for every single gesture type, paired with dropdown selectors to map gestures to standard actions (e.g., Task View, Show Desktop, Alt-Tab, Desktop Switch, Window Maximize/Minimize).
-3. **Thresholds & Advanced:** Adjust physical motion tolerances, tap duration limits, press-and-hold timing, swipe distance limits, and pinch activation limits.
+2. **Pen:** Pen movement speed (px/mm for relative deltas), absolute-vs-relative movement toggle, pressure threshold for the left-button hold, and dropdown mapping of the two pen buttons to actions.
+3. **Features & Actions:** Individual check-box toggles for every single gesture type, paired with dropdown selectors to map gestures to standard actions (e.g., Task View, Show Desktop, Alt-Tab, Desktop Switch, Window Maximize/Minimize).
+4. **Thresholds & Advanced:** Adjust physical motion tolerances, tap duration limits, press-and-hold timing, swipe distance limits, and pinch activation limits.
 
 ---
 
@@ -65,7 +69,7 @@ Everything in the driver is exposed and editable via the GUI:
    * Download the latest version from [python.org](https://www.python.org/downloads/).
    * **Important (Windows):** Check the box **"Add python.exe to PATH"** during installation.
 
-2. **OpenTabletDriver**: Make sure [OpenTabletDriver](https://opentabletdriver.net/) is installed and configured for your pen input.
+2. **OpenTabletDriver (optional):** Pen input is now handled by this companion itself, so OpenTabletDriver is not required for pen use. Install [OpenTabletDriver](https://opentabletdriver.net/) only if you need pen pressure/tilt features beyond pointer control - do not run both pointer paths at once.
 
 ### Installation
 
@@ -106,6 +110,34 @@ On the Release Page there is now an "OTD_Wacom_Touch_Driver_%VERSION%_win64.exe"
 ## Configuration File (`user.cfg`)
 
 When you hit **Save to File** in the settings GUI, a `user.cfg` file is automatically created or updated in the application directory. On startup, the driver automatically loads your saved configuration from this file.
+
+### Wireless tablet size (`wireless_tablet_size`)
+
+The wireless add-on is one receiver (product id 132) on every tablet size, and it cannot detect which tablet it is paired to. The driver therefore does not guess: the setting names the paired tablet explicitly — `small` (788), `medium` (789), or `large` (791) — under `motion_and_thresholds.wireless_tablet_size` in `user.cfg`, or via the Pen tab's **Wireless Tablet Size** choice in the GUI. While a wireless receiver is connected and no size is chosen, the driver prints a loud notice (console) and shows a red notice row (GUI) naming the three options; until a size is chosen the mapping uses the medium extents as a labeled fallback, never as a silent default. The old key name `wireless_pen_size` (pre-rename configs) is still read and migrated with a notice; the new key wins if both are present. A size change takes effect at the next device reconnect.
+
+### Command line options
+
+Start the driver with `python touch_controller.py [options]`:
+
+| Option | Effect |
+|---|---|
+| `-DEBUG` | print raw touch reports on the console |
+| `-wireless` | prefer the wireless interface when a tablet exposes both |
+| `--config <path>` | load and save `<path>` instead of `user.cfg` |
+| `--save-as <path>` | save to `<path>` while loading from `--config` |
+| `--list` | print every stored device entry (alias + identity key) and exit |
+| `--restore-with <name>` | apply one device's saved values, then re-save the live values |
+| `--save-device <alias>` | write the current settings under a new device alias and exit |
+
+`--list`, `--restore-with` and `--save-device <alias>` are maintenance lanes: they run
+against the config file and exit without starting the driver or the GUI. The
+old bare-name alias spelling `--save-as <alias>` still routes to the same lane
+but prints a deprecation notice naming `--save-device`; a `--save-as` value that
+looks like a file path (a `/` or `\` separator or a file extension) keeps the
+save-file lane and is unchanged.
+`--restore-with` takes a device alias or its 12-character identity key; the
+named device's saved values become the live values, and that device's entry is
+then rewritten with the live state.
 
 ---
 

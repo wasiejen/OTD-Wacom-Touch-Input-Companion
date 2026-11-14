@@ -7,6 +7,8 @@ import os
 import ctypes
 import sys
 import re
+import copy
+import hashlib
 
 from vk_codes import vk_codes_dict  # Import vk_code dictionary
 
@@ -97,11 +99,29 @@ class ActionDispatcher():
     KEYEVENTF_KEYDOWN = 0x0000
     KEYEVENTF_KEYUP = 0x0002  
     
-    def __init__(self, state):
+    # Pen button mapping actions: press/release flag pairs (U70).
+    # Any other mapped action runs as a tap on the press edge.
+    PEN_BUTTON_FLAGS = {
+        "left_click": (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+        "right_click": (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+        "middle_click": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+    }
+
+    def __init__(self, state, cfg=None):
         self.state = state
+        # Per-connection config instance (U73); None keeps the module config.
+        self.config = cfg
         # Inputs this dispatcher currently holds; released on thread exit.
         self.held_keys = set()
         self.left_held = False
+        # Pen-held inputs: pressure left-hold and the two pen buttons.
+        self.pen_pressure_held = False
+        self.pen_button_held = {}
+        # Tablet button-held inputs (U71): slots 1..8 express keys, 9 central.
+        self.button_held = {}
+        # Touch-part holds (U381 / #381): slots 1..8 while byte 5 keeps a
+        # finger in contact; the modifier is released on the full release.
+        self.touch_held = {}
 
         # The Dispatch Table
         self.ACTION_DISPATCH = {
@@ -207,7 +227,104 @@ class ActionDispatcher():
         # # Usage:
         # with hold_key(vk_codes_dict["ctrl"]):
         #     send_mouse_scroll(0, steps)
-        
+
+    # ==============================================================================
+    # PEN INPUT HELPERS (U70)
+    # ==============================================================================
+
+    def send_pen_absolute_move(self, nx, ny):
+        """Absolute pointer move in the 0..65535 virtual-desktop space."""
+        extra = ctypes.c_ulong(0)
+        ii = INPUT()
+        ii.type = self.INPUT_MOUSE
+        ii.mi = MOUSEINPUT(int(nx), int(ny), 0,
+                           self.MOUSEEVENTF_MOVE | self.MOUSEEVENTF_ABSOLUTE | self.MOUSEEVENTF_VIRTUALDESK,
+                           0, ctypes.pointer(extra))
+        ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
+
+    def press_pen_pressure(self):
+        """Pressure above threshold holds the left button like a mouse click."""
+        self.send_mouse_click(self.MOUSEEVENTF_LEFTDOWN)
+        self.pen_pressure_held = True
+
+    def release_pen_pressure(self):
+        if self.pen_pressure_held:
+            self.send_mouse_click(self.MOUSEEVENTF_LEFTUP)
+            self.pen_pressure_held = False
+
+    def press_pen_button(self, slot, action_name):
+        """Press edge of a pen button; mapped mouse buttons hold, others tap."""
+        flags = self.PEN_BUTTON_FLAGS.get(action_name)
+        if flags:
+            self.send_mouse_click(flags[0])
+            self.pen_button_held[slot] = action_name
+        elif action_name is not None:
+            self.execute_mapped_action(action_name)
+
+    def release_pen_button(self, slot):
+        """Release edge of a pen button; only held mouse buttons send a UP."""
+        action_name = self.pen_button_held.pop(slot, None)
+        if action_name:
+            self.send_mouse_click(self.PEN_BUTTON_FLAGS[action_name][1])
+
+    # ==============================================================================
+    # TOUCH BUTTON HELPERS (U71)
+    # ==============================================================================
+
+    def press_tablet_button(self, slot, action_name):
+        """Press edge of a tablet button (slots 1..8, 9 = central).
+
+        Mouse-button actions hold on the press edge and release on the release
+        edge, like the pen buttons; any other mapped action taps once here.
+        """
+        flags = self.PEN_BUTTON_FLAGS.get(action_name)
+        if flags:
+            self.send_mouse_click(flags[0])
+            self.button_held[slot] = action_name
+        elif action_name is not None:
+            self.execute_mapped_action(action_name)
+
+    def release_tablet_button(self, slot):
+        """Release edge of a tablet button; only held mouse buttons send a UP."""
+        action_name = self.button_held.pop(slot, None)
+        if action_name:
+            self.send_mouse_click(self.PEN_BUTTON_FLAGS[action_name][1])
+
+    # ==============================================================================
+    # TOUCH-PART HELPERS (U381 / #381)
+    # ==============================================================================
+
+    def press_touch_modifier(self, slot, modifier):
+        """Touch contact edge: hold the configured modifier while the finger stays.
+
+        "none" (the default) and an unset value do nothing and say nothing;
+        any other unknown name is ignored instead of raising, because the
+        value comes from a user-editable config file and one bad entry must
+        not take the reader thread down.
+        """
+        if modifier is None or modifier == TOUCH_NO_ACTION:
+            return
+        if modifier not in TOUCH_MODIFIER_KEYS:
+            print(f"[Warning] Unknown touch modifier: {modifier}")
+            return
+        if modifier in self.touch_held.values():
+            # Another contact already holds this modifier down: record the
+            # slot only, so the key-down/up pair stays balanced.
+            self.touch_held[slot] = modifier
+            return
+        self.press_key(modifier)
+        self.touch_held[slot] = modifier
+
+    def release_touch_modifier(self, slot):
+        """Full release of one contact: drop that slot's hold.
+
+        A modifier two buttons both hold stays down until the last slot using
+        it releases, so lifting one finger cannot un-modify the other.
+        """
+        modifier = self.touch_held.pop(slot, None)
+        if modifier is not None and modifier not in self.touch_held.values():
+            self.release_key(modifier)
+
     # ==============================================================================
     # HELPER FUNCTIONS - INPUT
     # ==============================================================================  
@@ -233,6 +350,14 @@ class ActionDispatcher():
         """
         released = []
 
+        # Touch holds first: their modifier names also sit in held_keys, and
+        # releasing them here keeps the generic pass below from sending a
+        # second key-up for the same modifier (U381 / #381).
+        for slot, modifier in list(self.touch_held.items()):
+            self.release_key(modifier)
+            released.append(f"touch_{modifier}_{slot}")
+        self.touch_held.clear()
+
         for vk_code in list(self.held_keys):
             self.release_key(vk_code)
             released.append(vk_code)
@@ -242,6 +367,20 @@ class ActionDispatcher():
             self.left_held = False
             self.state.is_left_held = False
             released.append("left_button")
+
+        if self.pen_pressure_held:
+            self.release_pen_pressure()
+            released.append("pen_pressure")
+
+        for slot, action_name in list(self.pen_button_held.items()):
+            self.send_mouse_click(self.PEN_BUTTON_FLAGS[action_name][1])
+            released.append(f"pen_button_{slot}")
+        self.pen_button_held.clear()
+
+        for slot, action_name in list(self.button_held.items()):
+            self.send_mouse_click(self.PEN_BUTTON_FLAGS[action_name][1])
+            released.append(f"button_{slot}")
+        self.button_held.clear()
 
         if released:
             print(f"[Safety] Released held input on thread exit: {released}")
@@ -272,8 +411,9 @@ class ActionDispatcher():
             print(f"[Warning] Unknown action name: {action_name}")
 
     def dispatch_gesture_event(self, event_type):
-        if config.feature_toggles.get(event_type, False):
-            mapping = config.action_mapping.get(event_type, None)
+        cfg = self.config if self.config is not None else config
+        if cfg.feature_toggles.get(event_type, False):
+            mapping = cfg.action_mapping.get(event_type, None)
             if callable(mapping):
                 action_name = mapping(self.state)
             else:
@@ -284,11 +424,294 @@ class ActionDispatcher():
              
 
 # ==============================================================================
+# SHARED ROTATION CONSTANTS (U74)
+# ==============================================================================
+# Defined here, before the config class: the module-level DriverConfig
+# instance at the end of that class validates orientation_degrees, so the
+# bounds constant must exist at import time.
+# Touch sub-blocks decode to 0..4095 (parse_sub_block), so the touch rotation
+# center is that square's middle. The pen rotation center is the digitizer
+# center from the per-model ranges (PEN_SPECS_BY_PRODUCT / PTH-651).
+TOUCH_COORD_MAX = 4095
+TOUCH_ROTATION_CENTER = (TOUCH_COORD_MAX / 2, TOUCH_COORD_MAX / 2)
+ORIENTATION_MIN_DEGREES = 0
+ORIENTATION_MAX_DEGREES = 359
+
+# Touch-part config (U381 / #381): byte 5 of the 0x03 report marks a finger in
+# contact with express key n; the configured modifier is held for the duration
+# of that contact and released on the recorded full-release state. Defaults are
+# disabled (toggle False plus "none"), so the touch part fires nothing until
+# the user enables it per button. Defined above DriverConfig: its defaults
+# reference them, and the module config instance builds at import time.
+TOUCH_CONTROL_KEYS = tuple(f"btn{n}_touch" for n in range(1, 9))
+TOUCH_NO_ACTION = "none"
+TOUCH_MODIFIER_KEYS = ("ctrl", "shift", "alt")
+TOUCH_ACTION_CHOICES = (TOUCH_NO_ACTION,) + TOUCH_MODIFIER_KEYS
+
+# ==============================================================================
 # CONFIGURATION CLASS
 # ==============================================================================
+# Settings alias rule (U72 §4): model-class from the wired product_id.
+# Two same-model tablets collapse to one alias. The wireless receiver
+# (132 / 0x0084) cannot resolve its paired tablet from enumeration; it
+# resolves through the manual binding map below, else the placeholder.
+# 788 (0x0314, small) is listed upstream but never observed: unverified.
+MODEL_CLASS_ALIASES = {788: "wacom-intuos5-s", 789: "wacom-intuos5-m", 791: "wacom-intuos5-l"}
+WIRELESS_DEFAULT_ALIAS = "wireless"
+# Sections a devices entry may carry. "bindings" is the manual override key
+# (GUI tags the receiver twin once; stored per alias, U72 §4 fallback layer).
+DEVICE_SECTION_KEYS = ("motion_and_thresholds", "feature_toggles", "action_mapping")
+
+
+def resolve_device_alias(product_id, wireless, bindings=None):
+    """Resolve the settings alias for one connection per the U72 §4 rule.
+
+    Order: wired model-class table (authoritative) → manual binding map
+    (the receiver-twin override) → wireless placeholder alias. Unknown
+    devices resolve to None: global sections stay the only settings source.
+    """
+    alias = MODEL_CLASS_ALIASES.get(product_id)
+    if alias is not None:
+        return alias
+    for bound_alias, bound_ids in (bindings or {}).items():
+        if product_id in bound_ids:
+            return bound_alias
+    if wireless:
+        return WIRELESS_DEFAULT_ALIAS
+    return None
+
+
+def snapshot_device_sections(config, section_names=DEVICE_SECTION_KEYS):
+    """Snapshot the named sections of a live config instance as plain dicts.
+
+    Only DEVICE_SECTION_KEYS are readable; the result is what a device entry
+    or the '--save-device <alias>' lane stores (U413; the old bare-name
+    '--save-as <alias>' spelling still routes here, with a notice).
+    """
+    sections = {}
+    for name in section_names:
+        if name == "motion_and_thresholds":
+            sections[name] = {key: getattr(config, key) for key in config.MOTION_KEYS}
+        elif name == "feature_toggles":
+            sections[name] = dict(config.feature_toggles)
+        elif name == "action_mapping":
+            sections[name] = dict(config.action_mapping)
+    return sections
+
+
+# Device identity lane (U87): one interface's identity key is a hash over its
+# full interface path plus its serial string. Interfaces never match exactly
+# (#248 ruling), so a bare interface index is never an identity key.
+DEVICE_ALIAS_PREFIX = "device_alias_"
+DEVICE_SETTINGS_PREFIX = "device_settings_"
+DEVICE_IDENTITY_HASH_LENGTH = 12
+# Pen-area map lane (U414 / #406, approved design proposal §2): per-device
+# list of user rectangles, one entry per display configuration, keyed by a
+# sha1 display key. {"entries": [{"display_key", "monitors", "rect_px"}]}
+PEN_AREA_MAP_PREFIX = "pen_area_map_"
+
+# Wireless tablet size lane (U344 goal 2; renamed U386 / TODO #385): the
+# wireless add-on is the same receiver (product id 132) on ALL tablet sizes,
+# so the paired tablet size is NOT detectable from enumeration. The user
+# config names the tablet size (small/medium/large) and the driver routes id
+# 132 to the matching model table. Ruled 2026-11-07: the wireless path has
+# nothing to do with the pen - the receiver connects directly to the tablet -
+# so the old pen wording was renamed to tablet-size wording; the old config
+# key stays readable as a deprecation alias with a loud notice. NO default:
+# unset + non-detecting receiver = loud notice naming the choices, never a
+# silent medium (planner ruling; the medium EXTENTS stay the labeled
+# fallback until a size is chosen). The constants live above the config
+# class: the module-level DriverConfig instance reads them at import time.
+WIRELESS_RECEIVER_PRODUCT_ID = 132
+# Maintainer ruling 2026-11-04 (U370 leg 5): a wireless package carries the
+# SAME coordinates as wired (only fewer bundled fields), so this map selects
+# the model extents preset and NOTHING else -- no separate wireless
+# coordinate scaling exists or should be invented (pinned by
+# test_wireless_size_selects_only_the_model_extents_preset).
+WIRELESS_TABLET_SIZES = ("small", "medium", "large")
+WIRELESS_TABLET_SIZE_TO_PRODUCT = {"small": 788, "medium": 789, "large": 791}
+WIRELESS_TABLET_SIZE_KEY = "wireless_tablet_size"
+WIRELESS_TABLET_SIZE_LEGACY_KEY = "wireless_pen_size"  # read-only deprecation alias
+
+# U424 / #424 ruling: ONE stored pen-movement mode replaces the effective
+# state of the old boolean toggles. `None` (= unset) derives from the
+# legacy toggles (migration table, protocol Decision ledger): absolute off
+# -> relative; absolute + stretch -> stretched; absolute, no stretch ->
+# rect_1to1 (its documented no-rect fallback IS the old isotropic
+# contain default - prior effective behavior preserved).
+PEN_MODES = ("relative", "stretched", "rect_1to1")
+PEN_MODE_KEY = "pen_mode"
+
+
+def resolved_pen_mode(config):
+    """The effective movement mode: the stored `pen_mode` or its migration.
+
+    The stored mode WINS over legacy toggle writes (no dual control, L1);
+    unset falls back to the toggle-derived migration so never-migrated
+    configs keep their prior effective behavior byte-unchanged.
+    """
+    mode = getattr(config, "pen_mode", None)
+    if mode in PEN_MODES:
+        return mode
+    toggles = config.feature_toggles
+    if not toggles.get("pen_absolute_mode", True):
+        return "relative"
+    if toggles.get("pen_stretch_full_desktop", False):
+        return "stretched"
+    return "rect_1to1"
+
+
+def device_identity_hash(path, serial_number=""):
+    """Identity key of one interface: 12-hex hash over interface path + serial.
+
+    ``path`` is the hidapi path (bytes or str); the serial string participates
+    even when empty, so the same path with a different serial stays distinct.
+    """
+    if isinstance(path, (bytes, bytearray)):
+        path_text = path.decode("utf-8", errors="ignore")
+    else:
+        path_text = str(path)
+    serial_text = serial_number or ""
+    key = f"{path_text}|{serial_text}".encode("utf-8")
+    return hashlib.sha1(key).hexdigest()[:DEVICE_IDENTITY_HASH_LENGTH]
+
+
 class DriverConfig:
-    def __init__(self):
-        
+    # Keys saved under "motion_and_thresholds", in file order. Load validation
+    # accepts exactly these keys.
+    MOTION_KEYS = (
+        "scroll_sensitivity_x", "scroll_sensitivity_y",
+        "max_tap_duration", "double_tap_timeout", "tap_max_movement",
+        "max_gesture_touch_session_duration", "press_hold_duration",
+        "swipe_threshold_x", "swipe_threshold_y", "axis_dominance_ratio",
+        "pinch_sensitivity", "pinch_discrete_threshold",
+        "scroll_activation_threshold", "pinch_activation_threshold",
+        "alt_tab_activation_threshold", "alt_tab_step_threshold",
+        "alt_tab_step_sensitivity", "cursor_deadzone", "cursor_min_sens",
+        "cursor_max_sens", "cursor_speed_low", "cursor_speed_high",
+        "scroll_deadzone", "scroll_min_sens", "scroll_max_sens",
+        "scroll_speed_low", "scroll_speed_high",
+        "pen_speed", "pen_pressure_threshold",
+        "dial_step_threshold", "orientation_degrees", "wireless_tablet_size",
+        "pen_mode", "pen_stretch_screens",
+    )
+
+    # Sections the saved file may hold. "devices" is the reserved slot (c):
+    # accepted on load, no device-keyed behavior yet.
+    CONFIG_SECTIONS = ("motion_and_thresholds", "feature_toggles",
+                       "action_mapping", "devices")
+
+    @staticmethod
+    def _describe(value):
+        """Short type/value label for config error messages."""
+        return f"{type(value).__name__} {value!r}"
+
+    @staticmethod
+    def _coerce_number(value):
+        """Return a float for numbers and numeric strings; None otherwise."""
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            try:
+                return float(value.strip())
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
+    def _coerce_bool(value):
+        """Return a bool for bools and 0/1; None otherwise."""
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, int) and value in (0, 1):
+            return bool(value)
+        return None
+
+    @staticmethod
+    def _device_lane_key(section):
+        """Return the identity-lane prefix when a top-level key is one, else None."""
+        if section.startswith(DEVICE_ALIAS_PREFIX):
+            return DEVICE_ALIAS_PREFIX
+        if section.startswith(DEVICE_SETTINGS_PREFIX):
+            return DEVICE_SETTINGS_PREFIX
+        if section.startswith(PEN_AREA_MAP_PREFIX):
+            return PEN_AREA_MAP_PREFIX
+        return None
+
+    @staticmethod
+    def _validated_pen_area_entry(entry):
+        """Return the normalized pen-area entry (rect_frac), or an error string.
+
+        Schema (U416 / #406 defect round 1): display_key non-empty str,
+        monitors list of str, rect_frac [rx, ry, rw, rh] FRACTIONS of the
+        union bounds of the entry's own monitors (0 <= rx,ry; 0 < rw,rh;
+        the rect inside 0..1). Fractions survive hosts that answer junk
+        for the virtual-screen metrics. Legacy U414 rect_px entries are
+        MIGRATED at load by dividing through the union bounds of the
+        entry's own monitor records - the exact source of the px datum
+        (documented choice; no current-display guesswork, since those
+        metrics may be the junk this schema exists to survive).
+        """
+        if not isinstance(entry, dict):
+            return "must be an object"
+        display_key = entry.get("display_key")
+        if not isinstance(display_key, str) or not display_key:
+            return "needs a non-empty 'display_key' string"
+        monitors = entry.get("monitors")
+        if not isinstance(monitors, list) or not all(isinstance(m, str) for m in monitors):
+            return "needs a 'monitors' list of strings"
+        if "rect_frac" in entry:
+            values = entry["rect_frac"]
+        elif "rect_px" in entry:
+            legacy = entry["rect_px"]
+            if (not isinstance(legacy, (list, tuple)) or len(legacy) != 4
+                    or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                               for v in legacy)):
+                return "legacy rect_px must be [rx, ry, rw, rh] numbers"
+            union = union_rect_from_records(monitors)
+            if union is None or union[2] <= 0 or union[3] <= 0:
+                return ("legacy rect_px needs parseable 'monitors' bounds to "
+                        "convert to rect_frac (U416)")
+            values = [legacy[0] / union[2], legacy[1] / union[3],
+                      legacy[2] / union[2], legacy[3] / union[3]]
+        else:
+            return "needs a 'rect_frac' list"
+        if (not isinstance(values, (list, tuple)) or len(values) != 4
+                or not all(isinstance(v, (int, float)) and not isinstance(v, bool)
+                           for v in values)):
+            return "rect_frac must be [rx, ry, rw, rh] numbers"
+        rx, ry, rw, rh = (float(v) for v in values)
+        if rw <= 0 or rh <= 0 or rx < 0.0 or ry < 0.0 or rw > 1.0 or rh > 1.0 \
+                or rx + rw > 1.000001 or ry + rh > 1.000001:
+            return "rect_frac must stay inside 0..1 with positive width and height"
+        return {"display_key": display_key, "monitors": list(monitors),
+                "rect_frac": [rx, ry, rw, rh]}
+
+    @staticmethod
+    def _error_reference(raw_text, key, item_index):
+        """Point at the offending entry: its file line when it has one,
+        otherwise its item index inside the section."""
+        needle = f'"{key}"'
+        for lineno, line in enumerate(raw_text.splitlines(), start=1):
+            if needle in line:
+                return f"line {lineno}"
+        return f"item {item_index + 1}"
+
+    def __init__(self, filepath=None):
+        # Resolved load/save lanes; --config/--save-as overwrite these in main().
+        self.config_path = filepath or CONFIG_FILE_PATH
+        self.save_path = self.config_path
+        # Reserved per-device map (c): identity rules are pending upstream research.
+        self.devices = {}
+        # Identity lanes (U87): user alias names and per-device settings,
+        # each keyed by the device identity hash of its interface.
+        self.device_aliases = {}
+        self.device_settings = {}
+        # Pen-area map lanes (U414 / #406): identity -> {"entries": [...]}.
+        self.pen_area_maps = {}
+
         # Motion Parameters
         
         self.sensitivities = {}
@@ -315,6 +738,37 @@ class DriverConfig:
         self.scroll_activation_threshold = 30.0  # Centroid distance in px before scrolling locks in
         self.pinch_activation_threshold = 40.0   # Spread change in px before pinching locks in
         
+        # Pen Movement (U70): speed is pixels per millimeter of pen travel in
+        # relative mode; absolute mode maps the digitizer to the screen 1:1.
+        # The pressure threshold avoids light-contact flapping (units 0..2047).
+        self.pen_speed = 8.0
+        self.pen_pressure_threshold = 40.0
+
+        # Rotary dial (U71): dial angle units traversed before one CW/CCW step
+        # action fires. Recorded sweeps step 1..5 units per packet.
+        self.dial_step_threshold = 4.0
+
+        # Device orientation (U74): whole degrees 0..359. Rotates touch and
+        # pen coordinates around the tablet center before the gesture/cursor
+        # path; positive degrees turn the input clockwise on screen.
+        self.orientation_degrees = 0
+
+        # Wireless tablet size (U344 goal 2; renamed U386 / TODO #385): the
+        # receiver id 132 is shared by every tablet size, so the user names
+        # the size of the tablet the add-on is paired to; the driver routes
+        # 132 to that model table. NO default (U386 planner ruling): unset
+        # means no explicit choice, and the reader prints a loud notice
+        # naming the choices instead of silently using medium.
+        self.wireless_tablet_size = None
+        # U424 / #424: the single stored movement mode (None = unset ->
+        # toggle migration, see resolved_pen_mode). Set via set_pen_mode;
+        # switching modes applies LIVE and never touches the stored rect.
+        self.pen_mode = None
+        # U424 / #424 ruling 1: stretched-mode screen subset (list of
+        # monitor-record strings naming the stretch target; None/empty =
+        # ALL screens, the pre-U424 full-desktop behavior).
+        self.pen_stretch_screens = None
+
         # Gesture Thresholds
         self.max_tap_duration = 0.250       # Seconds
         self.double_tap_timeout = 0.250     # Seconds for 1F drag
@@ -374,6 +828,35 @@ class DriverConfig:
             "5f_swipe_down" : False,
             "5f_pinch_in" : False,
             "5f_pinch_out" : False,
+            # Pen movement mode: True = absolute screen mapping, False = relative deltas.
+            "pen_absolute_mode" : True,
+            # Ultrawide mapping (U344 goal 3): False = 1:1 on both axes
+            # (equal px-per-mm, centered slice); True = the whole digitizer
+            # box stretched across the full desktop per axis.
+            "pen_stretch_full_desktop" : False,
+            # Touch buttons and rotary dial (U71): one toggle per control.
+            "btn1_press" : True,
+            "btn2_press" : True,
+            "btn3_press" : True,
+            "btn4_press" : True,
+            "btn5_press" : True,
+            "btn6_press" : True,
+            "btn7_press" : True,
+            "btn8_press" : True,
+            "central_press" : True,
+            "dial_cw" : True,
+            "dial_ccw" : True,
+            # Touch part of each express key (U381 #381): holds its modifier
+            # while the finger keeps contact. Default DISABLED -- the touch
+            # part fires nothing until the user turns it on per button.
+            "btn1_touch" : False,
+            "btn2_touch" : False,
+            "btn3_touch" : False,
+            "btn4_touch" : False,
+            "btn5_touch" : False,
+            "btn6_touch" : False,
+            "btn7_touch" : False,
+            "btn8_touch" : False,
             #"0f" : True,
         }
         
@@ -447,6 +930,37 @@ class DriverConfig:
             "5f_pinch_in": "window_minimize",
             "5f_pinch_out": "window_maximize",
             
+            # Pen buttons (U70): status bits 1 and 2; press/release like a click.
+            "pen_button_1": "right_click",
+            "pen_button_2": "middle_click",
+
+            # Touch buttons and rotary dial (U71). Button defaults are placeholder
+            # actions; the Buttons tab remaps every control. Mouse-button actions
+            # hold while pressed, other actions tap on the press edge.
+            "btn1_press": "undo",
+            "btn2_press": "redo",
+            "btn3_press": "task_view",
+            "btn4_press": "show_desktop",
+            "btn5_press": "next",
+            "btn6_press": "prev",
+            "btn7_press": "left_click",
+            "btn8_press": "right_click",
+            "central_press": "middle_click",
+            "dial_cw": "next",
+            "dial_ccw": "prev",
+            # Touch part of each express key (U381 #381): a modifier held for
+            # the duration of the byte 5 contact, released on full release.
+            # Vocabulary is TOUCH_ACTION_CHOICES, not AVAILABLE_ACTIONS; the
+            # default "none" plus the False toggle keeps the part disabled.
+            "btn1_touch": TOUCH_NO_ACTION,
+            "btn2_touch": TOUCH_NO_ACTION,
+            "btn3_touch": TOUCH_NO_ACTION,
+            "btn4_touch": TOUCH_NO_ACTION,
+            "btn5_touch": TOUCH_NO_ACTION,
+            "btn6_touch": TOUCH_NO_ACTION,
+            "btn7_touch": TOUCH_NO_ACTION,
+            "btn8_touch": TOUCH_NO_ACTION,
+            
             #"0f" : "left_hold_release",
         }
         
@@ -478,72 +992,453 @@ class DriverConfig:
             self.scroll_sensitivity_y
         ]
 
-    def save_to_file(self, filepath=CONFIG_FILE_PATH):
+    def save_to_file(self, filepath=None):
+        filepath = filepath or self.save_path
         data = {
-            "motion_and_thresholds": {
-                "scroll_sensitivity_x": self.scroll_sensitivity_x,
-                "scroll_sensitivity_y": self.scroll_sensitivity_y,
-                "max_tap_duration": self.max_tap_duration,
-                "double_tap_timeout": self.double_tap_timeout,
-                "tap_max_movement": self.tap_max_movement,
-                "max_gesture_touch_session_duration" : self.max_gesture_touch_session_duration,
-                "press_hold_duration": self.press_hold_duration,
-                "swipe_threshold_x": self.swipe_threshold_x,
-                "swipe_threshold_y": self.swipe_threshold_y,
-                "axis_dominance_ratio": self.axis_dominance_ratio,
-                "pinch_sensitivity": self.pinch_sensitivity,
-                "pinch_discrete_threshold": self.pinch_discrete_threshold,
-                "scroll_activation_threshold": self.scroll_activation_threshold,
-                "pinch_activation_threshold": self.pinch_activation_threshold,
-                "alt_tab_activation_threshold": self.alt_tab_activation_threshold,
-                "alt_tab_step_threshold": self.alt_tab_step_threshold,
-                "alt_tab_step_sensitivity": self.alt_tab_step_sensitivity,
-                "cursor_deadzone": self.cursor_deadzone,
-                "cursor_min_sens": self.cursor_min_sens,
-                "cursor_max_sens": self.cursor_max_sens,
-                "cursor_speed_low": self.cursor_speed_low,
-                "cursor_speed_high": self.cursor_speed_high,
-                "scroll_deadzone": self.scroll_deadzone,
-                "scroll_min_sens": self.scroll_min_sens,
-                "scroll_max_sens": self.scroll_max_sens,
-                "scroll_speed_low": self.scroll_speed_low,
-                "scroll_speed_high": self.scroll_speed_high,
-            },
+            "motion_and_thresholds": {key: getattr(self, key) for key in self.MOTION_KEYS},
             "feature_toggles": self.feature_toggles,
-            "action_mapping": self.action_mapping
+            "action_mapping": self.action_mapping,
+            "devices": self.devices,
         }
+        # Identity lanes (U87): flat keys per device, next to the sections.
+        for identity, alias in self.device_aliases.items():
+            data[f"{DEVICE_ALIAS_PREFIX}{identity}"] = alias
+        for identity, sections in self.device_settings.items():
+            data[f"{DEVICE_SETTINGS_PREFIX}{identity}"] = sections
+        # Pen-area map lanes (U414 / #406), flat keys beside the device lanes.
+        for identity, lane in self.pen_area_maps.items():
+            data[f"{PEN_AREA_MAP_PREFIX}{identity}"] = lane
         with open(filepath, "w") as f:
             json.dump(data, f, indent=4)
         print(f"[Config] Saved settings to '{filepath}'")
 
-    def load_from_file(self, filepath=CONFIG_FILE_PATH):
+    def validate_config_data(self, data, raw_text=""):
+        """Validate a loaded dict against the current schema.
+
+        Returns (validated, warnings, errors). This method applies nothing:
+        ``validated`` holds coerced values, ``errors`` names each offending key
+        with a location reference. Unknown keys and sections only warn.
+        """
+        validated = {"motion": {}, "toggles": {}, "mapping": {}}
+        warnings = []
+        errors = []
+
+        if not isinstance(data, dict):
+            errors.append(f"top level must be a JSON object, got {self._describe(data)}")
+            return validated, warnings, errors
+
+        for section in data:
+            if section not in self.CONFIG_SECTIONS and self._device_lane_key(section) is None:
+                ref = self._error_reference(raw_text, section, 0)
+                warnings.append(f"unknown section '{section}' ({ref}) ignored")
+
+        motion = data.get("motion_and_thresholds", {})
+        if not isinstance(motion, dict):
+            errors.append("'motion_and_thresholds' must be a JSON object, "
+                          f"got {self._describe(motion)}")
+        else:
+            # U386 / TODO #385: 'wireless_pen_size' was renamed to
+            # 'wireless_tablet_size' (ruling 2026-11-07: the wireless path
+            # connects to the tablet, not the pen). The old key stays
+            # readable as a deprecation alias; the loud notice names the new
+            # key, and when both keys are present the new one wins.
+            has_new_wireless_key = WIRELESS_TABLET_SIZE_KEY in motion
+            for index, (key, val) in enumerate(motion.items()):
+                ref = self._error_reference(raw_text, key, index)
+                if key == WIRELESS_TABLET_SIZE_LEGACY_KEY:
+                    if val is None:
+                        normalized = None
+                    elif isinstance(val, str) and val.strip().lower() in WIRELESS_TABLET_SIZES:
+                        normalized = val.strip().lower()
+                    else:
+                        errors.append(f"'motion_and_thresholds.{key}' needs one of "
+                                      f"{'/'.join(WIRELESS_TABLET_SIZES)} or null, "
+                                      f"got {self._describe(val)} ({ref}) "
+                                      f"[renamed to '{WIRELESS_TABLET_SIZE_KEY}']")
+                        continue
+                    if has_new_wireless_key:
+                        warnings.append(
+                            f"legacy key '{key}' ({ref}): renamed to "
+                            f"'{WIRELESS_TABLET_SIZE_KEY}'; the new key is present, "
+                            f"so the legacy value {val!r} is ignored "
+                            f"(update your settings file)")
+                    else:
+                        warnings.append(
+                            f"legacy key '{key}' ({ref}): renamed to "
+                            f"'{WIRELESS_TABLET_SIZE_KEY}'; value {normalized!r} "
+                            f"migrated (update your settings file - the old key "
+                            f"will stop being read in a future version)")
+                        validated["motion"][WIRELESS_TABLET_SIZE_KEY] = normalized
+                    continue
+                if key not in self.MOTION_KEYS:
+                    warnings.append(f"unknown motion key '{key}' ({ref}) ignored")
+                    continue
+                if key == WIRELESS_TABLET_SIZE_KEY:
+                    # U344 goal 2 + U386: a NAME, not a number -- accepted
+                    # values are small/medium/large, case and space
+                    # tolerant, or null for the explicit "not chosen" state.
+                    if val is None:
+                        validated["motion"][key] = None
+                    elif isinstance(val, str) and val.strip().lower() in WIRELESS_TABLET_SIZES:
+                        validated["motion"][key] = val.strip().lower()
+                    else:
+                        errors.append(f"'motion_and_thresholds.{key}' needs one of "
+                                      f"{'/'.join(WIRELESS_TABLET_SIZES)} or null, "
+                                      f"got {self._describe(val)} ({ref})")
+                    continue
+                if key == PEN_MODE_KEY:
+                    # U424 / #424: a string enum, or null = unset (the
+                    # effective mode then migrates from the old toggles).
+                    if val is None:
+                        validated["motion"][key] = None
+                    elif val in PEN_MODES:
+                        validated["motion"][key] = val
+                    else:
+                        errors.append(f"'motion_and_thresholds.{key}' needs one of "
+                                      f"{'/'.join(PEN_MODES)} or null, "
+                                      f"got {self._describe(val)} ({ref})")
+                    continue
+                if key == "pen_stretch_screens":
+                    # U424: list of monitor-record strings, or null = all.
+                    if val is None:
+                        validated["motion"][key] = None
+                    elif isinstance(val, list) and all(isinstance(v, str) for v in val):
+                        validated["motion"][key] = list(val)
+                    else:
+                        errors.append(f"'motion_and_thresholds.{key}' needs a list "
+                                      f"of monitor-record strings or null, "
+                                      f"got {self._describe(val)} ({ref})")
+                    continue
+                number = self._coerce_number(val)
+                if number is None:
+                    errors.append(f"'motion_and_thresholds.{key}' needs a number, "
+                                  f"got {self._describe(val)} ({ref})")
+                elif key == "orientation_degrees":
+                    # U74: the transform rotates in 1° steps; fractions and
+                    # angles above the range are rejected, the whole number
+                    # is stored as an int.
+                    if not number.is_integer() or not 0 <= number <= ORIENTATION_MAX_DEGREES:
+                        errors.append(f"'motion_and_thresholds.{key}' needs a whole "
+                                      f"degree 0..{ORIENTATION_MAX_DEGREES}, "
+                                      f"got {self._describe(val)} ({ref})")
+                    else:
+                        validated["motion"][key] = int(number)
+                else:
+                    validated["motion"][key] = number
+
+        toggles = data.get("feature_toggles", {})
+        if not isinstance(toggles, dict):
+            errors.append("'feature_toggles' must be a JSON object, "
+                          f"got {self._describe(toggles)}")
+        else:
+            for index, (key, val) in enumerate(toggles.items()):
+                ref = self._error_reference(raw_text, key, index)
+                if key not in self.feature_toggles:
+                    warnings.append(f"unknown feature toggle '{key}' ({ref}) ignored")
+                    continue
+                flag = self._coerce_bool(val)
+                if flag is None:
+                    errors.append(f"'feature_toggles.{key}' needs a boolean, "
+                                  f"got {self._describe(val)} ({ref})")
+                else:
+                    validated["toggles"][key] = flag
+
+        mapping = data.get("action_mapping", {})
+        if not isinstance(mapping, dict):
+            errors.append("'action_mapping' must be a JSON object, "
+                          f"got {self._describe(mapping)}")
+        else:
+            for index, (key, val) in enumerate(mapping.items()):
+                ref = self._error_reference(raw_text, key, index)
+                if key not in self.action_mapping:
+                    warnings.append(f"unknown gesture '{key}' ({ref}) ignored")
+                    continue
+                if not isinstance(val, str):
+                    errors.append(f"'action_mapping.{key}' needs an action name, "
+                                  f"got {self._describe(val)} ({ref})")
+                elif val not in (TOUCH_ACTION_CHOICES if key in TOUCH_CONTROL_KEYS
+                                 else self.AVAILABLE_ACTIONS):
+                    # U381: a btn*_touch value names a touch modifier from
+                    # TOUCH_ACTION_CHOICES; every other key takes an action
+                    # name from AVAILABLE_ACTIONS.
+                    errors.append(f"'action_mapping.{key}' maps to unknown action "
+                                  f"{self._describe(val)} ({ref})")
+                else:
+                    validated["mapping"][key] = val
+
+        if "devices" in data:
+            devices = data["devices"]
+            ref = self._error_reference(raw_text, "devices", 0)
+            if not isinstance(devices, dict):
+                errors.append(f"'devices' must be a JSON object, got {self._describe(devices)} ({ref})")
+            else:
+                validated_devices = {}
+                for index, (alias, entry) in enumerate(devices.items()):
+                    entry_ref = self._error_reference(raw_text, str(alias), index)
+                    if not isinstance(alias, str) or not isinstance(entry, dict):
+                        errors.append(f"'devices' entry {self._describe(alias)} must be a "
+                                      f"named object ({entry_ref})")
+                        continue
+                    validated_devices[alias] = dict(entry)
+                validated["devices"] = validated_devices
+
+        # Identity lanes (U87): device_alias_<hash> carries the user name,
+        # device_settings_<hash> carries the per-device sections.
+        aliases = {}
+        settings = {}
+        pen_area_maps = {}
+        lane_seen = False
+        for index, (key, value) in enumerate(data.items()):
+            lane = self._device_lane_key(key)
+            if lane is None:
+                continue
+            lane_seen = True
+            ref = self._error_reference(raw_text, key, index)
+            identity = key[len(lane):]
+            if lane == DEVICE_ALIAS_PREFIX:
+                if not isinstance(value, str):
+                    errors.append(f"'{key}' needs an alias name, "
+                                  f"got {self._describe(value)} ({ref})")
+                else:
+                    aliases[identity] = value
+            elif lane == PEN_AREA_MAP_PREFIX:
+                # U414 / #406 lane: {"entries": [entry, ...]}; an entry whose
+                # shape is wrong is named, the other entries still load.
+                if not isinstance(value, dict) or not isinstance(value.get("entries"), list):
+                    errors.append(f"'{key}' needs an object with an 'entries' list, "
+                                  f"got {self._describe(value)} ({ref})")
+                    continue
+                valid_entries = []
+                for entry_index, entry in enumerate(value["entries"]):
+                    result = self._validated_pen_area_entry(entry)
+                    if isinstance(result, str):
+                        errors.append(f"'{key}' entry {entry_index + 1}: {result} ({ref})")
+                    else:
+                        valid_entries.append(result)
+                if valid_entries:
+                    pen_area_maps[identity] = {"entries": valid_entries}
+            else:
+                if not isinstance(value, dict):
+                    errors.append(f"'{key}' needs a settings object, "
+                                  f"got {self._describe(value)} ({ref})")
+                    continue
+                entry = {name: value[name] for name in DEVICE_SECTION_KEYS
+                         if name in value}
+                validated_entry, entry_warnings, entry_errors = \
+                    self.validate_config_data(entry, raw_text)
+                for note in entry_warnings:
+                    warnings.append(f"'{key}': {note}")
+                if entry_errors:
+                    for err in entry_errors:
+                        errors.append(f"'{key}': {err}")
+                    continue
+                settings[identity] = entry
+        if lane_seen:
+            validated["aliases"] = aliases
+            validated["settings"] = settings
+            if pen_area_maps:
+                validated["pen_area_maps"] = pen_area_maps
+
+        return validated, warnings, errors
+
+    def load_from_file(self, filepath=None):
+        """Load settings all-or-nothing: validate first, apply only when valid."""
+        filepath = filepath or self.config_path
         if not os.path.exists(filepath):
             print(f"[Config] No '{filepath}' found. Using default driver settings.")
-            return
+            return False
 
         try:
             with open(filepath, "r") as f:
-                data = json.load(f)
-
-            motion = data.get("motion_and_thresholds", {})
-            for key, val in motion.items():
-                if hasattr(self, key):
-                    setattr(self, key, float(val))
-
-            toggles = data.get("feature_toggles", {})
-            for key, val in toggles.items():
-                if key in self.feature_toggles:
-                    self.feature_toggles[key] = bool(val)
-
-            mappings = data.get("action_mapping", {})
-            for key, val in mappings.items():
-                if key in self.action_mapping:
-                    self.action_mapping[key] = str(val)
-
-            self.sync_sensitivities()
-            print(f"[Config] Successfully loaded settings from '{filepath}'")
+                raw_text = f.read()
+            data = json.loads(raw_text)
         except Exception as e:
             print(f"[Config Error] Failed loading '{filepath}': {e}")
+            return False
+
+        validated, warnings, errors = self.validate_config_data(data, raw_text)
+        for note in warnings:
+            print(f"[Config Warning] {note}")
+
+        if errors:
+            for err in errors:
+                print(f"[Config Error] Invalid setting in '{filepath}': {err}")
+            print(f"[Config Error] Nothing applied from '{filepath}'. "
+                  "Existing settings stay in place.")
+            return False
+
+        for key, value in validated["motion"].items():
+            setattr(self, key, value)
+        for key, value in validated["toggles"].items():
+            self.feature_toggles[key] = value
+        for key, value in validated["mapping"].items():
+            self.action_mapping[key] = value
+        if "devices" in validated:
+            self.devices = validated["devices"]
+        if "aliases" in validated:
+            self.device_aliases = validated["aliases"]
+        if "settings" in validated:
+            self.device_settings = validated["settings"]
+        if "pen_area_maps" in validated:
+            self.pen_area_maps = validated["pen_area_maps"]
+
+        self.sync_sensitivities()
+        print(f"[Config] Successfully loaded settings from '{filepath}'")
+        return True
+
+    def device_bindings(self):
+        """Manual alias bindings: {alias: product ids} from the devices map.
+
+        Invalid or missing "bindings" keys are skipped; alias resolution
+        then falls through to the wireless placeholder as before.
+        """
+        bindings = {}
+        for alias, entry in self.devices.items():
+            if not isinstance(entry, dict):
+                continue
+            product_ids = entry.get("bindings")
+            if not isinstance(product_ids, list):
+                continue
+            cleaned = [pid for pid in product_ids
+                       if isinstance(pid, int) and not isinstance(pid, bool)]
+            if cleaned:
+                bindings[alias] = cleaned
+        return bindings
+
+    def device_entry_records(self):
+        """Stored device entries as (alias, identity key) pairs, sorted by alias.
+
+        A device_alias_<hash> lane names one identity; a devices-map alias
+        without an identity lane pairs with None.
+        """
+        records = {}
+        for identity, alias in self.device_aliases.items():
+            if isinstance(alias, str) and alias:
+                records[alias] = identity
+        for alias in self.devices:
+            records.setdefault(alias, None)
+        return sorted(records.items())
+
+    @staticmethod
+    def format_device_entry(alias, identity):
+        """One '--list' line: '<alias>\t<identity key>' with '-' for no key."""
+        return f"{alias}\t{identity or '-'}"
+
+    def fork_for_device(self, alias=None, identity=None):
+        """Build one independent config instance for a connection.
+
+        The fork carries this config's values; a present devices[alias]
+        entry overlays its sections all-or-nothing. A present
+        device_settings[identity] entry (U87) overlays last, so per-device
+        values win over alias values; global values stay the fallback.
+        An invalid entry prints its errors and keeps the previous values.
+        None overlays nothing.
+        """
+        clone = copy.copy(self)
+        clone.sensitivities = {name: list(accel)
+                               for name, accel in self.sensitivities.items()}
+        clone.feature_toggles = dict(self.feature_toggles)
+        clone.action_mapping = dict(self.action_mapping)
+        clone.device_aliases = dict(self.device_aliases)
+        clone.device_settings = dict(self.device_settings)
+
+        overlays = (("devices", alias, self.devices.get(alias)),
+                    ("identity", identity, self.device_settings.get(identity)))
+        for lane, key, entry in overlays:
+            if key is None or entry is None:
+                continue
+            sections = {name: value for name, value in entry.items()
+                        if name in DEVICE_SECTION_KEYS}
+            validated, warnings, errors = self.validate_config_data(sections, "")
+            for note in warnings:
+                print(f"[Config Warning] {lane} '{key}': {note}")
+            if errors:
+                for err in errors:
+                    print(f"[Config Error] Invalid {lane} entry '{key}': {err}")
+                print(f"[Config Error] Overlay for '{key}' not applied; "
+                      "previous settings stay.")
+                continue
+            for attr, value in validated["motion"].items():
+                setattr(clone, attr, value)
+            for attr, value in validated["toggles"].items():
+                clone.feature_toggles[attr] = value
+            for attr, value in validated["mapping"].items():
+                clone.action_mapping[attr] = value
+
+        clone.sync_sensitivities()
+        return clone
+
+    def set_device_entry(self, alias, sections, bindings=None):
+        """Store one devices entry: named sections plus optional bindings.
+
+        Entry keys not covered here stay untouched, so bindings survive a
+        settings save and vice versa.
+        """
+        entry = dict(self.devices.get(alias, {}))
+        for name, value in sections.items():
+            entry[name] = value
+        if bindings is not None:
+            entry["bindings"] = list(bindings)
+        self.devices[alias] = entry
+
+    def alias_for_identity(self, identity):
+        """The user alias stored for one device identity; None when unset."""
+        if identity is None:
+            return None
+        alias = self.device_aliases.get(identity)
+        return alias if isinstance(alias, str) and alias else None
+
+    def set_device_alias(self, identity, alias):
+        """Store the display name of one device identity (U87 part a)."""
+        self.device_aliases[identity] = alias
+
+    def set_device_identity_settings(self, identity, sections):
+        """Store the current per-device settings under its identity key (U87 e)."""
+        entry = dict(self.device_settings.get(identity, {}))
+        for name, value in sections.items():
+            entry[name] = value
+        self.device_settings[identity] = entry
+
+    def set_pen_mode(self, mode):
+        """Switch the movement mode LIVE (U424 / #424 ruling 3).
+
+        The running reader resolves the mode per report, so the switch
+        needs no restart (the #386 Apply-Live shape). The stored 1:1 rect
+        is deliberately untouched: leaving rect_1to1 keeps it (inactive,
+        instantly re-usable). Raises ValueError for unknown modes.
+        """
+        if mode not in PEN_MODES:
+            raise ValueError(f"pen_mode must be one of {'/'.join(PEN_MODES)}, "
+                             f"got {mode!r}")
+        self.pen_mode = mode
+
+    def set_pen_area_entry(self, identity, display_key, monitors, rect_frac):
+        """Store the pen-area FRACTIONAL rectangle for one display config.
+
+        U414 / #406; U416: `rect_frac` is [rx, ry, rw, rh] in 0..1 of the
+        union bounds of `monitors` (fractional so metrics-less hosts can
+        store and consume the rect). The entry for the current
+        `display_key` is replaced; entries of other configurations stay
+        (proposal §2: the GUI saves the current configuration's entry
+        only). Does not save the file. Raises ValueError when the entry
+        shape fails the load schema.
+        """
+        # U414 STEP-1 P2-3: validate on the WRITE side too (same schema as
+        # load); a caller with a malformed rect fails loudly here instead of
+        # saving garbage that the next load would reject.
+        entry = self._validated_pen_area_entry({"display_key": display_key,
+                                                "monitors": monitors,
+                                                "rect_frac": list(rect_frac)})
+        if isinstance(entry, str):
+            raise ValueError(f"pen-area entry rejected: {entry}")
+        lane = self.pen_area_maps.setdefault(identity, {"entries": []})
+        for position, existing in enumerate(lane["entries"]):
+            if existing.get("display_key") == display_key:
+                lane["entries"][position] = entry
+                return
+        lane["entries"].append(entry)
+
+
 config = DriverConfig()
 
 # ==============================================================================
@@ -561,6 +1456,585 @@ IDLE_BACKOFF_MIN_SECONDS = 0.002
 STATUS_TOUCH_DOWN = 0xC0
 STATUS_RELEASE_TERMINAL = {0x20}
 STATUS_ACTIVE_CONTACTS = {0x80, 0x90, 0x88, 0x98}
+
+# Pen report (10-byte id 0x02): upstream Intuos-V1 field layout, documented
+# in agent/research/2026-10-31_u68-otd-pen-layout.md (Wacom PTH-651).
+PEN_REPORT_ID = 0x02
+PEN_REPORT_LENGTH = 10
+PEN_MAX_PRESSURE = 2047
+# Status bits are LSB-first (upstream ByteExtensions.IsBitSet semantics).
+PEN_STATUS_COORDS = 0x20        # bit 5: report carries coordinates (tablet report)
+PEN_STATUS_OUT_OF_RANGE = 0x80  # status byte 0x80: pen left the digitizer range
+PEN_TOOL_REPORT_STATUS = 0xC2   # tool report: bytes 2-3 carry serial, no coordinates
+PEN_ROTATION_FLAG = 0x0A        # bits 1 and 3 together: rotation report
+PEN_BUTTON_1_MASK = 0x02        # status bit 1: pen button 1
+PEN_BUTTON_2_MASK = 0x04        # status bit 2: pen button 2
+# Absolute moves use the 0..65535 virtual-desktop space (upstream
+# WindowsAbsolutePointer projection).
+PEN_VIRTUAL_RESOLUTION = 65535
+
+# Digitizer ranges per product id: one explicit per-model entry keyed by the
+# wired product id. All three rows are VERBATIM from the OpenTabletDriver
+# Digitizer block at pinned commit
+# https://raw.githubusercontent.com/OpenTabletDriver/OpenTabletDriver/2c4b9a5649eb34cd74bc8b1b1041dbb0356ae762/OpenTabletDriver.Configurations/Configurations/Wacom/PTH-851.json
+# (same commit, same folder: PTH-451.json for 788, PTH-651.json for 789):
+#   788 = Wacom PTH-451 (Intuos Pro Small)  157.48 x  98.425 mm, 16:10
+#   789 = Wacom PTH-651 (Intuos Pro Medium) 223.52 x 139.7   mm, 16:10
+#   791 = Wacom PTH-851 (Intuos Pro Large)  325.12 x 203.2   mm, 16:10
+# Every row is exactly 200.0 counts/mm on both axes. The OTD Touch
+# sub-block (4095/4095) is the TOUCH digitizer, NOT the pen: it never
+# feeds this table (U370 ruling). Pre-U370 the 788/791 rows carried
+# probe-era fills (4096/4096 square @ 215.9 mm width); the maintainer's
+# 2026-11-04 hardware findings (791 edges unreachable ~100 px, diagonal
+# shallower than 1:1) came from that square box skewing the 1:1 lane, not
+# from the hardware. The U344 autoscale lane (pen_effective_specs,
+# pen_extents_autoscale line) stays as the safety net: grow-only, it can
+# never shrink below these declared extents (pinned).
+# Ids with no entry (unknown ids, the wireless receiver id 132) resolve
+# through the named fallback line below.
+PEN_SPECS_BY_PRODUCT = {
+    # OTD PTH-651.json @ 2c4b9a56, Digitizer block:
+    789: {"max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7},
+    # OTD PTH-451.json @ 2c4b9a56, Digitizer block:
+    788: {"max_x": 31496, "max_y": 19685, "width_mm": 157.48, "height_mm": 98.425},
+    # OTD PTH-851.json @ 2c4b9a56, Digitizer block:
+    791: {"max_x": 65024, "max_y": 40640, "width_mm": 325.12, "height_mm": 203.2},
+}
+PEN_SPECS_DEFAULT = PEN_SPECS_BY_PRODUCT[789]
+
+def pen_specs_for_product(product_id, cfg=None):
+    """Digitizer ranges for the pen device.
+
+    A product with a table entry routes to its own model. The wireless
+    receiver (id 132) has no table entry: its paired tablet size is not
+    detectable, so the user-config size names the model (named routing
+    line). U386 / TODO #385: NO silent default -- with the size unset
+    (or no config passed at all) a LOUD notice names the three choices,
+    the config lane, and the GUI lane, and labels the medium extents a
+    FALLBACK, not a default. Any other id with no entry prints ONE
+    byte-stable named fallback line and uses the Medium defaults.
+    """
+    specs = PEN_SPECS_BY_PRODUCT.get(product_id)
+    if specs is None:
+        if product_id == WIRELESS_RECEIVER_PRODUCT_ID:
+            size = getattr(cfg, "wireless_tablet_size", None) if cfg is not None else None
+            if size in WIRELESS_TABLET_SIZES:
+                model = WIRELESS_TABLET_SIZE_TO_PRODUCT[size]
+                print(f"pen_specs= wireless_tablet_size={size} product={product_id} using={model}")
+                return PEN_SPECS_BY_PRODUCT[model]
+            print("!! WIRELESS TABLET SIZE NOT SET: receiver id 132 cannot detect its paired tablet.\n"
+                  "!! choose one: small (788) | medium (789) | large (791) - GUI Pen tab "
+                  "\"Wireless Tablet Size\", or \"motion_and_thresholds.wireless_tablet_size\" "
+                  "in the config file.\n"
+                  "!! using MEDIUM extents (789) until a size is chosen: FALLBACK, not a default.\n"
+                  "pen_specs= wireless_tablet_size=unset product=132 using=789 fallback=not_chosen")
+            return PEN_SPECS_DEFAULT
+        print(f"pen_specs= no-table product={product_id} using=medium")
+        return PEN_SPECS_DEFAULT
+    return specs
+
+def decode_pen_position(report):
+    """Intuos-V1 X/Y: big-endian halves in bytes 2-5 plus the low bits of byte 9."""
+    x = (report[3] | report[2] << 8) << 1 | ((report[9] >> 1) & 1)
+    y = (report[5] | report[4] << 8) << 1 | (report[9] & 1)
+    return x, y
+
+def decode_pen_pressure(report):
+    """Intuos-V1 pressure: 11 bits from bytes 6-7 plus the status bit 0 LSB."""
+    return (report[6] << 3) | ((report[7] & 0xC0) >> 5) | (report[1] & 1)
+
+# Button/dial report (10-byte id 0x03, U71): layout recorded in
+# maintainer/draft/WTD_pen_support_probe_data.md lines 10-212 (Intuos Pro
+# Medium, product 789). Byte 1 carries the constant presence flag 0x80 in every
+# recorded row. Byte 3 carries the central button, byte 4 the press bitmask and
+# byte 5 the touch-contact mask; both masks are one bit per express key, so
+# buttons 1+2 pressed report 0x03 and buttons 2+3 report 0x06.
+BUTTON_REPORT_ID = 0x03
+BUTTON_REPORT_LENGTH = 10
+BUTTON_STATUS_PRESENT = 0x80   # byte 1 presence flag; other shapes are unknown
+BUTTON_CENTRAL_MASK = 0x01     # byte 3 bit 0: central button pressed
+BUTTON_PRESS_MASKS = tuple(1 << n for n in range(8))   # byte 4 bits 0..7: buttons 1..8 pressed
+BUTTON_TOUCH_MASKS = tuple(1 << n for n in range(8))   # byte 5 bits 0..7: buttons 1..8 in contact
+CENTRAL_BUTTON_SLOT = 9        # dispatcher slot id held for the central button
+
+# Dial: byte 2 marks a finger in the rotary field with the top bit and carries
+# the angle in the low 7 bits. Recorded sweeps span 0x00..0x46 per revolution,
+# so the wrap uses that step count. A decreasing angle is clockwise, an
+# increasing one counter-clockwise.
+DIAL_ANGLE_ACTIVE = 0x80
+DIAL_ANGLE_MASK = 0x7F
+DIAL_ANGLE_RANGE = 0x47
+
+# ==============================================================================
+# DEVICE ORIENTATION (U74) — shared rotation for touch and pen coordinates
+# ==============================================================================
+# The bounds and center constants (TOUCH_COORD_MAX, TOUCH_ROTATION_CENTER,
+# ORIENTATION_MIN/MAX_DEGREES) live above the config class: the module-level
+# DriverConfig instance validates orientation_degrees at import time.
+
+def rotate_point(x, y, degrees, center_x, center_y):
+    """Rotate a device coordinate about the center by whole degrees.
+
+    One sin/cos matrix shared by both input paths; 1° precision, no quadrant
+    quantization. Tablet coordinates have y pointing down, so a positive
+    angle turns clockwise on screen. 0° is the identity passthrough and
+    returns the input coordinates unchanged.
+    """
+    if degrees == 0:
+        return (x, y)
+    rad = math.radians(degrees)
+    cos_a = math.cos(rad)
+    sin_a = math.sin(rad)
+    dx = x - center_x
+    dy = y - center_y
+    return (center_x + cos_a * dx - sin_a * dy,
+            center_y + sin_a * dx + cos_a * dy)
+
+def pen_rotation_center(pen_specs):
+    """Pen rotation center: the tablet center from the per-model ranges."""
+    return (pen_specs["max_x"] / 2, pen_specs["max_y"] / 2)
+
+def apply_orientation(point, cfg, center):
+    """Shared orientation transform: raw device coordinate in, rotated point out."""
+    return rotate_point(point[0], point[1], cfg.orientation_degrees,
+                        center[0], center[1])
+
+def _abs_snap_cos_sin(degrees):
+    """Whole-quadrant-snapped |cos|, |sin| of the orientation angle.
+
+    One snap rule for both count extents and the physical box, so the two
+    stay proportional for a uniform-density digitizer. 0° gives (1.0, 0.0).
+    """
+    if degrees == 0:
+        return (1.0, 0.0)
+    rad = math.radians(degrees)
+    cos_a = abs(math.cos(rad))
+    sin_a = abs(math.sin(rad))
+    if cos_a > 1 - 1e-9:
+        cos_a = 1.0
+    elif cos_a < 1e-9:
+        cos_a = 0.0
+    if sin_a > 1 - 1e-9:
+        sin_a = 1.0
+    elif sin_a < 1e-9:
+        sin_a = 0.0
+    return (cos_a, sin_a)
+
+
+def rotated_pen_extents(pen_specs, degrees):
+    """Bounding box of the digitizer rectangle after the orientation rotation.
+
+    The rotation about the tablet center swaps the extents of a non-square
+    tablet at 90/270, so absolute mode must map THIS box (not the fixed
+    max_x/max_y) onto the desktop, else the pen cursor covers only the inner
+    band. Whole-quadrant cos/sin artifacts are snapped to exact 0/1 so the
+    box edges land exactly on full extent. Returns (left, top, width, height);
+    0° returns the untouched device rectangle.
+    """
+    if degrees == 0:
+        return (0, 0, pen_specs["max_x"], pen_specs["max_y"])
+    cos_a, sin_a = _abs_snap_cos_sin(degrees)
+    width = pen_specs["max_x"] * cos_a + pen_specs["max_y"] * sin_a
+    height = pen_specs["max_x"] * sin_a + pen_specs["max_y"] * cos_a
+    cx = pen_specs["max_x"] / 2
+    cy = pen_specs["max_y"] / 2
+    return (cx - width / 2, cy - height / 2, width, height)
+
+
+def rotated_pen_box_mm(pen_specs, degrees):
+    """Physical mm size of the mapped (rotated) digitizer box.
+
+    The mm counterpart of rotated_pen_extents with the SAME snap, so a
+    uniform-density digitizer (every PEN_SPECS row runs exactly 200 counts/mm
+    on both axes) keeps the mm box and the count box proportional. Returns
+    (width_mm, height_mm); 0 deg returns the declared size.
+
+    A grown (autoscaled) box keeps the DECLARED mm area: the pinned model of
+    the safety net is that the extra counts spread over the same physical
+    area, so mm-per-count falls with the growth -- the same model the relative
+    lane uses and pins (test_relative_mode_uses_the_grown_box). Under that
+    model one px-per-mm scale still covers both axes of a grown box, which is
+    what pen_isotropic_absolute_projection delivers for it.
+    """
+    cos_a, sin_a = _abs_snap_cos_sin(degrees)
+    return (pen_specs["width_mm"] * cos_a + pen_specs["height_mm"] * sin_a,
+            pen_specs["height_mm"] * cos_a + pen_specs["width_mm"] * sin_a)
+
+
+# ==============================================================================
+# VIRTUAL DESKTOP GEOMETRY (U376 / #380)
+# ==============================================================================
+# MOUSEEVENTF_VIRTUALDESK stretches the 0..65535 absolute range over the
+# virtual desktop's PIXEL extents (the same process-DPI space GetSystemMetrics
+# reports, so the two sides use one metric). A mapping computed in that
+# normalized space therefore keeps equal FRACTIONS of the screen per mm, not
+# equal px/mm: on a 25:9 desktop the U344 "1:1 default" squashed the height by
+# exactly the screen aspect (maintainer report 2026-11-06: a 45 deg pen line
+# ran 22.7 deg and the top and bottom 3/16 of the display were unreachable).
+# The isotropic default needs the desktop pixel extents at mapping time.
+SM_CMONITORS = 2
+SM_CXVIRTUALSCREEN = 7
+SM_CYVIRTUALSCREEN = 8
+SM_XVIRTUALSCREEN = 76
+SM_YVIRTUALSCREEN = 77
+
+
+def _get_system_metrics(index):
+    """One system-metrics read, None when the host offers none."""
+    try:
+        return int(ctypes.windll.user32.GetSystemMetrics(index))
+    except Exception:
+        return None
+
+
+# Junk guard: no real display mode is this small (the smallest shipped is
+# 320x200), while a headless or service-session host can report positive
+# nonsense -- a 3 x 3 pair was measured on this project's test host. Junk
+# extents route the mapping to the documented stretch_unmeasured lane
+# instead of letting it map against a bogus aspect.
+MIN_DESKTOP_PX = 256
+
+
+def virtual_desktop_metrics():
+    """Virtual desktop bounds (left, top, width_px, height_px), None if none.
+
+    Read-only system metrics -- no input event is ever sent here. None names
+    the degraded mapping lane: a host without the metrics API, a read that
+    returns a zero extent, or extents below MIN_DESKTOP_PX (positive junk).
+    Both this read and MOUSEEVENTF_VIRTUALDESK run in the same DPI-awareness
+    space of this process, so their ratio is consistent; a future change to
+    the process DPI awareness must keep that parity.
+    """
+    left = _get_system_metrics(SM_XVIRTUALSCREEN)
+    top = _get_system_metrics(SM_YVIRTUALSCREEN)
+    width = _get_system_metrics(SM_CXVIRTUALSCREEN)
+    height = _get_system_metrics(SM_CYVIRTUALSCREEN)
+    if None in (left, top, width, height):
+        return None
+    if width < MIN_DESKTOP_PX or height < MIN_DESKTOP_PX:
+        return None
+    return (left, top, width, height)
+
+
+def monitor_count():
+    """Display-monitor count from the system metrics, None if unavailable."""
+    return _get_system_metrics(SM_CMONITORS)
+
+
+# Metrics readout diagnostic (U412 / TODO #412): opt-in ONE startup line
+# naming the raw SM_*VIRTUALSCREEN returns (UNsanitized - junk pass-through
+# is the point), SM_CMONITORS, the ctypes call path, the monitor count and
+# the EnumDisplayMonitors union rect. Data for the #412 measured-fit ruling;
+# no mapping change, default OFF prints nothing.
+
+METRICS_DIAG_ENV = "WTD_METRICS_DIAG"
+METRICS_DIAG_INDICES = (SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+                        SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_CMONITORS)
+
+
+def metrics_diag_enabled():
+    """True when the env gate names the readout (WTD_METRICS_DIAG=1)."""
+    # Same accept shape as the pen-map gate (exact "1", no strip) - one
+    # vocabulary for the two opt-in diagnostics (U412 STEP-1 P2-2).
+    return os.environ.get(METRICS_DIAG_ENV, "") == "1"
+
+
+def raw_system_metrics():
+    """Raw GetSystemMetrics returns for the diag indices, None on raise.
+
+    Deliberately bypasses the MIN_DESKTOP_PX junk guard (virtual_desktop_
+    metrics): the readout must show the raw values a host really returns.
+    """
+    values = []
+    for index in METRICS_DIAG_INDICES:
+        try:
+            values.append(ctypes.windll.user32.GetSystemMetrics(index))
+        except Exception:
+            values.append(None)
+    return values
+
+
+def union_rect_from_records(records):
+    """Bounding (left, top, width, height) of parsed monitor records.
+
+    Tolerates malformed rows (skipped); returns None when nothing parses.
+    """
+    boxes = []
+    for record in records:
+        parts = record.split("|")
+        try:
+            left, top = int(parts[1]), int(parts[2])
+            width_txt, height_txt = parts[3].split("x")
+            width, height = int(width_txt), int(height_txt)
+        except (IndexError, ValueError):
+            continue
+        boxes.append((left, top, left + width, top + height))
+    if not boxes:
+        return None
+    left = min(box[0] for box in boxes)
+    top = min(box[1] for box in boxes)
+    right = max(box[2] for box in boxes)
+    bottom = max(box[3] for box in boxes)
+    return (left, top, right - left, bottom - top)
+
+
+def metrics_readout_line():
+    """The byte-stable one-line readout (U412)."""
+    x, y, w, h, monitors = raw_system_metrics()
+    records = monitor_records()
+    union = union_rect_from_records(records)
+    if union is None:
+        union_text = "none"
+    else:
+        union_text = "%d,%d,%dx%d" % union
+    return ("wtd_metrics_diag SM_XVIRTUALSCREEN=%s SM_YVIRTUALSCREEN=%s "
+            "SM_CXVIRTUALSCREEN=%s SM_CYVIRTUALSCREEN=%s SM_CMONITORS=%s "
+            "call=user32.GetSystemMetrics monitors=%d union=%s"
+            % (x, y, w, h, monitors, len(records), union_text))
+
+
+def log_metrics_diagnostic():
+    """Print the readout once when the env gate is on; silent otherwise."""
+    if metrics_diag_enabled():
+        print(metrics_readout_line())
+
+
+# --- display identity (U414 / #406, approved proposal §2) ---------------------
+# The pen-area map stores one rectangle per display configuration. The
+# configuration identity is a sha1 over the sorted monitor records of
+# EnumDisplayMonitors/GetMonitorInfoW, in the same process-DPI awareness
+# space as the virtual metrics read above (virtual_desktop_metrics docstring).
+
+class _RECT(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+class _MONITORINFOEXW(ctypes.Structure):
+    _fields_ = [("cb", ctypes.c_ulong),
+                ("rcMonitor", _RECT),
+                ("rcWork", _RECT),
+                ("dwFlags", ctypes.c_ulong),
+                ("szDevice", ctypes.c_wchar * 32)]
+
+
+def monitor_records():
+    """One record per monitor '<szDevice>|<left>|<top>|<W>x<H>', [] on failure.
+
+    U414 (#406): callers treat an empty list as 'no display identity' and
+    fall back to the isotropic default; the walk never raises.
+    """
+    records = []
+
+    def _callback(h_monitor, _hdc, _rect, _lparam):
+        info = _MONITORINFOEXW()
+        info.cb = ctypes.sizeof(_MONITORINFOEXW)
+        if not ctypes.windll.user32.GetMonitorInfoW(h_monitor, ctypes.byref(info)):
+            return True
+        left, top, right, bottom = (info.rcMonitor.left, info.rcMonitor.top,
+                                    info.rcMonitor.right, info.rcMonitor.bottom)
+        records.append(f"{info.szDevice}|{left}|{top}|{right - left}x{bottom - top}")
+        return True
+
+    try:
+        # U414 STEP-1 P2-2: pin the signatures so monitor handles keep their
+        # full 64-bit width on Win64 (default int coercion would truncate).
+        get_info = ctypes.windll.user32.GetMonitorInfoW
+        get_info.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MONITORINFOEXW)]
+        get_info.restype = ctypes.c_bool
+        enum_monitors = ctypes.windll.user32.EnumDisplayMonitors
+        enum_monitors.argtypes = [ctypes.c_void_p, ctypes.POINTER(_RECT),
+                                  ctypes.c_void_p, ctypes.c_long]
+        enum_monitors.restype = ctypes.c_bool
+        proc = ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p,
+                                  ctypes.POINTER(_RECT), ctypes.c_void_p)(_callback)
+        enum_monitors(None, None, proc, 0)
+    except Exception:
+        return []
+    return records
+
+
+def display_key_for_records(records):
+    """Display configuration identity: sha1 hex over sorted records joined by newlines."""
+    return hashlib.sha1("\n".join(sorted(records)).encode("utf-8")).hexdigest()
+
+
+def select_pen_area_entry(lane, display_key):
+    """First entry whose display_key matches exactly; None when none does.
+
+    U414 load rule: exact full-configuration match only; a stale entry for a
+    different monitor set is never selected (the isotropic default takes
+    over), even though the entry stays stored for the next return."""
+    if not isinstance(lane, dict):
+        return None
+    for entry in lane.get("entries", []):
+        if isinstance(entry, dict) and entry.get("display_key") == display_key:
+            return entry
+    return None
+
+
+def current_pen_area_entry(config, identity):
+    """The stored pen-area rectangle for the live display configuration, else None."""
+    records = monitor_records()
+    if not records:
+        return None
+    return select_pen_area_entry(config.pen_area_maps.get(identity),
+                                 display_key_for_records(records))
+
+
+# Consumer-side selection for the per-report pen path (U414 / #406). The
+# monitor walk is memoized behind a short TTL so a running reader does not
+# enumerate displays every report; a GUI save takes effect within the TTL
+# (the #386 Apply Live shape for this feature).
+
+PEN_AREA_KEY_TTL_SECONDS = 2.0
+_pen_area_key_cache = {"key": None, "at": None}
+
+
+def reset_pen_area_key_cache():
+    """Empty the display-key TTL cache (test seam and post-change hook)."""
+    _pen_area_key_cache["key"] = None
+    _pen_area_key_cache["at"] = None
+
+
+def cached_display_key(now=None):
+    """Display key with a TTL; None (enumeration failed) is cached too."""
+    if now is None:
+        now = time.monotonic()
+    if (_pen_area_key_cache["at"] is not None
+            and now - _pen_area_key_cache["at"] < PEN_AREA_KEY_TTL_SECONDS):
+        return _pen_area_key_cache["key"]
+    records = monitor_records()
+    key = display_key_for_records(records) if records else None
+    _pen_area_key_cache["key"] = key
+    _pen_area_key_cache["at"] = now
+    return key
+
+
+def virtual_desktop_dpi():
+    """(dpi_x, dpi_y) of the primary DC for the rect editor's mm fields
+    (U424 / #424 ruling 2). Never raises: falls back to 96/96 (Windows
+    default scaling) when the DC calls fail."""
+    try:
+        hdc = ctypes.windll.user32.GetDC(0)
+        dpi_x = ctypes.windll.gdi32.GetDeviceCaps(hdc, 88)   # LOGPIXELSX
+        dpi_y = ctypes.windll.gdi32.GetDeviceCaps(hdc, 90)   # LOGPIXELSY
+        ctypes.windll.user32.ReleaseDC(0, hdc)
+        if dpi_x > 0 and dpi_y > 0:
+            return float(dpi_x), float(dpi_y)
+    except Exception:
+        pass
+    return 96.0, 96.0
+
+
+def pen_mm_per_px(dpi, axis=0):
+    """Millimetres per pixel for the numeric rect fields (U424 ruling 2)."""
+    return 25.4 / dpi[axis]
+
+
+def select_live_pen_area_rect(config, identity):
+    """The FRACTIONAL rect for the live identity + display config, else None.
+
+    U416 / #406: returns rect_frac (0..1 of the union bounds); the
+    normalized 0..65535 pen space spans the same virtual bounds
+    (MOUSEEVENTF_VIRTUALDESK), so consumers need no display metrics.
+    """
+    if identity is None:
+        return None
+    key = cached_display_key()
+    if key is None:
+        return None
+    entry = select_pen_area_entry(config.pen_area_maps.get(identity), key)
+    if entry is None:
+        return None
+    return list(entry["rect_frac"])
+
+
+def pen_area_rect_aspect_lock(rect_px, box_mm_w, box_mm_h):
+    """Return the rect with rh re-derived so rw/rh == box_mm_w/box_mm_h.
+
+    U414 / #406: the editor handle and the default rect both run through
+    here, so isotropy holds BY CONSTRUCTION in the pen_area lane (L2's
+    px/mm pin depends on this aspect); rx/ry/rw are passed through.
+    """
+    rx, ry, rw, _ = rect_px
+    return [rx, ry, rw, int(round(rw * box_mm_h / box_mm_w))]
+
+
+def pen_area_norm_projection(rect_px, extent_w, extent_h, screen_w, screen_h):
+    """Normalized-space offset/scale of the pen-area rect (proposal §2 formula).
+
+    off_x = rx * 65535 / screen_w places the box edge at rect px rx;
+    scale_x = rw * 65535 / (extent_w * screen_w) spans rw px for the full
+    rotated count extent; same per axis for y.
+
+    Datum (U414 STEP-2 P1): rx/ry are pixels RELATIVE TO THE VIRTUAL
+    DESKTOP ORIGIN - the (left, top) of the metrics bounding rect, i.e.
+    MOUSEEVENTF_VIRTUALDESK's own zero - not absolute screen coordinates.
+
+    U416 / #406: the pen path passes FRACTIONAL rects (0..1 of the union
+    bounds) with screen_w = screen_h = 1.0 - the same form, fractions
+    pre-divided; the normalized space IS the virtual-desk space, so no
+    display metrics are consulted for the mapping.
+    """
+    rx, ry, rw, rh = rect_px
+    return (rx * PEN_VIRTUAL_RESOLUTION / screen_w,
+            rw * PEN_VIRTUAL_RESOLUTION / (extent_w * screen_w),
+            ry * PEN_VIRTUAL_RESOLUTION / screen_h,
+            rh * PEN_VIRTUAL_RESOLUTION / (extent_h * screen_h))
+
+
+PEN_MAP_DIAG_ENV = "WTD_PEN_MAP_DIAG"
+
+
+def pen_mapping_diag_enabled():
+    """Env gate for the one-shot pen mapping diagnostic line (U376 leg 1)."""
+    return os.environ.get(PEN_MAP_DIAG_ENV, "") == "1"
+
+
+def pen_isotropic_absolute_projection(extent_w, extent_h, box_mm_w, box_mm_h,
+                                      screen_w_px, screen_h_px):
+    """Isotropic centered absolute mapping in the 0..65535 normalized space.
+
+    ONE px-per-mm scale = min(screen_w_px / box_mm_w, screen_h_px / box_mm_h):
+    the digitizer box FITS the desktop instead of one axis stretching past the
+    other, and it is centered, so each unreachable band is symmetric and a
+    45 deg pen stroke maps at 45 deg (U376 fix; the opt-in stretch lane keeps
+    the per-axis anisotropic fill).
+
+    Returns (scale_px_per_mm, used_px_w, used_px_h, norm_scale_x, norm_scale_y,
+             norm_off_x, norm_off_y): the pixel footprint plus the normalized
+    coefficients of the consumer formula
+    nx = int(norm_off_x + (device_x - left) * norm_scale_x + 1e-9).
+    """
+    scale = min(screen_w_px / box_mm_w, screen_h_px / box_mm_h)
+    used_w = box_mm_w * scale
+    used_h = box_mm_h * scale
+    norm_off_x = (screen_w_px - used_w) / 2.0 * PEN_VIRTUAL_RESOLUTION / screen_w_px
+    norm_off_y = (screen_h_px - used_h) / 2.0 * PEN_VIRTUAL_RESOLUTION / screen_h_px
+    norm_scale_x = used_w * PEN_VIRTUAL_RESOLUTION / (extent_w * screen_w_px)
+    norm_scale_y = used_h * PEN_VIRTUAL_RESOLUTION / (extent_h * screen_h_px)
+    return (scale, used_w, used_h, norm_scale_x, norm_scale_y,
+            norm_off_x, norm_off_y)
+
+def pen_effective_specs(pen_specs, state):
+    """The declared digitizer box grown to the observed coordinate range.
+
+    Defensive safety net (U344, kept under the U370 authoritative OTD
+    extents): per axis the larger of the declared extent and the largest
+    coordinate observed in this session -- GROW-ONLY, it can never shrink
+    below the corrected declared extents (pinned by
+    test_autoscale_floor_cannot_shrink_below_declared_extents). The pen
+    consumers map THIS box. A model reporting inside its declared box
+    returns the input dict unchanged (identity).
+    """
+    if state.pen_obs_max_x <= pen_specs["max_x"] and \
+            state.pen_obs_max_y <= pen_specs["max_y"]:
+        return pen_specs
+    grown = dict(pen_specs)
+    grown["max_x"] = max(pen_specs["max_x"], state.pen_obs_max_x)
+    grown["max_y"] = max(pen_specs["max_y"], state.pen_obs_max_y)
+    return grown
 
 # ==============================================================================
 # STATE TRACKER
@@ -613,6 +2087,36 @@ class TabletState:
         
         self.cursor_acc_x = 0.0
         self.cursor_acc_y = 0.0
+        
+        # Pen input tracking (U70): last decoded tablet-report values.
+        self.pen_position = None
+        self.pen_pressure = 0
+        self.pen_buttons = (False, False)
+        self.pen_cursor_acc_x = 0.0
+        self.pen_cursor_acc_y = 0.0
+        # U344 autoscale lane: the largest decoded pen coordinate per axis
+        # this session (raw, pre-orientation) plus the one-shot flag for
+        # the named autoscale line.
+        self.pen_obs_max_x = 0
+        self.pen_obs_max_y = 0
+        self.pen_extents_scaled_logged = False
+        # U376 diagnostic lane: the wired product id of this connection and
+        # the one-shot flag for the named mapping-snapshot line.
+        self.pen_product_id = None
+        # Identity key of the connected pen interface (U414 / #406): the
+        # pen_area_map lane lookup key, set once per pen connection.
+        self.pen_identity = None
+        self.pen_abs_map_logged = False
+
+        # Touch button/dial tracking (U71): last-seen byte 4 press bitmask,
+        # central-button press state, dial origin angle and step accumulator.
+        # U381 adds the byte 5 contact mask, so a touch part sees its own
+        # contact edges independently of the press edges.
+        self.button_press_mask = 0
+        self.button_touch_mask = 0
+        self.central_pressed = False
+        self.dial_last_angle = None
+        self.dial_acc = 0.0
         
         self.last_num_active = 0
         
@@ -669,6 +2173,7 @@ def calculate_piecewise_accelerated_delta(dx, dy, config, feature_toggle):
 # PARSING & TOUCH PROCESSING
 # ==============================================================================
 def parse_pen_packet(report, state):
+    """Proximity gate: marks pen presence so touch stays suppressed."""
     if not report or report[0] != 0x02:
         return
     pen_status = report[1]
@@ -688,6 +2193,412 @@ def parse_pen_packet(report, state):
             
             print("[Palm Rejection] Pen left hover area -> Touch Enabled")
 
+def release_pen_inputs(state, action_dispatch):
+    """Release every held pen input and reset the relative origin."""
+    ad = action_dispatch
+    ad.release_pen_pressure()
+    for slot in list(ad.pen_button_held):
+        ad.release_pen_button(slot)
+    state.pen_position = None
+    state.pen_pressure = 0
+    state.pen_buttons = (False, False)
+
+def _log_pen_mapping_diagnostic(state, config, pen_specs, metrics, mode,
+                                extent_w, extent_h, px_mm, bands):
+    """One-shot named mapping snapshot of the absolute lane (U376 leg 1).
+
+    Byte-stable key=value line, gated by env WTD_PEN_MAP_DIAG=1 and printed
+    once per connection: it names the branch that executed, the declared
+    extents with the product id, the mapped count and mm box, the autoscale
+    observed range, the desktop geometry with its monitor count, and the
+    px-per-mm scale of each axis plus its unreachable band. The mapping
+    itself is untouched by this line.
+    """
+    box_mm_w, box_mm_h = rotated_pen_box_mm(pen_specs, config.orientation_degrees)
+    if px_mm is not None and bands is not None:
+        scales = "px_mm_x=%.4f px_mm_y=%.4f band_x=%.2f_px band_y=%.2f_px" % (
+            px_mm[0], px_mm[1], bands[0], bands[1])
+    elif px_mm is not None:
+        # U414 pen_area lane: a user-placed rect has no contain-fit band.
+        scales = "px_mm_x=%.4f px_mm_y=%.4f band_x=na band_y=na" % (
+            px_mm[0], px_mm[1])
+    else:
+        scales = "px_mm_x=na px_mm_y=na band_x=na band_y=na"
+    monitors = monitor_count()
+    print("pen_abs_map mode=%s product=%s declared=%dx%d box=%dx%d "
+          "box_mm=%.4fx%.4f obs=%dx%d screen=%sx%s monitors=%s %s"
+          % (mode, state.pen_product_id,
+             pen_specs["max_x"], pen_specs["max_y"],
+             int(extent_w), int(extent_h), box_mm_w, box_mm_h,
+             state.pen_obs_max_x, state.pen_obs_max_y,
+             metrics[2] if metrics is not None else "na",
+             metrics[3] if metrics is not None else "na",
+             monitors if monitors is not None else "na", scales))
+
+
+def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
+                      screen_metrics=None, pen_area_rect=None):
+    """Move the pointer: absolute maps the digitizer to the virtual desktop,
+    relative sends scaled deltas with a fractional accumulator.
+
+    screen_metrics (U376): synthetic (left, top, width_px, height_px) desktop
+    extents for the tests; None resolves them from the system metrics.
+    pen_area_rect (U414 / #406, U416 fractional): [rx, ry, rw, rh] FRACTIONS
+    (0..1) of the virtual-desktop union bounds, from the per-configuration
+    lane (resolved by the caller only on an exact display-key match). The
+    branch maps them straight through the normalized 0..65535 space, which
+    IS the MOUSEEVENTF_VIRTUALDESK space, so NO display metrics are read;
+    None runs the pre-U414 lanes byte-unchanged.
+    """
+    ad = action_dispatch
+    # U424 / #424: ONE mode decides the lane (stored `pen_mode`, else the
+    # documented toggle migration) - the old booleans never steer directly
+    # here anymore, so a toggle write cannot dual-control the mapping.
+    pen_mode = resolved_pen_mode(config)
+
+    if pen_mode != "relative":
+        # Aspect-aware mapping: the orientation transform already rotated the
+        # coordinate, so scale it against the ROTATED bounding box. The 1e-9
+        # tolerance absorbs the rotation's float artifacts at the box edges
+        # without shifting any integer device coordinate's truncated result.
+        left, top, extent_w, extent_h = rotated_pen_extents(
+            pen_specs, config.orientation_degrees)
+        metrics = (virtual_desktop_metrics() if screen_metrics is None
+                   else screen_metrics)
+        px_mm = None
+        bands = None
+        if pen_mode == "stretched":
+            # U424 / #424 ruling 1: the screen checkboxes RESTRICT the
+            # stretch target; unselected screens are unreachable, the box
+            # stretches across the UNION of the selected monitors. Empty
+            # or unset = ALL screens = the pre-U424 full-desktop stretch
+            # (byte-unchanged). Junk metrics keep the degraded full fill
+            # (subset math needs the metrics datum, never invents one).
+            subset = getattr(config, "pen_stretch_screens", None)
+            union = (union_rect_from_records(subset)
+                     if subset and metrics is not None else None)
+            if union is not None and union[2] > 0 and union[3] > 0:
+                frac = [(union[0] - metrics[0]) / metrics[2],
+                        (union[1] - metrics[1]) / metrics[3],
+                        union[2] / metrics[2], union[3] / metrics[3]]
+                off_x, scale_x, off_y, scale_y = pen_area_norm_projection(
+                    frac, extent_w, extent_h, 1.0, 1.0)
+                nx = min(max(int(off_x + (x - left) * scale_x + 1e-9), 0),
+                         PEN_VIRTUAL_RESOLUTION)
+                ny = min(max(int(off_y + (y - top) * scale_y + 1e-9), 0),
+                         PEN_VIRTUAL_RESOLUTION)
+                mode = "stretch_subset"
+                box_mm_w, box_mm_h = rotated_pen_box_mm(
+                    pen_specs, config.orientation_degrees)
+                px_mm = (frac[2] * metrics[2] / box_mm_w,
+                         frac[3] * metrics[3] / box_mm_h)
+                bands = (0.0, 0.0)
+            else:
+                nx = min(max(int((x - left) * PEN_VIRTUAL_RESOLUTION / extent_w + 1e-9), 0),
+                         PEN_VIRTUAL_RESOLUTION)
+                ny = min(max(int((y - top) * PEN_VIRTUAL_RESOLUTION / extent_h + 1e-9), 0),
+                         PEN_VIRTUAL_RESOLUTION)
+                mode = "stretch"
+                if metrics is not None:
+                    box_mm_w, box_mm_h = rotated_pen_box_mm(
+                        pen_specs, config.orientation_degrees)
+                    px_mm = (metrics[2] / box_mm_w, metrics[3] / box_mm_h)
+                    bands = (0.0, 0.0)
+        elif pen_area_rect is not None:
+            # Pen-area rect lane (U414 / #406, proposal §2; U416 fractional):
+            # the rotated digitizer box maps onto the user's stored
+            # rectangle - rect is [rx, ry, rw, rh] FRACTIONS of the virtual
+            # bounds, so this branch consults NO display metrics and runs
+            # on junk-metrics hosts (#406 defect). Isotropy holds by the
+            # aspect-locked rect; px_mm below reports the pair from the
+            # ROTATED mm box when metrics allow (diag decoration only).
+            # `stretched` mode above keeps override authority; no rect
+            # falls through to the U376 default / degraded lane.
+            box_mm_w, box_mm_h = rotated_pen_box_mm(
+                pen_specs, config.orientation_degrees)
+            off_x, scale_x, off_y, scale_y = pen_area_norm_projection(
+                pen_area_rect, extent_w, extent_h, 1.0, 1.0)
+            nx = min(max(int(off_x + (x - left) * scale_x + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
+            ny = min(max(int(off_y + (y - top) * scale_y + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
+            if metrics is not None:
+                px_mm = (pen_area_rect[2] * metrics[2] / box_mm_w,
+                         pen_area_rect[3] * metrics[3] / box_mm_h)
+            else:
+                px_mm = None
+            bands = None
+            mode = "pen_area"
+        elif metrics is not None:
+            # Isotropic centered default (U376 fix of the U344 lane): ONE
+            # px-per-mm scale from the desktop fit plus a centering offset, so
+            # a 45 deg pen stroke stays 45 deg and every unreachable band is
+            # symmetric. The old parity ran in the 0..65535 space Windows
+            # stretches to the desktop aspect, so it squashed height by
+            # exactly the screen aspect (maintainer report 2026-11-06).
+            box_mm_w, box_mm_h = rotated_pen_box_mm(
+                pen_specs, config.orientation_degrees)
+            (scale_px_mm, used_w, used_h, scale_x, scale_y,
+             off_x, off_y) = pen_isotropic_absolute_projection(
+                extent_w, extent_h, box_mm_w, box_mm_h, metrics[2], metrics[3])
+            nx = min(max(int(off_x + (x - left) * scale_x + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
+            ny = min(max(int(off_y + (y - top) * scale_y + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
+            px_mm = (scale_px_mm, scale_px_mm)
+            bands = ((metrics[2] - used_w) / 2.0, (metrics[3] - used_h) / 2.0)
+            mode = "isotropic"
+        else:
+            # Degraded lane (no usable desktop metrics), U411 / TODO #401
+            # planner ruling (C) 2026-11-11: this branch ran the old
+            # equal-FRACTION normalized math (scale 65535/max-extent,
+            # centered), which left a 18.75 % dead band per end of a 16:10
+            # pad on ANY desktop -- the maintainer's unreachable
+            # top/bottom sixths (diag mode was isotropic_unmeasured). The
+            # lane now reuses the SHIPPED stretch full-fill math (identical
+            # expressions to the opt-in branch above): the full declared
+            # range reaches the full 0..65535 on both axes; anisotropy is
+            # accepted for this host class until the host-measurement probe
+            # (TODO #412) makes the measured isotropic lane reachable.
+            # `stretched` mode above keeps override
+            # authority. Named `stretch_unmeasured` in the diag line.
+            nx = min(max(int((x - left) * PEN_VIRTUAL_RESOLUTION / extent_w + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
+            ny = min(max(int((y - top) * PEN_VIRTUAL_RESOLUTION / extent_h + 1e-9), 0),
+                     PEN_VIRTUAL_RESOLUTION)
+            mode = "stretch_unmeasured"
+        if pen_mapping_diag_enabled() and not state.pen_abs_map_logged:
+            state.pen_abs_map_logged = True
+            _log_pen_mapping_diagnostic(state, config, pen_specs, metrics, mode,
+                                        extent_w, extent_h, px_mm, bands)
+        state.pen_position = (x, y)
+        ad.send_pen_absolute_move(nx, ny)
+        return
+
+    if state.pen_position is None:
+        # First report after an origin reset: start point, no delta.
+        state.pen_position = (x, y)
+        return
+
+    last_x, last_y = state.pen_position
+    dx_mm = (x - last_x) * pen_specs["width_mm"] / pen_specs["max_x"]
+    dy_mm = (y - last_y) * pen_specs["height_mm"] / pen_specs["max_y"]
+    state.pen_position = (x, y)
+
+    state.pen_cursor_acc_x += dx_mm * config.pen_speed
+    state.pen_cursor_acc_y += dy_mm * config.pen_speed
+    move_x = int(state.pen_cursor_acc_x)
+    move_y = int(state.pen_cursor_acc_y)
+    if move_x != 0 or move_y != 0:
+        ad.send_real_mouse_move(move_x, move_y)
+        state.pen_cursor_acc_x -= move_x
+        state.pen_cursor_acc_y -= move_y
+
+def update_pen_pressure_button(state, action_dispatch, config):
+    """Pressure drives the left button: held at or above threshold, else released."""
+    ad = action_dispatch
+    pressed = state.pen_pressure >= config.pen_pressure_threshold
+    if pressed and not ad.pen_pressure_held:
+        ad.press_pen_pressure()
+    elif not pressed and ad.pen_pressure_held:
+        ad.release_pen_pressure()
+
+def process_pen_report(report, state, action_dispatch, config, pen_specs,
+                       screen_metrics=None):
+    """Full pen input from the 10-byte 0x02 report (U70).
+
+    The status byte switches the meaning of bytes 6-7: bits 1 and 3 mark a
+    rotation report (pressure, tilt and buttons carry over from the previous
+    report), bit 5 marks a tablet report (pressure valid). Tilt and hover are
+    ignored per the approved ruling; pressure acts as left-click state.
+    screen_metrics passes the synthetic desktop extents through to the
+    absolute mapping (U376).
+    """
+    if not report or report[0] != PEN_REPORT_ID or len(report) < PEN_REPORT_LENGTH:
+        return
+
+    status = report[1]
+    ad = action_dispatch
+
+    if status == PEN_STATUS_OUT_OF_RANGE:
+        # Upstream resets the pointer origin and drops the follow-up report.
+        release_pen_inputs(state, ad)
+        return
+
+    if status == PEN_TOOL_REPORT_STATUS:
+        return
+
+    is_rotation = (status & PEN_ROTATION_FLAG) == PEN_ROTATION_FLAG
+    if not is_rotation and (status & PEN_STATUS_COORDS) == 0:
+        # No coordinates in this report (tool/unknown variant): skip.
+        return
+
+    x, y = decode_pen_position(report)
+    # U344 autoscale: track the raw observed coordinate range, map the box
+    # grown to it, and print ONE named line the first time it has to grow.
+    state.pen_obs_max_x = max(state.pen_obs_max_x, x)
+    state.pen_obs_max_y = max(state.pen_obs_max_y, y)
+    grown_specs = pen_effective_specs(pen_specs, state)
+    if grown_specs is not pen_specs and not state.pen_extents_scaled_logged:
+        print(f"pen_extents_autoscale declared_x={pen_specs['max_x']} "
+              f"declared_y={pen_specs['max_y']} "
+              f"observed_x={state.pen_obs_max_x} "
+              f"observed_y={state.pen_obs_max_y} using=observed")
+        state.pen_extents_scaled_logged = True
+    # Orientation (U74): same shared transform as the touch contacts, about
+    # the digitizer center from the per-model ranges (U344: the grown box).
+    # Tilt stays ignored.
+    x, y = apply_orientation((x, y), config, pen_rotation_center(grown_specs))
+    if is_rotation:
+        # Bytes 6-7 carry rotation, not pressure; values carry over.
+        new_buttons = state.pen_buttons
+    else:
+        state.pen_pressure = decode_pen_pressure(report)
+        new_buttons = ((status & PEN_BUTTON_1_MASK) != 0,
+                       (status & PEN_BUTTON_2_MASK) != 0)
+
+    for slot, current in ((1, new_buttons[0]), (2, new_buttons[1])):
+        if current != state.pen_buttons[slot - 1]:
+            action_name = config.action_mapping.get(f"pen_button_{slot}")
+            if current:
+                ad.press_pen_button(slot, action_name)
+            else:
+                ad.release_pen_button(slot)
+    state.pen_buttons = new_buttons
+
+    update_pen_cursor(state, ad, config, grown_specs, x, y,
+                      screen_metrics=screen_metrics,
+                      pen_area_rect=select_live_pen_area_rect(config,
+                                                              state.pen_identity))
+    update_pen_pressure_button(state, ad, config)
+
+def decode_button_report(report):
+    """Split the 10-byte 0x03 button/dial report into its column values.
+
+    Returns None for a short packet or a shape byte 1 does not mark. The touch
+    contact mask (byte 5) is returned but never gates a press: contact alone
+    carries no button press.
+    """
+    if not report or report[0] != BUTTON_REPORT_ID or len(report) < BUTTON_REPORT_LENGTH:
+        return None
+    if not (report[1] & BUTTON_STATUS_PRESENT):
+        return None
+    return {
+        "press": report[4],
+        "touch": report[5],
+        "central": bool(report[3] & BUTTON_CENTRAL_MASK),
+        "dial": report[2],
+    }
+
+def dial_angle_delta(angle, last_angle):
+    """Signed dial angle delta, wrapped at the recorded revolution span.
+
+    Positive means counter-clockwise (increasing angle), negative means
+    clockwise. The recorded sweeps wrap 0x00 <-> 0x46, so a delta further than
+    half the span is the short way round the ring.
+    """
+    half = DIAL_ANGLE_RANGE // 2
+    delta = angle - last_angle
+    if delta > half:
+        delta -= DIAL_ANGLE_RANGE
+    elif delta < -half:
+        delta += DIAL_ANGLE_RANGE
+    return delta
+
+def process_button_report(report, state, action_dispatch, config):
+    """Touch buttons and the rotary dial from the 10-byte 0x03 report (U71).
+
+    Byte 4 is a press bitmask (bit n = button n+1, so buttons 1+2 = 0x03);
+    byte 3 bit 0 is the central button. Press and release edges drive the
+    mapping table like the pen buttons. Byte 2 carries the dial angle while a
+    finger is in the rotary field; deltas accumulate into CW/CCW step actions,
+    mirroring the alt-tab step family. Byte 5 is the touch-contact mask: its
+    edges drive the per-button touch part (U381 / #381: hold the configured
+    modifier while the contact lasts, disabled by default) and never gate a
+    press -- contact alone carries no press, and a press stays live while the
+    finger keeps contact.
+    """
+    parsed = decode_button_report(report)
+    if parsed is None:
+        return
+
+    ad = action_dispatch
+    press_mask = parsed["press"]
+
+    # Touch part before the press edges (U381 / #381): a press that arrives in
+    # the same report as a fresh contact runs with that contact's modifier
+    # already held down (recorded press row carries both bits).
+    touch_mask = parsed["touch"]
+    for slot in range(1, 9):
+        bit = BUTTON_TOUCH_MASKS[slot - 1]
+        present = bool(touch_mask & bit)
+        if present == bool(state.button_touch_mask & bit):
+            continue
+        key = f"btn{slot}_touch"
+        if present:
+            if config.feature_toggles.get(key, False):
+                ad.press_touch_modifier(slot, config.action_mapping.get(key))
+        else:
+            ad.release_touch_modifier(slot)
+    state.button_touch_mask = touch_mask
+
+    for slot in range(1, 9):
+        bit = BUTTON_PRESS_MASKS[slot - 1]
+        pressed = bool(press_mask & bit)
+        if pressed == bool(state.button_press_mask & bit):
+            continue
+        key = f"btn{slot}_press"
+        if pressed and config.feature_toggles.get(key, False):
+            ad.press_tablet_button(slot, config.action_mapping.get(key))
+        elif not pressed:
+            ad.release_tablet_button(slot)
+    state.button_press_mask = press_mask
+
+    central = parsed["central"]
+    if central != state.central_pressed:
+        key = "central_press"
+        if central and config.feature_toggles.get(key, False):
+            ad.press_tablet_button(CENTRAL_BUTTON_SLOT, config.action_mapping.get(key))
+        elif not central:
+            ad.release_tablet_button(CENTRAL_BUTTON_SLOT)
+        state.central_pressed = central
+
+    raw_angle = parsed["dial"]
+    if raw_angle & DIAL_ANGLE_ACTIVE:
+        angle = raw_angle & DIAL_ANGLE_MASK
+        if state.dial_last_angle is None:
+            # First packet after a lift: origin only, no step.
+            state.dial_last_angle = angle
+        else:
+            state.dial_acc += dial_angle_delta(angle, state.dial_last_angle)
+            threshold = config.dial_step_threshold
+            while threshold > 0 and abs(state.dial_acc) >= threshold:
+                clockwise = state.dial_acc < 0
+                key = "dial_cw" if clockwise else "dial_ccw"
+                if config.feature_toggles.get(key, False):
+                    ad.execute_mapped_action(config.action_mapping.get(key))
+                state.dial_acc += threshold if clockwise else -threshold
+        state.dial_last_angle = angle
+    else:
+        # Finger lifted from the rotary field: drop origin and partial step.
+        state.dial_last_angle = None
+        state.dial_acc = 0.0
+
+def handle_report_by_id(report, state, action_dispatch, cfg):
+    """Consume any report whose id names its own handler (U381 / #381, #382).
+
+    Returns True when this function owned the report. The recorded wired
+    capture (maintainer/draft/WTD_pen_support_probe_data.md: one interface
+    constant for the whole file) reads pen id 0x02 and button/dial id 0x03
+    rows from the SAME interface, so a reader must not assume its interface
+    carries a single report id: without this route a 0x03 press reached the
+    pen or touch handler, hit that handler's own id filter, and was dropped.
+    """
+    if report and report[0] == BUTTON_REPORT_ID:
+        process_button_report(report, state, action_dispatch, cfg)
+        return True
+    return False
+
 def parse_sub_block(block):
     if len(block) < 5:
         return None
@@ -702,8 +2613,9 @@ def parse_sub_block(block):
     y = (block[3] << 4) | (block[4] & 0x0F)
     return (slot_id, status, (x, y))
 
-def process_touch_report(report, state, action_dispatch):
+def process_touch_report(report, state, action_dispatch, cfg=None):
     ad = action_dispatch
+    cfg = config if cfg is None else cfg
     
     current_time = time.time()   
 
@@ -723,6 +2635,10 @@ def process_touch_report(report, state, action_dispatch):
                 state.active_contacts.clear()
             continue
 
+        # Orientation (U74): rotate every contact through the shared path
+        # before the gesture/cursor processing sees it.
+        pos = apply_orientation(pos, cfg, TOUCH_ROTATION_CENTER)
+
         if status == STATUS_TOUCH_DOWN:
             state.active_contacts[slot_id] = pos
             state.start_time[clamped_contact_index(len(state.active_contacts))] = current_time
@@ -731,7 +2647,7 @@ def process_touch_report(report, state, action_dispatch):
                 state.session_start_time = current_time
                 if DEBUG: print(f"Debug: new session triggered")
                 time_since_last_tap = current_time - state.last_f1_tap_time
-                state.drag_candidate = (time_since_last_tap <= config.double_tap_timeout)
+                state.drag_candidate = (time_since_last_tap <= cfg.double_tap_timeout)
             if len(state.active_contacts) == 1:
                 state.peak_contact_count = 1
                 state.f1_start_pos = pos
@@ -748,7 +2664,7 @@ def process_touch_report(report, state, action_dispatch):
         elif status in STATUS_RELEASE_TERMINAL:
             state.active_contacts.pop(slot_id, None)
             state.start_time[clamped_contact_index(len(state.active_contacts))] = current_time
-            if state.max_drift > config.tap_max_movement:
+            if state.max_drift > cfg.tap_max_movement:
                 state.was_moved = True
 
     num_active = len(state.active_contacts)
@@ -808,7 +2724,7 @@ def process_touch_report(report, state, action_dispatch):
                         raw_dy = pos[1] - state.last_f1_pos[1]
                         
                         if raw_dx != 0 or raw_dy != 0:
-                            scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(raw_dx, raw_dy, config,"cursor_acceleration")
+                            scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(raw_dx, raw_dy, cfg,"cursor_acceleration")
     
                             state.cursor_acc_x += scaled_dx
                             state.cursor_acc_y += scaled_dy
@@ -821,10 +2737,10 @@ def process_touch_report(report, state, action_dispatch):
                                 state.cursor_acc_x -= move_x
                                 state.cursor_acc_y -= move_y
 
-                    if (current_time - state.last_f1_tap_time) < config.double_tap_timeout and state.max_drift <= config.tap_max_movement:
+                    if (current_time - state.last_f1_tap_time) < cfg.double_tap_timeout and state.max_drift <= cfg.tap_max_movement:
                         state.is_dragging_cursor = True
                         
-                        if (config.feature_toggles.get("1f_double_tap", False) 
+                        if (cfg.feature_toggles.get("1f_double_tap", False) 
                                 and state.drag_candidate 
                                 and not state.is_left_held
                             ):
@@ -846,24 +2762,24 @@ def process_touch_report(report, state, action_dispatch):
             hold_duration = current_time - state.start_time[contact_index]
 
             if state.active_gesture is None:
-                if abs(delta_spread_total) >= config.pinch_activation_threshold:
+                if abs(delta_spread_total) >= cfg.pinch_activation_threshold:
                     state.active_gesture = "2f_pinch"
                     ad.press_key("ctrl")
                     state.scroll_active = True
-                elif dist_centroid >= config.scroll_activation_threshold:
+                elif dist_centroid >= cfg.scroll_activation_threshold:
                     state.active_gesture = "2f_scroll"
                     state.scroll_active = True
 
-            if state.active_gesture == "2f_scroll" and config.feature_toggles.get("2f_scroll", False):
+            if state.active_gesture == "2f_scroll" and cfg.feature_toggles.get("2f_scroll", False):
                 if isinstance(state.last_2finger_centroid, tuple):
                     dx = cx - state.last_2finger_centroid[0]
                     dy = cy - state.last_2finger_centroid[1]
                     # print(f"dx,dy: {dx,dy}")    
 
-                    scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(dx, dy, config, "scroll_acceleration")
+                    scaled_dx, scaled_dy = calculate_piecewise_accelerated_delta(dx, dy, cfg, "scroll_acceleration")
                     
-                    step_x = scaled_dx * -config.scroll_sensitivity_x
-                    step_y = scaled_dy * config.scroll_sensitivity_y
+                    step_x = scaled_dx * -cfg.scroll_sensitivity_x
+                    step_y = scaled_dy * cfg.scroll_sensitivity_y
                     
                     if step_x != 0 or step_y != 0:
                         # print(f"step_x,step_y: {step_x,step_y}")  
@@ -871,13 +2787,13 @@ def process_touch_report(report, state, action_dispatch):
 
                 state.last_2finger_centroid = (cx, cy)
 
-            elif state.active_gesture == "2f_pinch" and config.feature_toggles.get("2f_pinch", False):
+            elif state.active_gesture == "2f_pinch" and cfg.feature_toggles.get("2f_pinch", False):
                 delta_pinch = spread - state.last_pinch_distance
-                ad.send_mouse_scroll(0, delta_pinch * config.pinch_sensitivity)
+                ad.send_mouse_scroll(0, delta_pinch * cfg.pinch_sensitivity)
                 state.last_pinch_distance += delta_pinch 
                 
-                # if abs(delta_pinch) >= config.pinch_continuous_sensitivity:
-                #     steps = delta_pinch / config.pinch_continuous_sensitivity
+                # if abs(delta_pinch) >= cfg.pinch_continuous_sensitivity:
+                #     steps = delta_pinch / cfg.pinch_continuous_sensitivity
                 #     if steps != 0:
                 #         send_ctrl_scroll(0, steps)
                 #         state.last_pinch_distance += delta_pinch     
@@ -902,8 +2818,8 @@ def process_touch_report(report, state, action_dispatch):
             dist_centroid = math.hypot(dx_total, dy_total)
             delta_spread_total = spread - state.mf_start_spread
                 
-            if state.active_gesture is None and state.session_duration <= config.max_gesture_touch_session_duration:
-                if num_active >= 5 and config.feature_toggles.get("5f_alt_tab", False):
+            if state.active_gesture is None and state.session_duration <= cfg.max_gesture_touch_session_duration:
+                if num_active >= 5 and cfg.feature_toggles.get("5f_alt_tab", False):
                     state.active_gesture = "5f_alt_tab"
                     state.alt_tab_active = True
                     state.last_alt_tab_x = cx
@@ -912,22 +2828,22 @@ def process_touch_report(report, state, action_dispatch):
                 else:
                     prefix = f"{num_active}f_"
                     
-                    if abs(delta_spread_total) >= config.pinch_discrete_threshold:
+                    if abs(delta_spread_total) >= cfg.pinch_discrete_threshold:
                         gesture_name = prefix + ("pinch_out" if delta_spread_total > 0 else "pinch_in")
                         ad.dispatch_gesture_event(gesture_name)
 
-                    elif abs(dx_total) >= config.swipe_threshold_x and abs(dx_total) > config.axis_dominance_ratio * abs(dy_total):
+                    elif abs(dx_total) >= cfg.swipe_threshold_x and abs(dx_total) > cfg.axis_dominance_ratio * abs(dy_total):
                         gesture_name = prefix + ("swipe_right" if dx_total > 0 else "swipe_left")
                         ad.dispatch_gesture_event(gesture_name)
 
-                    elif abs(dy_total) >= config.swipe_threshold_y and abs(dy_total) > config.axis_dominance_ratio * abs(dx_total):
+                    elif abs(dy_total) >= cfg.swipe_threshold_y and abs(dy_total) > cfg.axis_dominance_ratio * abs(dx_total):
                         gesture_name = prefix + ("swipe_down" if dy_total > 0 else "swipe_up")
                         ad.dispatch_gesture_event(gesture_name)
                         
             elif state.active_gesture == "5f_alt_tab" and num_active >= 5:
                 dx_step = cx - state.last_alt_tab_x
-                if abs(dx_step) >= config.alt_tab_step_threshold:
-                    if state.f5_counter >= 1 / config.alt_tab_step_sensitivity: # to slow down the windows selection change
+                if abs(dx_step) >= cfg.alt_tab_step_threshold:
+                    if state.f5_counter >= 1 / cfg.alt_tab_step_sensitivity: # to slow down the windows selection change
                         state.f5_counter = 0
                         if dx_step > 0:
                             ad.execute_mapped_action("ctrl_alt_tab_next")
@@ -951,8 +2867,8 @@ def process_touch_report(report, state, action_dispatch):
 
             elif state.session_start_time is not None and state.active_gesture is None:
 
-                #if DEBUG: print(f"session_duration: {session_duration}, config.max_tap_duratio: {config.max_tap_duration}, sd<max_dur: {session_duration <= config.max_tap_duration}")
-                if state.session_duration <= config.max_tap_duration and not state.scroll_active:
+                #if DEBUG: print(f"session_duration: {session_duration}, cfg.max_tap_duratio: {cfg.max_tap_duration}, sd<max_dur: {session_duration <= cfg.max_tap_duration}")
+                if state.session_duration <= cfg.max_tap_duration and not state.scroll_active:
                     if state.peak_contact_count == 1:
                         if not state.was_moved or not state.is_dragging_cursor:
                             ad.dispatch_gesture_event("1f_tap")
@@ -994,20 +2910,20 @@ def process_touch_report(report, state, action_dispatch):
         
         
         # --- PRESS HANDLING ---
-        if state.active_gesture is None and hold_duration >= config.press_hold_duration and not state.was_moved:
+        if state.active_gesture is None and hold_duration >= cfg.press_hold_duration and not state.was_moved:
             # hold_duration = current_time - state.start_time[num_active]
-            if num_active == 1 and config.feature_toggles.get("1f_press", False):
+            if num_active == 1 and cfg.feature_toggles.get("1f_press", False):
                 if (not state.is_left_held 
-                        and state.max_drift <= config.tap_max_movement
+                        and state.max_drift <= cfg.tap_max_movement
                         and not state.scroll_active
                         ):
                     ad.dispatch_gesture_event("1f_press")
                     if DEBUG: print("[Gesture] 1F Press & Hold Drag Initiated")
                     
-            elif num_active >= 2 and config.feature_toggles.get(f"{num_active}f_press", False):    
-                if (hold_duration >= config.press_hold_duration 
-                        and dist_centroid <= config.tap_max_movement
-                        and abs(delta_spread_total) <= config.pinch_discrete_threshold
+            elif num_active >= 2 and cfg.feature_toggles.get(f"{num_active}f_press", False):    
+                if (hold_duration >= cfg.press_hold_duration 
+                        and dist_centroid <= cfg.tap_max_movement
+                        and abs(delta_spread_total) <= cfg.pinch_discrete_threshold
                         ):
                     if DEBUG: print(f"[Gesture] Press hold for {num_active} Fingers triggered")
                     gesture_name = f"{num_active}f_press"
@@ -1019,18 +2935,28 @@ def process_touch_report(report, state, action_dispatch):
 # SIMPLIFIED INTERFACE WORKER THREAD
 # ==============================================================================
 
-def run_interface(interface_type, device_info, state, action_dispatch, touch_enabled_event, stop_event, idle_poll=IDLE_POLL_SECONDS):
+def run_interface(interface_type, device_info, state, action_dispatch, touch_enabled_event, stop_event, idle_poll=IDLE_POLL_SECONDS, cfg=None):
     """
-    Simplified worker thread for either 'Pen' or 'Touch' input.
+    Simplified worker thread for 'Pen', 'Touch' or the optional 'Buttons' input.
     Exits as soon as an OSError/Exception is thrown or stop_event is set or touch_enabled_event not set.
     Reads wait for reports at device cadence: a timed read is used when the HID
     binding offers read_timeout, otherwise non-blocking reads with an idle
     backoff that never sleeps between reports. Pause/stop still take effect
     within one poll tick while the device is silent.
+
+    Config-fork refresh contract (U386 / TODO #386): a manager spawn passes
+    the connection's own config fork as cfg. The GUI "Apply Live" mutates
+    that same object in place (apply_settings_to_config), so every per-report
+    read of cfg here sees the applied values without a restart. The
+    module-global fallback below serves only a no-manager caller (probe and
+    tests). Known connect-time read: the Pen extents table (pen_specs) is
+    resolved once at thread start, so a wireless size change needs a device
+    reconnect (GUI notice states it; U386 leg 2).
     """
     interface_num = device_info.get('interface_number', -1)
     path = device_info.get('path')
     header = f"[{interface_type} Thread | Interface: {interface_num}]"
+    cfg = config if cfg is None else cfg
 
     dev = hid.device()
 
@@ -1038,6 +2964,20 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
         dev.open_path(path)
         dev.set_nonblocking(True)
         print(f"{header} Started successfully.")
+
+        pen_specs = None
+        if interface_type == "Pen":
+            product_id = device_info.get("product_id")
+            pen_specs = pen_specs_for_product(product_id, cfg)
+            # U376: the named mapping diagnostic names the product it resolved.
+            state.pen_product_id = product_id
+            # U414 / #406: pen_area_map lane key for this interface (same
+            # inputs as the manager's device_identity_hash sites).
+            state.pen_identity = device_identity_hash(
+                device_info.get("path") or b"",
+                device_info.get("serial_number") or "")
+            print(f"{header} Init report not sent: upstream sends FeatureInitReport "
+                  "'02 08' at device open; requirement unknown (pen data reads without it).")
 
         # Timed reads exist only on some HID bindings; the Windows hidapi wheel
         # exposes plain read() only, so the non-blocking fallback backs off from
@@ -1055,7 +2995,9 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
             if interface_type == "Touch":
                 read_size = 66
             elif interface_type == "Pen":
-                read_size = 2
+                read_size = PEN_REPORT_LENGTH
+            elif interface_type == "Buttons":
+                read_size = BUTTON_REPORT_LENGTH
             else:
                 read_size = 0
 
@@ -1068,10 +3010,18 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
                 report = dev.read(read_size)
 
             if report:
-                if interface_type == "Touch":
-                    process_touch_report(report, state, action_dispatch)
+                if handle_report_by_id(report, state, action_dispatch, cfg):
+                    # U381: the 0x03 button/dial report shares the pen or the
+                    # touch interface on the recorded device; the id route
+                    # owns it on every interface, the third interface too.
+                    pass
+                elif interface_type == "Touch":
+                    process_touch_report(report, state, action_dispatch, cfg)
                 elif interface_type == "Pen":
                     parse_pen_packet(report, state)
+                    process_pen_report(report, state, action_dispatch, cfg, pen_specs)
+                elif interface_type == "Buttons":
+                    process_button_report(report, state, action_dispatch, cfg)
                 # A report arrived: sample again immediately, no idle sleep.
                 idle_backoff = IDLE_BACKOFF_MIN_SECONDS
             elif timed_read is not None:
@@ -1103,17 +3053,38 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
 # MASTER DEVICE MANAGEMENT THREAD
 # ==============================================================================
 
+def select_active_device_pairs(paired_devices, prefer_wireless):
+    """Choose the device pairs to activate and the ones to hold back.
+
+    When a wireless and a wired pair are both present, one class wins:
+    wireless when ``prefer_wireless`` is set, wired otherwise. A setup with
+    only one class activates every pair. Returns (active, skipped).
+    """
+    wireless = [pair for pair in paired_devices if pair.get("wireless")]
+    wired = [pair for pair in paired_devices if not pair.get("wireless")]
+
+    if not wireless or not wired:
+        return list(paired_devices), []
+
+    if prefer_wireless:
+        return wireless, wired
+    return wired, wireless
+
+
 class DeviceManagerThread(threading.Thread):
     VENDOR_ID = 0x056A  # Wacom Co., Ltd.
     PRODUCT_IDS = [132, 791, 789, 788]
+    WIRELESS_PRODUCT_STRING = "Wacom Wireless Receiver"
 
-    def __init__(self, enabled_event, stop_event, prefer_wireless=False, poll_interval=3.0):
+    def __init__(self, enabled_event, stop_event, prefer_wireless=False, poll_interval=3.0, base_config=None):
         super().__init__(daemon=True)
         self.touch_enabled_event = enabled_event
         self.stop_event = stop_event
         self.prefer_wireless = prefer_wireless
         self.poll_interval = poll_interval
         self.lock = threading.Lock()
+        # Global settings source; connections fork their own instance from it.
+        self.base_config = base_config if base_config is not None else config
         
         # State tracking: path -> info dict
         # Structure per connected pair: 
@@ -1121,11 +3092,16 @@ class DeviceManagerThread(threading.Thread):
         #   'device_path': str (key),
         #   'product_id': int,
         #   'product_string': str,
+        #   'alias': str or None (settings alias, U73),
+        #   'config': DriverConfig (per-connection fork),
         #   'state': TabletState,
         #   'action': ActionDispatcher,
-        #   'threads': {'Pen': Thread, 'Touch': Thread}
+        #   'threads': {'Pen': Thread, 'Touch': Thread, 'Buttons': Thread}
         # }
+        # The 'Buttons' entry exists only when the device offers a third interface.
         self.active_connections = {}
+        # Dedup for the connection-class skip notice; ids tuple or None.
+        self._skipped_notice = None
 
     def run(self):
         print("[Manager Thread] Started Master Management Thread.")
@@ -1154,6 +3130,10 @@ class DeviceManagerThread(threading.Thread):
         # Store lists of interfaces per parent ID to support multiple identical tablets
         found_pen = {}    # parent_id -> list of pen dev dicts
         found_touch = {}  # parent_id -> list of touch dev dicts
+        # Optional third interface carrying the 0x03 button/dial reports (U71).
+        # Which interface number that is stays unrecorded until the maintainer's
+        # interactive probe answers it, so any extra interface is offered as one.
+        found_buttons = {}
 
         for dev in hid.enumerate():
             v_id = dev.get('vendor_id')
@@ -1162,7 +3142,7 @@ class DeviceManagerThread(threading.Thread):
 
             if v_id == self.VENDOR_ID and p_id in self.PRODUCT_IDS:
                 interface_num = dev.get('interface_number', -1)
-                wireless = (p_str == 'Wacom Wireless Receiver')
+                wireless = (p_str == self.WIRELESS_PRODUCT_STRING)
                 
                 pen_iface = 1 if wireless else 0
                 touch_iface = 2 if wireless else 1
@@ -1173,6 +3153,8 @@ class DeviceManagerThread(threading.Thread):
                     found_pen.setdefault(parent_id, []).append(dev)
                 elif interface_num == touch_iface:
                     found_touch.setdefault(parent_id, []).append(dev)
+                else:
+                    found_buttons.setdefault(parent_id, []).append(dev)
 
         paired_devices = []
 
@@ -1180,11 +3162,13 @@ class DeviceManagerThread(threading.Thread):
         for parent_id, pen_list in found_pen.items():
             if parent_id in found_touch:
                 touch_list = found_touch[parent_id]
+                buttons_list = found_buttons.get(parent_id, [])
                 
                 # Pair corresponding interface instances (handles duplicate devices gracefully)
                 for idx, pen_dev in enumerate(pen_list):
                     if idx < len(touch_list):
                         touch_dev = touch_list[idx]
+                        buttons_dev = buttons_list[idx] if idx < len(buttons_list) else None
                         
                         # Create a truly unique device key using interface paths
                         unique_dev_id = f"{parent_id}_instance_{idx}"
@@ -1193,8 +3177,10 @@ class DeviceManagerThread(threading.Thread):
                             'id': unique_dev_id,
                             'product_id': pen_dev['product_id'],
                             'product_string': pen_dev['product_string'],
+                            'wireless': pen_dev['product_string'] == self.WIRELESS_PRODUCT_STRING,
                             'pen_device': pen_dev,
-                            'touch_device': touch_dev
+                            'touch_device': touch_dev,
+                            'buttons_device': buttons_dev
                         })
 
         return paired_devices
@@ -1206,9 +3192,11 @@ class DeviceManagerThread(threading.Thread):
             for dev_id, conn in self.active_connections.items():
                 pen_alive = conn['threads']['Pen'].is_alive()
                 touch_alive = conn['threads']['Touch'].is_alive()
+                buttons = conn['threads'].get('Buttons')
+                buttons_alive = buttons.is_alive() if buttons is not None else True
 
-                # If either thread died (e.g. from OSError or paused), clean up state
-                if not pen_alive or not touch_alive:
+                # If any thread died (e.g. from OSError or paused), clean up state
+                if not pen_alive or not touch_alive or not buttons_alive:
                     print(f"[Manager] Device disconnected/stopped: {conn['product_string']} ({dev_id})")
                     dead_keys.append(dev_id)
 
@@ -1217,46 +3205,94 @@ class DeviceManagerThread(threading.Thread):
 
             # 2. Update available devices and spawn new interface threads
             available_devices = self.enumerate_wacom_devices()
+            active_devices, skipped_devices = select_active_device_pairs(
+                available_devices, self.prefer_wireless)
 
-            for dev_pair in available_devices:
+            # Announce a held-back connection class once per change, not per poll.
+            skipped_ids = tuple(pair['id'] for pair in skipped_devices)
+            if skipped_ids != self._skipped_notice:
+                self._skipped_notice = skipped_ids
+                held_back = "wired" if self.prefer_wireless else "wireless"
+                for pair in skipped_devices:
+                    print(f"[Manager] Holding back {held_back} device "
+                          f"{pair['product_string']} ({pair['id']})")
+
+            for dev_pair in active_devices:
                 dev_id = dev_pair['id']
 
                 if dev_id not in self.active_connections:
-                    print(f"\n[Manager] New Device Detected! Initializing: {dev_pair['product_string']}")
+                    identity = device_identity_hash(
+                        dev_pair['pen_device'].get('path'),
+                        dev_pair['pen_device'].get('serial_number', ''))
+                    # A stored user alias for this identity wins over the
+                    # model-class rule (U87 a); the identity key is never the
+                    # bare interface index.
+                    alias = self.base_config.alias_for_identity(identity)
+                    if alias is None:
+                        alias = resolve_device_alias(
+                            dev_pair['product_id'], dev_pair['wireless'],
+                            self.base_config.device_bindings())
+                    conn_config = self.base_config.fork_for_device(alias, identity)
+                    print(f"\n[Manager] New Device Detected! Initializing: {dev_pair['product_string']} "
+                          f"(settings alias: {alias or 'none - global sections only'})")
                     
                     # Create unique state & dispatcher context per device
                     t_state = TabletState()
-                    a_dispatch = ActionDispatcher(t_state)
+                    a_dispatch = ActionDispatcher(t_state, conn_config)
 
                     pen_dev = dev_pair['pen_device']
                     touch_dev = dev_pair['touch_device']
+                    buttons_dev = dev_pair.get('buttons_device')
 
                     t_pen = threading.Thread(
                         target=run_interface,
                         args=("Pen", pen_dev, t_state, a_dispatch, self.touch_enabled_event, self.stop_event),
+                        kwargs={"cfg": conn_config},
                         daemon=True
                     )
                     t_touch = threading.Thread(
                         target=run_interface,
                         args=("Touch", touch_dev, t_state, a_dispatch, self.touch_enabled_event, self.stop_event),
+                        kwargs={"cfg": conn_config},
                         daemon=True
                     )
 
+                    threads = {
+                        'Pen': t_pen,
+                        'Touch': t_touch
+                    }
+
                     self.active_connections[dev_id] = {
+                        'id': dev_id,
+                        'identity': identity,
                         'product_id': dev_pair['product_id'],
                         'product_string': dev_pair['product_string'],
+                        'alias': alias,
+                        'config': conn_config,
                         'state': t_state,
                         'action': a_dispatch,
-                        'threads': {
-                            'Pen': t_pen,
-                            'Touch': t_touch
-                        }
+                        'threads': threads
                     }
 
                     t_pen.start()
                     t_touch.start()
                     print(f"[Manager] Spawned Pen (Interface: {pen_dev.get('interface_number')}) "
                           f"& Touch (Interface: {touch_dev.get('interface_number')}) threads for {dev_id}")
+
+                    if buttons_dev is not None:
+                        # Third interface next to Pen/Touch (U71): 0x03 button/dial
+                        # reports. Absent interface means the pair stays as before.
+                        t_buttons = threading.Thread(
+                            target=run_interface,
+                            args=("Buttons", buttons_dev, t_state, a_dispatch,
+                                  self.touch_enabled_event, self.stop_event),
+                            kwargs={"cfg": conn_config},
+                            daemon=True
+                        )
+                        threads['Buttons'] = t_buttons
+                        t_buttons.start()
+                        print(f"[Manager] Spawned Buttons thread "
+                              f"(Interface: {buttons_dev.get('interface_number')}) for {dev_id}")
 
     def get_primary_state_and_action(self):
         """Helper to pass active state and dispatcher references to the GUI."""
@@ -1266,22 +3302,313 @@ class DeviceManagerThread(threading.Thread):
                 return first_conn['state'], first_conn['action']
             return None, None
 
+    def get_primary_connection(self):
+        """The first active connection dict, alias and config included (U73)."""
+        with self.lock:
+            if self.active_connections:
+                return next(iter(self.active_connections.values()))
+            return None
+
+    def list_connections(self):
+        """The live connection dicts (U87 a): one entry per active device.
+
+        The GUI feeds its focused-device combo from this list; the entries
+        are the live dicts, so a GUI alias assign reaches the running device.
+        """
+        with self.lock:
+            return list(self.active_connections.values())
+
 
 # ==============================================================================
 # MAIN ENTRY POINT
 # ==============================================================================
 
+def resolve_config_paths(args):
+    """Resolve the --config/--save-as start arguments from a raw argv slice.
+
+    '--config <path>' sets the load path; '--save-as <path>' the save path;
+    '--save-as' omitted means the save path follows '--config'. Neither option
+    present keeps both lanes on CONFIG_FILE_PATH. Accepts '--config=<path>'
+    too, and treats '-config'/'-save-as' as the same options.
+    Returns (config_path, save_path, notes, other_args); ``other_args`` are the
+    tokens left for the flag parser, so a path value never reads as a flag.
+    """
+    config_path = CONFIG_FILE_PATH
+    save_path = None
+    notes = []
+    other_args = []
+
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        name, _, inline_value = arg.partition("=")
+        option = name.lower()
+
+        if option not in ("--config", "-config", "--save-as", "-save-as"):
+            other_args.append(arg)
+            index += 1
+            continue
+
+        value = inline_value
+        if not value and index + 1 < len(args):
+            value = args[index + 1]
+            index += 1
+        if not value:
+            notes.append(f"[Start Parameter] {name} needs a path - ignored")
+            index += 1
+            continue
+
+        if option.endswith("config"):
+            config_path = value
+        else:
+            save_path = value
+        index += 1
+
+    if save_path is None:
+        save_path = config_path
+    return config_path, save_path, notes, other_args
+
+
+# CLI device lanes (U88 Part C): config-file maintenance without the driver.
+# '--list', '--restore-with <name>' and '--save-device <alias>' (U413; the
+# alias lane of '--save-as', kept working with a deprecation note) run
+# against the loaded config and exit; the manager thread and the GUI stay
+# untouched.
+
+def looks_like_path(value):
+    """True when a '--save-as' value names a file instead of a device alias.
+
+    A value with a path separator or a file extension keeps the Part A
+    save-path lane; any other value names a device alias.
+    """
+    return "/" in value or "\\" in value or bool(os.path.splitext(value)[1])
+
+
+def resolve_cli_lanes(args):
+    """Pull the device-lane start arguments out of a raw argv slice.
+
+    '--list' takes no value; '--restore-with <name>' names one stored device
+    and '--save-device <alias>' (U413, cli-flag-naming ruling option 2)
+    stores the current settings under a new alias. A '--save-as <bare-name>'
+    still routes to the alias lane but adds a deprecation note naming
+    '--save-device'; a '--save-as' value that looks like a path keeps the
+    Part A save-path lane: the option and its value pass through into
+    ``path_args`` untouched. Accepts the '=' form and the single-dash
+    spellings ('-save-device' etc.). Returns
+    (list_devices, restore_with, save_as_alias, notes, path_args);
+    ``path_args`` keeps every token the path and flag parsers should still see.
+    """
+    list_devices = False
+    restore_with = None
+    save_as_alias = None
+    notes = []
+    path_args = []
+
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        name, _, inline_value = arg.partition("=")
+        option = name.lower()
+
+        if option in ("--list", "-list"):
+            list_devices = True
+            index += 1
+            continue
+
+        if option in ("--restore-with", "-restore-with"):
+            value = inline_value
+            if not value and index + 1 < len(args):
+                value = args[index + 1]
+                index += 1
+            if not value:
+                notes.append(f"[Start Parameter] {name} needs a device name - ignored")
+                index += 1
+                continue
+            restore_with = value
+            index += 1
+            continue
+
+        if option in ("--save-device", "-save-device"):
+            # U413 (cli-flag-naming ruling, option 2): the device-alias lane
+            # lives here now; the value is an alias by definition, so the
+            # path shake rule does not apply to this flag.
+            value = inline_value
+            paired = not value and index + 1 < len(args)
+            if paired:
+                value = args[index + 1]
+            if not value:
+                notes.append(f"[Start Parameter] {name} needs a device alias - ignored")
+                index += 1
+                continue
+            save_as_alias = value
+            index += 2 if paired else 1
+            continue
+
+        if option in ("--save-as", "-save-as"):
+            value = inline_value
+            paired = not value and index + 1 < len(args)
+            if paired:
+                value = args[index + 1]
+            if value and not looks_like_path(value):
+                save_as_alias = value
+                # Deprecation (U413 ruling): the alias lane moved to
+                # '--save-device'; bare-name values still route, loudly.
+                notes.append(
+                    f"[Start Parameter] '--save-as {value}' used the device-alias "
+                    f"lane - deprecated, use '--save-device {value}'; "
+                    f"'--save-as <path>' keeps the save-file lane")
+                index += 2 if paired else 1
+                continue
+            path_args.append(arg)
+            index += 1
+            continue
+
+        path_args.append(arg)
+        index += 1
+
+    return list_devices, restore_with, save_as_alias, notes, path_args
+
+
+def find_device_entry(config, name):
+    """Locate one stored device entry by alias or identity key.
+
+    Order: identity key, the identity lane of a stored alias name, then the
+    devices map. Returns (lane, key, entry); the entry can be empty when the
+    name is known but carries no saved sections. None when nothing is stored.
+    """
+    if isinstance(config.device_settings.get(name), dict):
+        return "identity", name, config.device_settings[name]
+    for identity, stored_alias in config.device_aliases.items():
+        if stored_alias != name:
+            continue
+        entry = config.device_settings.get(identity)
+        return "identity", identity, entry if isinstance(entry, dict) else {}
+    if isinstance(config.devices.get(name), dict):
+        return "alias", name, config.devices[name]
+    return None
+
+
+def cli_list_devices(config):
+    """Print the stored device entries (alias + identity key) and return them."""
+    records = config.device_entry_records()
+    print(f"[Config] Stored devices ({len(records)}):")
+    for alias, identity in records:
+        print(config.format_device_entry(alias, identity))
+    return records
+
+
+def cli_restore_with(config, name):
+    """Load one device's saved values, then re-save the live values (option B).
+
+    The entry validates all-or-nothing before it is applied; a rejected entry
+    prints its errors and leaves the current settings untouched. On success
+    the live snapshot replaces the stored entry, so the file mirrors the
+    live state. Returns True when values were applied and re-saved.
+    """
+    found = find_device_entry(config, name)
+    if found is None:
+        print(f"[Config Error] No saved device '{name}'. Nothing applied.")
+        return False
+
+    lane, key, entry = found
+    sections = {section: value for section, value in entry.items()
+                if section in DEVICE_SECTION_KEYS}
+    validated, warnings, errors = config.validate_config_data(sections, "")
+    for note in warnings:
+        print(f"[Config Warning] {lane} '{key}': {note}")
+    if errors:
+        for err in errors:
+            print(f"[Config Error] Invalid {lane} entry '{key}': {err}")
+        print(f"[Config] Restore of '{name}' aborted; current settings stay in place.")
+        return False
+
+    for attr, value in validated["motion"].items():
+        setattr(config, attr, value)
+    for attr, value in validated["toggles"].items():
+        config.feature_toggles[attr] = value
+    for attr, value in validated["mapping"].items():
+        config.action_mapping[attr] = value
+    config.sync_sensitivities()
+
+    snapshot = snapshot_device_sections(config)
+    if lane == "identity":
+        config.set_device_identity_settings(key, snapshot)
+    else:
+        config.set_device_entry(key, snapshot)
+    config.save_to_file()
+    print(f"[Config] Restored '{name}'; current live values re-saved as its state.")
+    return True
+
+
+def cli_save_as(config, alias):
+    """Store the current settings under a new device alias and save the file.
+
+    An existing alias with the same name is overwritten; the bindings and
+    entries of other devices stay untouched.
+    """
+    config.set_device_entry(alias, snapshot_device_sections(config))
+    config.save_to_file()
+    print(f"[Config] Current settings saved under alias '{alias}'.")
+    return True
+
+
+def build_device_info(conn, base_config, manager):
+    """GUI focus bundle for the settings window (U73/U87).
+
+    A None connection keeps the bar's no-device lane: the section still
+    builds above the tabs and resolves its focus from the manager's live
+    device list (U383 / #383).
+    """
+    return {"connection": conn, "base_config": base_config, "manager": manager}
+
+
 def main():
     global DEBUG
+    global config
     prefer_wireless = False
 
-    for arg in sys.argv[1:]:
+    list_devices, restore_with, save_as_alias, lane_notes, path_args = \
+        resolve_cli_lanes(sys.argv[1:])
+    for note in lane_notes:
+        print(note)
+
+    config_path, save_path, path_notes, other_args = resolve_config_paths(path_args)
+    for note in path_notes:
+        print(note)
+
+    # U412 / TODO #412: opt-in startup metrics readout (env WTD_METRICS_DIAG=1),
+    # silent by default; diagnostic only, no mapping is consulted or changed.
+    log_metrics_diagnostic()
+
+    for arg in other_args:
         if "-DEBUG" in arg.upper():
             DEBUG = True
             print("[Start Parameter] DEBUG active")
         elif "-wireless" in arg:
             prefer_wireless = True
             print("[Start Parameter] Wireless preference active")
+
+    if config_path != CONFIG_FILE_PATH:
+        print(f"[Start Parameter] Config file: '{config_path}'")
+        # Rebuild from defaults so only the named file shapes the settings.
+        config = DriverConfig(config_path)
+    if save_path != config_path:
+        print(f"[Start Parameter] Save file: '{save_path}'")
+    config.save_path = save_path
+
+    # CLI maintenance lanes run against the loaded file and exit: the manager
+    # thread and the GUI stay unstarted.
+    if list_devices:
+        cli_list_devices(config)
+        return 0
+
+    if restore_with or save_as_alias:
+        applied = True
+        if restore_with:
+            applied = cli_restore_with(config, restore_with)
+        if save_as_alias:
+            cli_save_as(config, save_as_alias)
+        return 0 if applied else 1
 
     print("\n=== Initializing Wacom Device Manager Thread ===")
 
@@ -1291,25 +3618,38 @@ def main():
     stop_event = threading.Event()
     
     # Initialize and start the master management thread
-    manager = DeviceManagerThread(touch_enabled_event, stop_event, prefer_wireless=prefer_wireless, poll_interval=5.0)
+    manager = DeviceManagerThread(touch_enabled_event, stop_event, prefer_wireless=prefer_wireless,
+                                  poll_interval=5.0, base_config=config)
     manager.start()
 
     # Wait for the manager to attempt the initial connection
     time.sleep(1.0)
 
-    # Fetch active state reference for GUI bindings (if available)
-    state, action_dispatch = manager.get_primary_state_and_action()
-    if not state:
+    # Fetch active connection references for GUI bindings (if available)
+    conn = manager.get_primary_connection()
+    if conn:
+        state = conn['state']
+        action_dispatch = conn['action']
+        gui_config = conn['config']
+    else:
         state = TabletState()  # Fallback empty state for GUI
+        gui_config = config
+        action_dispatch = None
+    # U383: always carry the manager in the bundle -- the device section is
+    # built above the tabs even when no device had connected at launch.
+    device_info = build_device_info(conn, config, manager)
 
     if action_dispatch:
-        config.set_available_actions(list(action_dispatch.ACTION_DISPATCH.keys()))
+        actions = list(action_dispatch.ACTION_DISPATCH.keys())
+        config.set_available_actions(actions)
+        gui_config.set_available_actions(actions)
 
     print("\n=== Wacom Touch Driver Running ===")
 
     try:
         from gui import launch_gui
-        launch_gui(state, config, touch_enabled_event, stop_event)
+        launch_gui(state, gui_config, touch_enabled_event, stop_event,
+                   device_info=device_info)
     except SystemExit:
         pass
     except ImportError:
@@ -1323,5 +3663,7 @@ def main():
         stop_event.set()
         print("\n=== Wacom Touch Driver successfully stopped ===")
 
+    return 0
+
 if __name__ == '__main__':
-    main()
+    sys.exit(main())
