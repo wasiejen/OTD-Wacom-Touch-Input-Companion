@@ -2,7 +2,7 @@
 
 A lightweight Python driver companion for **OpenTabletDriver (OTD)** that unlocks touch input and multi-touch gesture support on Wacom Intuos Pro tablets.
 
-**Current version: v0.4.0** (November 2026) - since v0.3.0: tri-modal pen mapping (relative / stretched with per-screen selection / 1:1 pen-area with px-mm sensitivity editor), tablet buttons + dial + touch-modifier support, wireless tablet-size lane, orientation-synced editor, live Apply with persistence, `--save-device`. 
+**Current version: v0.5.0** (November 2026) - since v0.4.0: quit never leaves stuck keys (bounded reader join + last-resort input sweep), Apply Live survives pause and reconnect with per-device persistence, one strict command line (unknown flags refuse to start; every legacy spelling still works), a documented config file search order, console output mirrored to `%APPDATA%\wtd\wtd.log`, per-device override hint + Restore to Defaults, and CI-built release executables on a `v*` tag.
 
 Touch support on certain older Wacom devices requires specialized parsing. This driver captures HID touch reports and maps them to custom mouse cursor movements, multi-finger gestures, continuous scrolling, and Windows productivity shortcuts. Pen input is handled natively as well (cursor movement, pressure clicks, pen button clicks), replacing the external OpenTabletDriver dependency.
 
@@ -46,7 +46,10 @@ Specifically designed and tested for the **Wacom Intuos5 / Intuos Pro (PTH-x51)*
   * **5-Finger:** Smooth Alt-Tab window switcher navigation.
 * **System Tray Integration:** Quick access via a dynamic system tray icon (`WT`) with live color indicators (Green = Active, Red = Paused) and a quick toggle option.
 * **GUI Settings Manager:** Built-in multi-tab configuration menu for live tuning.
-* **Persistent Configuration:** All settings, gesture toggles, threshold timings, and custom action mappings are saved to a local `user.cfg` file.
+* **Persistent Configuration:** All settings, gesture toggles, threshold timings, and custom action mappings are saved to your `user.cfg` file (see Configuration File).
+* **Per-Device Settings:** Each paired tablet keeps its own values inside one shared `user.cfg` - the Focused Device bar picks the device, and the driver stores identity-keyed overrides per device on top of the global settings.
+  * **Override hint:** the Focused Device section shows `Device-specific values active: <sections>` - exactly which settings the focused device overrides right now, recomputed on every focus change and apply/save.
+  * **Restore to Defaults:** one button clears the focused device's overrides after a confirm dialog naming the sections; the device runs the global values immediately (no restart), and pen-area maps and aliases stay untouched.
 
 ---
 
@@ -87,7 +90,7 @@ Everything in the driver is exposed and editable via the GUI:
 
 3. **Run the driver:**
    ```bash
-   python touch_controller.py
+   python -m wtd
    ```
 
 4. **Verify touch input (optional):**
@@ -131,6 +134,10 @@ entry point; `python touch_controller.py` is gone):
 | `-DEBUG` | print raw touch reports on the console |
 | `-wireless` | prefer the wireless interface when a tablet exposes both |
 | `--config <path>` | load and save `<path>` instead of `user.cfg` |
+| `--save-as <path>` | save to `<path>` while loading from `--config` |
+| `--list` | print every stored device entry (alias + identity key) and exit |
+| `--restore-with <name>` | apply one device's saved values, then re-save the live values |
+| `--save-device <alias>` | write the current settings under a new device alias and exit |
 
 A start argument the driver does not know is a fatal error: it prints one
 `[Start Parameter]` line and the driver does not start (previously such an
@@ -143,12 +150,7 @@ rotating at 2 MB with 2 backups), so a tray start without a console
 keeps the same grep-able log. Opt-in diagnostic line outputs (read at
 each start): `WTD_METRICS_DIAG=1` prints the one-line desktop-metrics
 readout, `WTD_PEN_MAP_DIAG=1` prints the pen absolute-mapping line once
-per change. `WTD_LOG_FILE` overrides the log-file path; it exists for
-the test harness only - unset it in your shell.
-| `--save-as <path>` | save to `<path>` while loading from `--config` |
-| `--list` | print every stored device entry (alias + identity key) and exit |
-| `--restore-with <name>` | apply one device's saved values, then re-save the live values |
-| `--save-device <alias>` | write the current settings under a new device alias and exit |
+per change.
 
 `--list`, `--restore-with` and `--save-device <alias>` are maintenance lanes: they run
 against the config file and exit without starting the driver or the GUI. The
