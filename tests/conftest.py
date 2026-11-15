@@ -21,6 +21,15 @@ import traceback
 import types
 
 import pytest
+
+# R1 P1-2: keep test emissions out of the maintainer's live hunting
+# file. Set before any wtd import in this process: the wtd_file sink
+# attaches at first import with this path (the product never sets it).
+os.environ.setdefault(
+    "WTD_LOG_FILE",
+    os.path.join(os.environ.get("TEMP", os.sep + "tmp"), "wtd-test-hunt.log"),
+)
+
 from wtd import devices
 
 # ==============================================================================

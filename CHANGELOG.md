@@ -4,6 +4,23 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261115-0210:
+
+  - NO-CONSOLE LOG SINK (estate WTD follow-up unit R1, finishing review
+    Item 11): the shared `wtd` logger grows a second named sink -
+    `RotatingFileHandler` on `%APPDATA%\wtd\wtd.log` (same per-user folder
+    family as the config lane), UTF-8, 2 MB x 2 backups, formatter unchanged
+    (`%(message)s`) so every file line carries the console text verbatim
+    (hunting contract; line endings follow the channel: LF console,
+    CRLF file - pinned per-line in tests). Folder and file are created on demand at the FIRST
+    emitted line (`delay=True` + lazy parent create); if the folder cannot
+    be created the file sink is skipped and the console stays the channel.
+    `install_sinks()` is idempotent per handler name (GUI + CLI + tray flows
+    never double-attach). Tray-mode (console-less) pinning: the pen_abs_map
+    and metrics hunting lines are read back from the actual file verbatim
+    (`tests/test_log_file_sink.py`). Note: a full pytest run now also writes
+    the real `%APPDATA%\wtd\wtd.log` (rotation caps the size).
+
 261115-0153:
 
   - PACKAGE SPLIT (estate WTD plan Phase C unit C1, review Item 3 + the
