@@ -60,7 +60,7 @@ def test_eleven_contact_report_processes_without_exception(stub_send_input):
     # 5+ contacts drive the mapped gesture lanes (5f_alt_tab -> ctrl+alt+tab),
     # so the dispatcher needs the input stub: record the events, inject none.
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
 
     process_touch_report(down_report(11), state, ad, DriverConfig())
 
@@ -73,7 +73,7 @@ def test_twelve_contact_report_processes_without_exception(stub_send_input):
     # Same lane as the 11-contact case: the input stub keeps the gesture real
     # in the dispatcher and the events out of the desktop.
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
 
     process_touch_report(touch_report([touch_down_block(i, 50 + i, 60 + i) for i in range(1, 13)]),
                          state, ad, DriverConfig())
@@ -86,7 +86,7 @@ def test_state_still_processes_reports_after_an_over_cap_report(stub_send_input)
     # The release report closes the 5f_alt_tab lane (ctrl_alt_tab_commit), so
     # this case injects on both legs without the input stub in place.
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
 
     process_touch_report(down_report(11), state, ad, DriverConfig())
     process_touch_report(touch_report([release_block(i) for i in range(1, 12)]), state, ad, DriverConfig())
@@ -97,7 +97,7 @@ def test_state_still_processes_reports_after_an_over_cap_report(stub_send_input)
 
 def test_normal_contact_count_indexes_its_own_cell():
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
 
     process_touch_report(down_report(2), state, ad, DriverConfig())
 
@@ -109,7 +109,7 @@ def test_interface_thread_survives_an_over_cap_report(fake_hid, stub_send_input)
     dev = FakeDevice(reports=[down_report(11)])
     fake_hid._queue.append(dev)
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
 
     enabled = threading.Event()
     enabled.set()

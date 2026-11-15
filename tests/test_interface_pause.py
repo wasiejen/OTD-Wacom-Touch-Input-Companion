@@ -61,7 +61,7 @@ def idle_touch_thread(fake_hid, stub_send_input):
     dev = FakeDevice()
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     thread, enabled, stop = start_thread("Touch", dev, state, dispatcher)
     yield dev, thread, enabled, stop
     stop_and_join(thread, enabled, stop)
@@ -81,7 +81,7 @@ def test_pause_stops_pen_thread_with_zero_traffic(fake_hid, stub_send_input):
     dev = FakeDevice()
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
 
     thread, enabled, stop = start_thread("Pen", dev, state, dispatcher)
     enabled.clear()
@@ -123,7 +123,7 @@ def test_timed_path_exercises_bounded_wait_when_silent(fake_hid, stub_send_input
     dev = FakeDevice()
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
 
     thread, enabled, stop = start_thread("Touch", dev, state, dispatcher, idle_poll=TICK)
     time.sleep(TICK * 4)
@@ -139,7 +139,7 @@ def test_reports_are_sampled_at_device_rate_with_timed_read(fake_hid, stub_send_
     dev = FakeDevice(reports=[PEN_PACKET] * 20)
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
 
     thread, enabled, stop = start_thread("Pen", dev, state, dispatcher, idle_poll=0.05)
 
@@ -161,7 +161,7 @@ def test_reports_are_sampled_at_device_rate_with_plain_read(fake_hid, stub_send_
     dev = PlainDevice(reports=[PEN_PACKET] * 20)
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
 
     thread, enabled, stop = start_thread("Pen", dev, state, dispatcher, idle_poll=0.05)
 
@@ -180,7 +180,7 @@ def test_plain_read_device_exits_on_pause_within_one_tick(fake_hid, stub_send_in
     dev = PlainDevice()
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
 
     thread, enabled, stop = start_thread("Touch", dev, state, dispatcher, idle_poll=TICK)
 
@@ -198,7 +198,7 @@ def test_idle_device_paces_reads(fake_hid, stub_send_input):
     dev = FakeDevice()
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
 
     thread, enabled, stop = start_thread("Touch", dev, state, dispatcher, idle_poll=0.05)
     time.sleep(0.2)
@@ -213,7 +213,7 @@ def test_touch_report_is_processed_by_thread(fake_hid, stub_send_input):
     dev = FakeDevice(reports=[report])
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
 
     thread, enabled, stop = start_thread("Touch", dev, state, dispatcher)
 
@@ -232,7 +232,7 @@ def test_pen_proximity_is_processed_by_thread(fake_hid, stub_send_input):
     dev = FakeDevice(reports=[PEN_PACKET])
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
 
     thread, enabled, stop = start_thread("Pen", dev, state, dispatcher)
 

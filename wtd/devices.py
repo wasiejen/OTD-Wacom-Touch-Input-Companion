@@ -5,7 +5,7 @@ import hid
 import time
 import threading
 import re
-from wtd.config import (DEBUG, config, device_identity_hash, resolve_device_alias)
+from wtd.config import (DEBUG, device_identity_hash, resolve_device_alias)
 from wtd.protocol import (BUTTON_REPORT_ID, BUTTON_REPORT_LENGTH, IDLE_BACKOFF_MIN_SECONDS, IDLE_POLL_SECONDS, PEN_REPORT_LENGTH, SHUTDOWN_JOIN_BUDGET_SECONDS, parse_pen_packet, pen_specs_for_product)
 from wtd.sender import (ActionDispatcher)
 from wtd.mapping import (process_pen_report)
@@ -173,7 +173,7 @@ class DeviceManagerThread(threading.Thread):
     PRODUCT_IDS = [132, 791, 789, 788]
     WIRELESS_PRODUCT_STRING = "Wacom Wireless Receiver"
 
-    def __init__(self, enabled_event, stop_event, prefer_wireless=False, poll_interval=3.0, base_config=None):
+    def __init__(self, enabled_event, stop_event, base_config, prefer_wireless=False, poll_interval=3.0):
         super().__init__(daemon=True)
         self.touch_enabled_event = enabled_event
         self.stop_event = stop_event
@@ -181,7 +181,7 @@ class DeviceManagerThread(threading.Thread):
         self.poll_interval = poll_interval
         self.lock = threading.Lock()
         # Global settings source; connections fork their own instance from it.
-        self.base_config = base_config if base_config is not None else config
+        self.base_config = base_config  # C1: required - no global fallback
         
         # State tracking: path -> info dict
         # Structure per connected pair: 

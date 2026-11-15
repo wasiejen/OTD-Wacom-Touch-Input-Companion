@@ -236,7 +236,7 @@ def test_dispatcher_without_cfg_falls_back_to_module_config(monkeypatch, tmp_pat
     monkeypatch.chdir(tmp_path)
     import touch_controller
     monkeypatch.setattr(touch_controller, "config", DriverConfig())
-    dispatcher = ActionDispatcher(TabletState())
+    dispatcher = ActionDispatcher(TabletState(), DriverConfig())
 
     dispatcher.dispatch_gesture_event("2f_tap")
 

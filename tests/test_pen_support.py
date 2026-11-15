@@ -60,7 +60,7 @@ def state():
 
 @pytest.fixture
 def dispatcher(state):
-    return ActionDispatcher(state)
+    return ActionDispatcher(state, DriverConfig())
 
 
 def process(report, state, dispatcher, config):
@@ -546,7 +546,7 @@ def test_wireless_thread_resolves_the_size_from_config(fake_hid, stub_send_input
     dev = FakeDevice(reports=[build_pen_report(0xE0, x=100, y=100)])
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     enabled = threading.Event()
     enabled.set()
     stop = threading.Event()
@@ -596,7 +596,7 @@ def test_pen_thread_processes_full_report_and_logs_init_note(fake_hid, stub_send
     dev = FakeDevice(reports=[build_pen_report(0xE0, x=1000, y=1000, pressure=100)])
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     enabled = threading.Event()
     enabled.set()
     stop = threading.Event()

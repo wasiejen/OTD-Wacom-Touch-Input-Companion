@@ -215,7 +215,7 @@ def test_shutdown_stop_event_releases_held_modifier_in_join_window(fake_hid,
     below pins that missing joiner.
     """
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     dispatcher.press_key("ctrl")
     stub_send_input.clear()
 
@@ -243,7 +243,7 @@ def test_shutdown_stop_event_releases_left_button_in_join_window(fake_hid,
     system-wide.
     """
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     dispatcher.handle_left_hold()
     stub_send_input.clear()
 
@@ -649,7 +649,7 @@ def test_two_sequential_reader_exits_release_the_modifier_once(fake_hid,
     pins the once-only claim when the two exits overlap.
     """
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     dispatcher.press_key("ctrl")
     stub_send_input.clear()
 
@@ -705,7 +705,7 @@ def test_concurrent_reader_exits_release_the_modifier_once(fake_hid,
     what the ups == 1 assert pins.
     """
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     dispatcher.press_key("ctrl")
     stub_send_input.clear()
 

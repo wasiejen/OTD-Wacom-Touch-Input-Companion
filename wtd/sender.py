@@ -4,7 +4,7 @@ emits them, moved from touch_controller."""
 import threading
 import ctypes
 from vk_codes import vk_codes_dict  # Import vk_code dictionary
-from wtd.config import (DEBUG, TOUCH_MODIFIER_KEYS, TOUCH_NO_ACTION, config)
+from wtd.config import (DEBUG, TOUCH_MODIFIER_KEYS, TOUCH_NO_ACTION)
 from wtd._log import logger as _log  # shared wtd logger (see wtd/_log.py)
 
 
@@ -99,7 +99,7 @@ class ActionDispatcher():
         "middle_click": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
     }
 
-    def __init__(self, state, cfg=None):
+    def __init__(self, state, cfg):
         self.state = state
         # Per-connection config instance (U73); None keeps the module config.
         self.config = cfg
@@ -447,7 +447,7 @@ class ActionDispatcher():
             _log.info(f"[Warning] Unknown action name: {action_name}")
 
     def dispatch_gesture_event(self, event_type):
-        cfg = self.config if self.config is not None else config
+        cfg = self.config  # C1: cfg is required - no global fallback
         if cfg.feature_toggles.get(event_type, False):
             mapping = cfg.action_mapping.get(event_type, None)
             if callable(mapping):

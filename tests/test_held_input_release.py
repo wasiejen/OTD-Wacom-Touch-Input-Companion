@@ -18,7 +18,7 @@ from conftest import ExplodingDevice, FakeDevice
 @pytest.fixture
 def dispatcher(stub_send_input):
     state = TabletState()
-    return ActionDispatcher(state), stub_send_input
+    return ActionDispatcher(state, DriverConfig()), stub_send_input
 
 
 def key_events(events):
@@ -90,7 +90,7 @@ def test_release_covers_both_held_classes(dispatcher):
 
 def test_thread_exit_on_oserror_releases_ctrl(fake_hid, stub_send_input):
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
     ad.press_key("ctrl")
 
     dev = ExplodingDevice()
@@ -111,7 +111,7 @@ def test_thread_exit_on_oserror_releases_ctrl(fake_hid, stub_send_input):
 
 def test_thread_exit_on_oserror_releases_left_button(fake_hid, stub_send_input):
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
     ad.handle_left_hold()
 
     dev = ExplodingDevice()

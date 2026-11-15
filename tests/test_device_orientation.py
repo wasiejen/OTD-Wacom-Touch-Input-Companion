@@ -65,7 +65,7 @@ def state():
 
 @pytest.fixture
 def dispatcher(state):
-    return ActionDispatcher(state)
+    return ActionDispatcher(state, DriverConfig())
 
 
 # --- rotation core -----------------------------------------------------------

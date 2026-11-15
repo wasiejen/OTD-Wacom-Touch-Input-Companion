@@ -12,6 +12,7 @@ import touch_controller
 from touch_controller import (
     ActionDispatcher,
     DeviceManagerThread,
+    DriverConfig,
     TabletState,
     calculate_piecewise_accelerated_delta,
     compute_centroid_and_spread,
@@ -28,7 +29,7 @@ def config(monkeypatch, tmp_path):
 
 @pytest.fixture
 def device_manager():
-    return DeviceManagerThread(threading.Event(), threading.Event())
+    return DeviceManagerThread(threading.Event(), threading.Event(), DriverConfig())
 
 
 def test_parse_sub_block_rejects_short_block():
@@ -148,20 +149,20 @@ def test_enumerate_ignores_incomplete_pairs(device_manager, monkeypatch):
 
 
 def test_unknown_action_warns(stub_send_input, capsys):
-    ad = ActionDispatcher(TabletState())
+    ad = ActionDispatcher(TabletState(), DriverConfig())
     ad.execute_mapped_action("does_not_exist")
     assert "Unknown action name" in capsys.readouterr().out
 
 
 def test_none_action_is_silent(stub_send_input, capsys):
-    ad = ActionDispatcher(TabletState())
+    ad = ActionDispatcher(TabletState(), DriverConfig())
     ad.execute_mapped_action(None)
     assert capsys.readouterr().out == ""
     assert stub_send_input == []
 
 
 def test_mapped_tap_sends_key_down_and_up(stub_send_input):
-    ad = ActionDispatcher(TabletState())
+    ad = ActionDispatcher(TabletState(), DriverConfig())
     ad.execute_mapped_action("undo")
 
     flags = ActionDispatcher
