@@ -102,10 +102,10 @@ def install_sinks():
     """Attach the named sinks to the 'wtd' logger; idempotent per name.
 
     Returns the handlers newly added by THIS call (empty when both sinks
-    are already attached, and for a file-sink path that cannot be opened
-    later: the sink opens lazily at the first emitted line, so an
-    unwritable target surfaces then as logging's own handled error, never
-    as an import-time failure).
+    are already attached; only a file-sink CONSTRUCTION failure is
+    silently skipped). Because the file sink opens lazily at the first
+    emitted line, an unwritable target surfaces then as logging's own
+    handled error, never as an import-time failure.
     """
     logger = logging.getLogger("wtd")
     had_handlers = bool(logger.handlers)

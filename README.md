@@ -123,7 +123,8 @@ The wireless add-on is one receiver (product id 132) on every tablet size, and i
 
 ### Command line options
 
-Start the driver with `python touch_controller.py [options]`:
+Start the driver with `python -m wtd [options]` (the `wtd/` package
+entry point; `python touch_controller.py` is gone):
 
 | Option | Effect |
 |---|---|
@@ -136,6 +137,14 @@ A start argument the driver does not know is a fatal error: it prints one
 argument was skipped quietly, and a misspelling such as `-wirelessize` could
 switch an option on by matching part of its name). `-h` / `--help` prints the
 available start options and exits.
+
+Every console line is mirrored to `%APPDATA%\wtd\wtd.log` (UTF-8,
+rotating at 2 MB with 2 backups), so a tray start without a console
+keeps the same grep-able log. Opt-in diagnostic line outputs (read at
+each start): `WTD_METRICS_DIAG=1` prints the one-line desktop-metrics
+readout, `WTD_PEN_MAP_DIAG=1` prints the pen absolute-mapping line once
+per change. `WTD_LOG_FILE` overrides the log-file path; it exists for
+the test harness only - unset it in your shell.
 | `--save-as <path>` | save to `<path>` while loading from `--config` |
 | `--list` | print every stored device entry (alias + identity key) and exit |
 | `--restore-with <name>` | apply one device's saved values, then re-save the live values |
