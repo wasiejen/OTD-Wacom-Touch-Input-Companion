@@ -8,16 +8,11 @@ import time
 
 import pytest
 
-import touch_controller
-from touch_controller import (
-    DriverConfig,
-    MAX_TOUCH_CONTACTS,
-    ActionDispatcher,
-    TabletState,
-    clamped_contact_index,
-    process_touch_report,
-    run_interface,
-)
+from wtd.config import DriverConfig
+from wtd.devices import run_interface
+from wtd.gestures import (TabletState, clamped_contact_index, process_touch_report)
+from wtd.protocol import MAX_TOUCH_CONTACTS
+from wtd.sender import ActionDispatcher
 
 from conftest import FakeDevice
 

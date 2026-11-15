@@ -15,14 +15,7 @@ contract locks that must stay green across the change.
 
 import pytest
 
-from touch_controller import (
-    StartArgumentError,
-    parse_start_args,
-    resolve_cli_lanes,
-    resolve_config_ladder,
-    resolve_config_paths,
-    resolve_start_lanes,
-)
+from wtd.cli import (StartArgumentError, parse_start_args, resolve_cli_lanes, resolve_config_ladder, resolve_config_paths, resolve_start_lanes)
 
 ALIAS_NOTE = ("[Start Parameter] '--save-as kitchen' used the device-alias lane "
               "- deprecated, use '--save-device kitchen'; "

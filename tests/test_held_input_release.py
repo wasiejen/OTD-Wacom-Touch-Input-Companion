@@ -8,11 +8,13 @@ import threading
 
 import pytest
 
-import touch_controller
-from touch_controller import ActionDispatcher, DriverConfig, TabletState
+from wtd.config import DriverConfig
+from wtd.gestures import TabletState
+from wtd.sender import ActionDispatcher
 from vk_codes import vk_codes_dict
 
 from conftest import ExplodingDevice, FakeDevice
+from wtd import devices
 
 
 @pytest.fixture
@@ -100,7 +102,7 @@ def test_thread_exit_on_oserror_releases_ctrl(fake_hid, stub_send_input):
     enabled.set()
     stop = threading.Event()
 
-    touch_controller.run_interface(
+    devices.run_interface(
         "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, enabled, stop,
         DriverConfig()
     )
@@ -121,7 +123,7 @@ def test_thread_exit_on_oserror_releases_left_button(fake_hid, stub_send_input):
     enabled.set()
     stop = threading.Event()
 
-    touch_controller.run_interface(
+    devices.run_interface(
         "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, enabled, stop,
         DriverConfig()
     )
@@ -145,7 +147,7 @@ def test_run_interface_calls_release_held_inputs_on_exit(fake_hid):
     stop = threading.Event()
     stop.set()
 
-    touch_controller.run_interface(
+    devices.run_interface(
         "Touch", {"interface_number": 1, "path": b"fake"}, TabletState(),
         RecordingDispatcher(), enabled, stop, DriverConfig()
     )

@@ -14,14 +14,10 @@ RED-before 9914c83: ImportError on PEN_MODES / resolved_pen_mode.
 
 import pytest
 
-from touch_controller import (
-    PEN_MODES,
-    ActionDispatcher,
-    DriverConfig,
-    TabletState,
-    resolved_pen_mode,
-    update_pen_cursor,
-)
+from wtd.config import (PEN_MODES, DriverConfig, resolved_pen_mode)
+from wtd.gestures import TabletState
+from wtd.mapping import update_pen_cursor
+from wtd.sender import ActionDispatcher
 
 ABS_FLAGS = 0x0001 | 0x8000 | 0x4000
 
@@ -119,7 +115,7 @@ def test_mode_switch_applies_live_no_restart(cfg, stub_send_input):
 def test_mode_switch_does_not_touch_the_stored_rect(cfg, monkeypatch):
     # Ruling 3: leaving rect_1to1 keeps the rect (inactive, instantly
     # re-usable). Identity/display state irrelevant here - lane data only.
-    from touch_controller import display_key_for_records
+    from wtd.mapping import display_key_for_records
     records = ["\\\\.\\DISPLAY1|0|0|3440x1440"]
     cfg.set_pen_area_entry("0123456789ab", display_key_for_records(records),
                            records, [0.1, 0.1, 0.5, 0.5])

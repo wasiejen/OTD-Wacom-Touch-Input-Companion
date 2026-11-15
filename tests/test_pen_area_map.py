@@ -19,13 +19,9 @@ import json
 
 import pytest
 
-from touch_controller import (
-    DriverConfig,
-    PEN_AREA_MAP_PREFIX,
-    current_pen_area_entry,
-    display_key_for_records,
-    select_pen_area_entry,
-)
+from wtd.config import (DriverConfig, PEN_AREA_MAP_PREFIX)
+from wtd.mapping import (current_pen_area_entry, display_key_for_records, select_pen_area_entry)
+from wtd import mapping
 
 IDENTITY = "0123456789ab"
 KEY_A = "a" * 40
@@ -163,14 +159,14 @@ def test_display_key_digest_is_sorted_join_full_sha1():
 def test_current_entry_falls_back_when_enumeration_fails(cfg, monkeypatch):
     cfg.set_pen_area_entry(IDENTITY, display_key_for_records(MONITORS_A),
                            MONITORS_A, RECT_FRAC_A)
-    monkeypatch.setattr("touch_controller.monitor_records", lambda: [])
+    monkeypatch.setattr("wtd.mapping.monitor_records", lambda: [])
     assert current_pen_area_entry(cfg, IDENTITY) is None
 
 
 def test_current_entry_selected_for_matching_records(cfg, monkeypatch):
     key = display_key_for_records(MONITORS_A)
     cfg.set_pen_area_entry(IDENTITY, key, MONITORS_A, RECT_FRAC_A)
-    monkeypatch.setattr("touch_controller.monitor_records", lambda: list(MONITORS_A))
+    monkeypatch.setattr("wtd.mapping.monitor_records", lambda: list(MONITORS_A))
     assert current_pen_area_entry(cfg, IDENTITY) == _entry(key, MONITORS_A, RECT_FRAC_A)
 
 

@@ -19,7 +19,8 @@ from gui import (
     resolve_drawing_size,
     tablet_pictogram_layout,
 )
-from touch_controller import PEN_SPECS_BY_PRODUCT, WIRELESS_TABLET_SIZES
+from wtd.config import WIRELESS_TABLET_SIZES
+from wtd.protocol import PEN_SPECS_BY_PRODUCT
 
 # Digitizer sizes the drawing mirrors (PEN_SPECS mm), keyed by size name.
 SPEC_BY_SIZE = {"small": 788, "medium": 789, "large": 791}
@@ -75,7 +76,7 @@ def test_layout_pen_area_rect_inside_frame_matching_digitizer():
 
 
 def test_layout_pen_area_and_buttons_rotate_with_the_angle():
-    from touch_controller import rotate_point
+    from wtd.mapping import rotate_point
     zero = tablet_pictogram_layout(0)
     quarter = tablet_pictogram_layout(90)
     for corner, rotated in zip(zero["pen_area"], quarter["pen_area"]):
@@ -287,7 +288,7 @@ def test_all_key_circles_stay_inside_the_body_outline():
 
 @pytest.mark.parametrize("degrees", (0, 90, 180, 270))
 def test_layout_seam_endpoints_rotate_with_the_angle(degrees):
-    from touch_controller import rotate_point
+    from wtd.mapping import rotate_point
     layout = _medium_layout(degrees)
     drawing = TABLET_DRAWINGS["medium"]
     half_w, half_h = drawing["body_mm"][0] / 2, drawing["body_mm"][1] / 2

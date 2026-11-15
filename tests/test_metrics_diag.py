@@ -12,13 +12,12 @@ import sys
 import pytest
 
 import touch_controller
-from touch_controller import (
-    METRICS_DIAG_ENV,
-    log_metrics_diagnostic,
-    metrics_diag_enabled,
-    metrics_readout_line,
-    union_rect_from_records,
-)
+from wtd.config import union_rect_from_records
+from wtd.mapping import (METRICS_DIAG_ENV, log_metrics_diagnostic, metrics_diag_enabled, metrics_readout_line)
+from wtd import cli
+import ctypes
+from wtd import devices
+from wtd import mapping
 
 RECORDS_DUO = ["\\\\.\\DISPLAY1|0|0|3440x1440", "\\\\.\\DISPLAY2|3440|0|1440x2560"]
 
@@ -34,7 +33,7 @@ def windll_table(monkeypatch):
                 raise value
             return value
 
-        monkeypatch.setattr(touch_controller.ctypes.windll.user32,
+        monkeypatch.setattr(ctypes.windll.user32,
                             "GetSystemMetrics", fake)
         return table
 
@@ -52,7 +51,7 @@ def test_default_off_prints_nothing(windll_table, monkeypatch, capsys):
     # Control pin: without the env the startup hook emits no line even when
     # the metric reads succeed (no behavior change for normal users).
     windll_table({76: 0, 77: 0, 7: 3440, 8: 1440, 2: 2})
-    monkeypatch.setattr(touch_controller, "monitor_records", lambda: list(RECORDS_DUO))
+    monkeypatch.setattr(mapping, "monitor_records", lambda: list(RECORDS_DUO))
     monkeypatch.delenv(METRICS_DIAG_ENV, raising=False)
     log_metrics_diagnostic()
     assert capsys.readouterr().out == ""
@@ -64,7 +63,7 @@ def test_readout_line_is_byte_exact_with_junk_pass_through(windll_table, monkeyp
     # return junk 0 while SM_CMONITORS answers 17. Values pass through
     # unsanitized; the union comes from the monitor records.
     windll_table({76: 0, 77: 0, 7: 0, 8: 0, 2: 17})
-    monkeypatch.setattr(touch_controller, "monitor_records", lambda: list(RECORDS_DUO))
+    monkeypatch.setattr(mapping, "monitor_records", lambda: list(RECORDS_DUO))
     monkeypatch.setenv(METRICS_DIAG_ENV, "1")
     log_metrics_diagnostic()
     assert capsys.readouterr().out == (
@@ -76,7 +75,7 @@ def test_readout_line_is_byte_exact_with_junk_pass_through(windll_table, monkeyp
 def test_readout_names_exceptions_as_none(windll_table, monkeypatch):
     boom = OSError("no metrics")
     table = windll_table({76: boom, 77: 0, 7: 3, 8: 3, 2: 1})
-    monkeypatch.setattr(touch_controller, "monitor_records", lambda: [])
+    monkeypatch.setattr(mapping, "monitor_records", lambda: [])
     line = metrics_readout_line()
     assert "SM_XVIRTUALSCREEN=None" in line
     assert "SM_CXVIRTUALSCREEN=3 SM_CYVIRTUALSCREEN=3" in line
@@ -87,20 +86,20 @@ def test_startup_main_wires_the_readout(windll_table, monkeypatch, capsys, tmp_p
     # U412 STEP-1 P2-1: pin the main() startup hook (a mutation deleting the
     # log_metrics_diagnostic() call must fail here, not ship green).
     windll_table({76: 0, 77: 0, 7: 0, 8: 0, 2: 17})
-    monkeypatch.setattr(touch_controller, "monitor_records", lambda: list(RECORDS_DUO))
+    monkeypatch.setattr(mapping, "monitor_records", lambda: list(RECORDS_DUO))
     monkeypatch.setenv(METRICS_DIAG_ENV, "1")
     class _BoomManager:
         def __init__(self, *args, **kwargs):
             raise RuntimeError("stop after the readout")
 
-    monkeypatch.setattr(touch_controller, "DeviceManagerThread", _BoomManager)
+    monkeypatch.setattr(cli, "DeviceManagerThread", _BoomManager)
     monkeypatch.chdir(tmp_path)
     # A clean start line: main() parses argv strictly since unit B2, and this pin
     # is about the startup hook, not about the command line.
     monkeypatch.setattr(sys, "argv", ["touch_controller.py"])
     capsys.readouterr()
     try:
-        touch_controller.main()
+        cli.main()
     except Exception:
         pass  # stubbed-lane failure after the readout is irrelevant here
     out = capsys.readouterr().out

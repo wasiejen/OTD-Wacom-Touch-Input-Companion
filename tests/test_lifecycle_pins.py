@@ -50,17 +50,16 @@ import types
 import pytest
 
 import touch_controller
-from touch_controller import (
-    ActionDispatcher,
-    DeviceManagerThread,
-    DriverConfig,
-    TabletState,
-    run_interface,
-)
+from wtd.config import DriverConfig
+from wtd.devices import (DeviceManagerThread, run_interface)
+from wtd.gestures import TabletState
+from wtd.sender import ActionDispatcher
 import gui
 from vk_codes import vk_codes_dict
 
 from conftest import PlainDevice, SignalDevice
+from wtd import cli
+from wtd import config
 
 JOIN_WINDOW_SECONDS = 1.0
 EVENT_WAIT_SECONDS = 2.0
@@ -265,7 +264,7 @@ def test_shutdown_stop_event_releases_left_button_in_join_window(fake_hid,
 
 
 def drive_main(fake_hid, monkeypatch, tmp_path, devices, on_launch=None):
-    """Run touch_controller.main() device-free over the given fake devices.
+    """Run cli.main() device-free over the given fake devices.
 
     argv, the module config and the gui import are patched; the stub GUI closes
     as soon as it is launched. At that moment every device is handed the
@@ -277,7 +276,7 @@ def drive_main(fake_hid, monkeypatch, tmp_path, devices, on_launch=None):
     """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["touch_controller.py"])
-    monkeypatch.setattr(touch_controller, "config", DriverConfig())
+    monkeypatch.setattr(cli, "config", DriverConfig())
     fake_hid.enumerate = lambda: wired_pair(789, "VID_056A&PID_0315")
     fake_hid._queue.extend(devices)
 
@@ -297,7 +296,7 @@ def drive_main(fake_hid, monkeypatch, tmp_path, devices, on_launch=None):
     monkeypatch.setitem(sys.modules, "gui", gui_stub)
 
     started = time.monotonic()
-    touch_controller.main()
+    cli.main()
     return time.monotonic() - started
 
 
@@ -796,7 +795,7 @@ def test_primary_connection_binds_the_first_enumerated_device(fake_hid):
         assert primary["product_id"] == 789, (
             "primary bind did not follow enumeration order: got product_id "
             f"{primary['product_id']}")
-        assert primary["identity"] == touch_controller.device_identity_hash(
+        assert primary["identity"] == config.device_identity_hash(
             b"HID#VID_056A&PID_0315&MI_00", "")
 
         state, action = manager.get_primary_state_and_action()

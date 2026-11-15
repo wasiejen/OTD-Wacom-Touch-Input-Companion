@@ -17,16 +17,11 @@ import json
 
 import pytest
 
-from touch_controller import (
-    ActionDispatcher,
-    BUTTON_TOUCH_MASKS,
-    DriverConfig,
-    TabletState,
-    TOUCH_ACTION_CHOICES,
-    TOUCH_CONTROL_KEYS,
-    TOUCH_NO_ACTION,
-    process_button_report,
-)
+from wtd.config import (DriverConfig, TOUCH_ACTION_CHOICES, TOUCH_CONTROL_KEYS, TOUCH_NO_ACTION)
+from wtd.gestures import (TabletState, process_button_report)
+from wtd.protocol import BUTTON_TOUCH_MASKS
+from wtd.sender import ActionDispatcher
+from wtd import config
 
 VK_CTRL = 162
 VK_SHIFT = 160

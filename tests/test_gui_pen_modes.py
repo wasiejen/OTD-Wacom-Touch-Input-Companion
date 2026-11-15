@@ -17,8 +17,10 @@ import tkinter as tk
 import pytest
 
 import gui
-import touch_controller
-from touch_controller import DriverConfig, TabletState, resolved_pen_mode
+from wtd.config import DriverConfig, resolved_pen_mode
+from wtd.gestures import TabletState
+from wtd.protocol import pen_specs_for_product
+from wtd.protocol import pen_specs_for_product
 
 SCREEN = (0, 0, 3440, 1440)
 DISP1 = "\\\\.\\DISPLAY1|0|0|1920x1080"
@@ -136,7 +138,7 @@ def test_numeric_fields_bidirectional_aspect_locked(modes_cfg, tk_root, monkeypa
 
 
 def test_numeric_fields_echo_the_stored_rect_on_open(modes_cfg, tk_root, monkeypatch, tmp_path):
-    from touch_controller import display_key_for_records
+    from wtd.mapping import display_key_for_records
     modes_cfg.set_pen_area_entry("0123456789ab",
                                  display_key_for_records([DISP1, DISP2]),
                                  [DISP1, DISP2],
@@ -362,7 +364,7 @@ def test_apply_writes_the_rect_entry_like_other_settings(modes_cfg, tk_root, mon
 def test_orientation_apply_reorients_editor_box_not_the_footprint(
         modes_cfg, tk_root, monkeypatch, tmp_path):
     # RED-before c8189e8: box stayed the 0-deg layout after applying 90.
-    from touch_controller import pen_specs_for_product, rotated_pen_box_mm
+    from wtd.mapping import rotated_pen_box_mm
     win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
     model = win.pen_area_editor.model
     specs = pen_specs_for_product(791, modes_cfg)
@@ -399,7 +401,7 @@ def test_orientation_reorients_the_drawn_rect_shape_no_pointer(
     # U424r5 R5-E (#424 item E): SHAPE follows orientation (watch
     # resolved - pen-wins presentation accepted, now the shape pushes).
     # RED-before 3e20f3a: rect aspect stayed 0-deg until a handle grab.
-    from touch_controller import rotated_pen_box_mm
+    from wtd.mapping import rotated_pen_box_mm
     win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
     model = win.pen_area_editor.model
     model.apply_scale(2.0)  # a sensitivity that FITS both orientations
@@ -424,7 +426,7 @@ def test_orientation_apply_then_reload_keeps_the_new_shape(
     # Apply Live persists the re-derived shape; a fresh window (reload)
     # shows the same shape - and a legacy mismatched stored rect is
     # re-derived at BUILD time too (canvas-only until next Apply).
-    from touch_controller import display_key_for_records, rotated_pen_box_mm
+    from wtd.mapping import display_key_for_records, rotated_pen_box_mm
     modes_cfg.set_pen_area_entry(
         "0123456789ab", display_key_for_records([DISP1, DISP2]),
         [DISP1, DISP2],
@@ -444,12 +446,12 @@ def test_orientation_apply_then_reload_keeps_the_new_shape(
 
 
 def pen_specs_for(product_id, cfg):
-    from touch_controller import pen_specs_for_product
+    from wtd.protocol import pen_specs_for_product
     return pen_specs_for_product(product_id, cfg)
 
 
 def test_editor_built_after_orientation_shows_rotated_box(modes_cfg, tk_root, monkeypatch, tmp_path):
-    from touch_controller import pen_specs_for_product, rotated_pen_box_mm
+    from wtd.mapping import rotated_pen_box_mm
     modes_cfg.orientation_degrees = 180
     win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
     specs = pen_specs_for_product(791, modes_cfg)

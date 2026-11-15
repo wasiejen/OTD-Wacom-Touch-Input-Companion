@@ -5,7 +5,8 @@ Pure JSON handling: tmp_path files only, no device, no GUI.
 
 import json
 
-from touch_controller import DriverConfig, resolve_config_paths
+from wtd.cli import resolve_config_paths
+from wtd.config import DriverConfig
 
 
 def fresh_config(monkeypatch, tmp_path):

@@ -5,7 +5,8 @@ Pure selection plus one fake-hid enumeration check; no real device.
 
 import threading
 
-from touch_controller import DeviceManagerThread, DriverConfig, select_active_device_pairs
+from wtd.config import DriverConfig
+from wtd.devices import DeviceManagerThread, select_active_device_pairs
 
 
 def make_pair(dev_id, wireless):

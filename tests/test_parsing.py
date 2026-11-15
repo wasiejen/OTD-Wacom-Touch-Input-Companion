@@ -8,23 +8,20 @@ import threading
 
 import pytest
 
-import touch_controller
-from touch_controller import (
-    ActionDispatcher,
-    DeviceManagerThread,
-    DriverConfig,
-    TabletState,
-    calculate_piecewise_accelerated_delta,
-    compute_centroid_and_spread,
-    parse_sub_block,
-)
+from wtd.config import DriverConfig
+from wtd.devices import DeviceManagerThread
+from wtd.gestures import (TabletState, calculate_piecewise_accelerated_delta, compute_centroid_and_spread)
+from wtd.protocol import parse_sub_block
+from wtd.sender import ActionDispatcher
 from vk_codes import vk_codes_dict
+from wtd import config as wtd_config
+from wtd import devices as wtd_devices
 
 
 @pytest.fixture
 def config(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    return touch_controller.DriverConfig()
+    return wtd_config.DriverConfig()
 
 
 @pytest.fixture
@@ -114,7 +111,7 @@ def test_enumerate_pairs_wired_interfaces(device_manager, monkeypatch):
          "path": b"base&MI_01", "interface_number": 1},
     ]
     fake = types_module(devices)
-    monkeypatch.setattr(touch_controller, "hid", fake)
+    monkeypatch.setattr(wtd_devices, "hid", fake)
 
     paired = device_manager.enumerate_wacom_devices()
 
@@ -131,7 +128,7 @@ def test_enumerate_pairs_wireless_interfaces(device_manager, monkeypatch):
          "path": b"base&MI_02", "interface_number": 2},
     ]
     fake = types_module(devices)
-    monkeypatch.setattr(touch_controller, "hid", fake)
+    monkeypatch.setattr(wtd_devices, "hid", fake)
 
     paired = device_manager.enumerate_wacom_devices()
 
@@ -144,7 +141,7 @@ def test_enumerate_ignores_incomplete_pairs(device_manager, monkeypatch):
         {"vendor_id": 0x056A, "product_id": 132, "product_string": "Wacom Tablet",
          "path": b"base&MI_00", "interface_number": 0},
     ]
-    monkeypatch.setattr(touch_controller, "hid", types_module(devices))
+    monkeypatch.setattr(wtd_devices, "hid", types_module(devices))
     assert device_manager.enumerate_wacom_devices() == []
 
 

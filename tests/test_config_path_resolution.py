@@ -22,13 +22,9 @@ import sys
 
 import pytest
 
-from touch_controller import (
-    APPDATA_DIR_NAME,
-    CONFIG_FILE_PATH,
-    DriverConfig,
-    appdata_config_path,
-    resolve_config_paths,
-)
+from wtd.cli import resolve_config_paths
+from wtd.config import (APPDATA_DIR_NAME, CONFIG_FILE_PATH, DriverConfig, appdata_config_path)
+from wtd import config
 
 APPDATA = "P:/profile/wtd/user.cfg"
 
@@ -145,11 +141,12 @@ def test_importing_the_product_reads_no_config_file(tmp_path):
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     code = (
         "import contextlib, io\n"
+        "from wtd import config\n"
         "buf = io.StringIO()\n"
         "with contextlib.redirect_stdout(buf):\n"
-        "    import touch_controller\n"
+        "    import wtd.cli\n"
         "print('IMPORT_OUT<' + buf.getvalue() + '>')\n"
-        "print('LANE', touch_controller.config.config_path)\n"
+        "print('LANE', config.config.config_path)\n"
     )
     env = dict(os.environ)
     env["PYTHONPATH"] = root + os.pathsep + env.get("PYTHONPATH", "")

@@ -12,7 +12,8 @@ import tkinter as tk
 import pytest
 
 import gui
-from touch_controller import DriverConfig, TabletState, TOUCH_ACTION_CHOICES
+from wtd.config import DriverConfig, TOUCH_ACTION_CHOICES
+from wtd.gestures import TabletState
 
 CONSTRUCTED = []
 

@@ -5,7 +5,9 @@ SendInput is stubbed; no device and no real input injection.
 
 import pytest
 
-from touch_controller import ActionDispatcher, DriverConfig, TabletState
+from wtd.config import DriverConfig
+from wtd.gestures import TabletState
+from wtd.sender import ActionDispatcher
 
 
 @pytest.fixture

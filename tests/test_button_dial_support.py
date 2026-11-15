@@ -13,20 +13,13 @@ import pytest
 
 from conftest import PlainDevice
 
-import touch_controller
-from touch_controller import (
-    ActionDispatcher,
-    BUTTON_CENTRAL_MASK,
-    BUTTON_PRESS_MASKS,
-    CENTRAL_BUTTON_SLOT,
-    DIAL_ANGLE_RANGE,
-    DeviceManagerThread,
-    DriverConfig,
-    TabletState,
-    decode_button_report,
-    dial_angle_delta,
-    process_button_report,
-)
+from wtd.config import DriverConfig
+from wtd.devices import DeviceManagerThread
+from wtd.gestures import (TabletState, process_button_report)
+from wtd.protocol import (BUTTON_CENTRAL_MASK, BUTTON_PRESS_MASKS, CENTRAL_BUTTON_SLOT, DIAL_ANGLE_RANGE, decode_button_report, dial_angle_delta)
+from wtd.sender import ActionDispatcher
+from wtd import config
+from wtd import devices
 
 BTN_KEYS = [f"btn{n}_press" for n in range(1, 9)] + ["central_press"]
 DIAL_KEYS = ["dial_cw", "dial_ccw"]
@@ -343,7 +336,7 @@ def test_buttons_thread_processes_report_and_releases_on_exit(fake_hid, stub_sen
     stop = threading.Event()
 
     thread = threading.Thread(
-        target=touch_controller.run_interface,
+        target=devices.run_interface,
         args=("Buttons", {"interface_number": 2, "path": b"fake-path"},
               state, dispatcher, enabled, stop),
         # cfg is required since unit B2 (no module-global fallback).

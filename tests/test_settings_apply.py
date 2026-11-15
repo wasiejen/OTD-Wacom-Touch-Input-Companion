@@ -10,7 +10,8 @@ import types
 import pytest
 
 import gui
-from touch_controller import DriverConfig
+from wtd.config import DriverConfig
+from wtd import config
 
 
 class FakeEntry:
