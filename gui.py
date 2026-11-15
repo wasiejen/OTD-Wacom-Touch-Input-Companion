@@ -6,9 +6,10 @@ from PIL import Image, ImageDraw, ImageFont
 import pystray
 from pystray import MenuItem as item
 
-from wtd.config import (ORIENTATION_MAX_DEGREES, TOUCH_ACTION_CHOICES, WIRELESS_RECEIVER_PRODUCT_ID, WIRELESS_TABLET_SIZES, resolved_pen_mode, snapshot_device_sections, union_rect_from_records, PEN_MODES)
+from wtd.config import (DEVICE_SECTION_KEYS, ORIENTATION_MAX_DEGREES, TOUCH_ACTION_CHOICES, WIRELESS_RECEIVER_PRODUCT_ID, WIRELESS_TABLET_SIZES, resolved_pen_mode, snapshot_device_sections, union_rect_from_records, PEN_MODES)
 from wtd.mapping import (display_key_for_records, monitor_records, pen_area_rect_aspect_lock, pen_mm_per_px, reset_pen_area_key_cache, rotate_point, rotated_pen_box_mm, select_pen_area_entry, virtual_desktop_dpi, virtual_desktop_metrics)
 from wtd.protocol import (pen_specs_for_product, PEN_SPECS_BY_PRODUCT)
+from wtd._log import logger as _log
 from wtd import config
 
 # Wireless tablet size GUI lane (U386 / TODO #385). The combo offers the
@@ -1014,6 +1015,27 @@ class SettingsWindow(tk.Toplevel):
                                 command=self.save_to_focused_device)
         device_btn.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
+        # D1 (ruling R4-a): identity-entry-wins stays the config rule; this
+        # hint states WHICH sections the focused device overrides right now,
+        # computed from the base config on every focus/apply/save refresh.
+        self.identity_hint_label = ttk.Label(frame, text="", wraplength=400,
+                                             justify="left")
+        self.identity_hint_label.grid(row=5, column=0, columnspan=4, sticky="w",
+                                      pady=(6, 0))
+        self._refresh_identity_hint()
+
+        # D1: restore-to-defaults removes the focused device identity entry
+        # (config values only; geometry and naming lanes stay, pen_area_maps
+        # untouched) and re-forks the live connection from base.
+        self.reset_defaults_btn = ttk.Button(
+            frame, text="Restore to Defaults",
+            command=self.reset_focused_device_defaults)
+        self.reset_defaults_btn.grid(row=6, column=2, sticky="w", pady=(8, 0))
+        ToolTip(self.reset_defaults_btn, "Clear this device identity entry "
+                  "overrides (config values only: pen area maps and aliases "
+                  "are NOT touched) and re-apply global values live; the file "
+                  "takes the change on the next save.")
+
         # U424r3 R3-L5 (#424 item 5): the wireless size lane lives HERE,
         # inside Focused Device, visible only for the receiver (id 132).
         self._build_wireless_lane(frame)
@@ -1168,6 +1190,10 @@ class SettingsWindow(tk.Toplevel):
         self.alias_entry.insert(0, conn.get("alias") or "")
         self.device_label.configure(text=device_display_name(conn))
         self._rebind_config_widgets()
+        # Duck-typed rebind harnesses (FakeDeviceWindow) carry no hint.
+        refresh_hint = getattr(self, "_refresh_identity_hint", None)
+        if refresh_hint is not None:
+            refresh_hint()
         # U424r3 R3-L5: dynamic lane on focus change; duck-typed rebind
         # harnesses (FakeDeviceWindow) carry neither the lane nor the sync.
         sync_lane = getattr(self, "_sync_wireless_lane", None)
@@ -2081,6 +2107,10 @@ class SettingsWindow(tk.Toplevel):
         if write_through is not None:
             write_through()
 
+        # D1 hint stays honest: Apply/Save routes can create the entry.
+        refresh_hint = getattr(self, "_refresh_identity_hint", None)
+        if refresh_hint is not None:
+            refresh_hint()
         ToastNotification(self, "Success", "Settings applied directly to driver!", timeout_ms=1500)
         return True
 
@@ -2113,6 +2143,95 @@ class SettingsWindow(tk.Toplevel):
         base.set_device_identity_settings(
             identity, collect_config_sections(conn["config"], DEVICE_TRANSFER_SECTIONS))
         return "written"
+
+    def _focused_identity_override_sections(self):
+        """D1 hint data: the config sections the focused identity overrides NOW.
+
+        Computed from the base config on every call (never remembered), so the
+        hint cannot drift from what the next fork actually applies.
+        """
+        device_info = getattr(self, "device_info", None) or {}
+        conn = device_info.get("connection") or {}
+        base = device_info.get("base_config")
+        identity = conn.get("identity")
+        if base is None or identity is None:
+            return ()
+        entry = base.device_settings.get(identity) or {}
+        return tuple(sorted(name for name in DEVICE_SECTION_KEYS
+                                  if name in entry))
+
+    def _refresh_identity_hint(self):
+        """D1 hint: which identity-entry overrides are active for the focus."""
+        label = getattr(self, "identity_hint_label", None)
+        if label is None:
+            return
+        sections = self._focused_identity_override_sections()
+        if sections:
+            text = "Device-specific values active: " + ", ".join(sections)
+        else:
+            text = "Device-specific values active: (none)"
+        label.configure(text=text)
+
+    def reset_focused_device_defaults(self):
+        """D1: clear the focused device identity entry (config values only).
+
+        Pen area maps (geometry) and device aliases (naming) are separate
+        lanes and are never touched. The live connection re-forks from the
+        base config IN PLACE, so the running readers keep going and resolve
+        global values immediately (the pen-mode #424-ruling-3 live shape);
+        the on-file state takes the removal at the next Save like any
+        config change - the global file is not rewritten here.
+        """
+        device_info = getattr(self, "device_info", None) or {}
+        conn = device_info.get("connection")
+        if conn is None:
+            messagebox.showerror(
+                "No Device Focused",
+                "Wake the device and pick it in the device list first.")
+            return False
+        base = device_info.get("base_config")
+        if base is None:
+            messagebox.showerror(
+                "No Base Config",
+                "This window carries no base config; nothing was reset.")
+            return False
+        identity = conn.get("identity")
+        entry = (base.device_settings.get(identity) or {}) if identity else {}
+        sections = [name for name in DEVICE_SECTION_KEYS if name in entry]
+        if not sections:
+            messagebox.showinfo(
+                "Nothing to Restore",
+                "This device runs global values already; no identity entry "
+                "sections are active.")
+            return False
+        confirmed = messagebox.askyesno(
+            "Restore Device Defaults",
+            "Clear the device-specific config values: " + ", ".join(sections)
+            + "?\n\n"
+            "Config values only: pen area maps (geometry) and device aliases "
+            "(naming) are NOT touched. The global file is NOT rewritten now; "
+            "the removal takes effect on the next Save to File.")
+        if not confirmed:
+            return False
+        # Remove the entry; keep any untouched lane (pen_area_maps is a
+        # separate config map and never lives here).
+        base.device_settings.pop(identity, None)
+        # Live re-apply WITHOUT restarting readers: rebuild the fork from
+        # base (identity=None overlay) and swap fields inside the live
+        # config object, so every holder (dispatcher, reader, editor) sees
+        # global values at the next lookup.
+        fresh = base.fork_for_device(conn.get("alias"), None)
+        live_cfg = conn["config"]
+        for name, value in vars(fresh).items():
+            setattr(live_cfg, name, value)
+        live_cfg.sync_sensitivities()
+        _log.info("[Device] Restored defaults for identity "
+                  + str(identity) + " (cleared: " + ", ".join(sections) + ")")
+        self._rebind_focused_device()
+        ToastNotification(self, "Defaults Restored",
+                          f"{device_display_name(conn)} runs global values.",
+                          timeout_ms=1800)
+        return True
 
     def save_to_focused_device(self):
         """Subset save (U87 e): only the focused device's values, under its key.

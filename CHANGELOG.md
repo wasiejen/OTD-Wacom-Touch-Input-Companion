@@ -4,6 +4,23 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261115-0305:
+
+  - DEVICE RESET (estate WTD plan unit D1, ruling R4-a: identity-entry-wins
+    stays the config rule): the Focused Device section gains (a) a one-line
+    hint stating exactly which config sections the focused device overrides
+    right now - `Device-specific values active: <sections>` or `(none)` -
+    computed from the base config on every focus change and Apply/Save
+    route, never remembered; and (b) a `Restore to Defaults` button that,
+    after a confirm dialog NAMING the sections and stating the scope
+    (config values only: pen area maps and aliases untouched; the global
+    file rewritten only at the next Save), removes the focused device's
+    `device_settings[identity]` entry and re-forks the LIVE connection
+    config IN PLACE from the base config - readers and dispatchers keep
+    their object and resolve global values at the next lookup, no restart.
+    Six new headless-window pins (`tests/test_gui_device_reset.py`), incl.
+    cancel-path, multi-device, file-untouched, and pen_area_maps-survives.
+
 261115-0210:
 
   - NO-CONSOLE LOG SINK (estate WTD follow-up unit R1, finishing review
