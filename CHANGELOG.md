@@ -1,8 +1,110 @@
 # Changelog
 
-All notable changes are documented here. Entries are development timestamps
-(`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
-on GitHub mark shipped states — `v0.2.2` is the latest release.
+Release sections collect the user-facing changes per version (newest
+first). The development log below keeps the work-log entries verbatim
+(`YYMMDD-HHMM`, newest first). Release tags on GitHub mark shipped
+states: `v0.3.0` is the latest tag, `v0.4.0` is synced on `main`, and
+`v0.5.0` ships with the next tag.
+
+## v0.5.0 - 2026-11-15 (pending release tag)
+
+Reliability:
+
+- Quit no longer leaves keys pressed. The driver waits a bounded moment
+  for its input readers to finish, then force-releases every modifier key
+  or mouse button still held. The stuck-Ctrl-after-quit class of bugs is
+  gone.
+- **Apply Live** survives pause, resume, and reconnect: applied settings
+  are written through to the focused device's stored entry, and each
+  device keeps its own values. Apply still does not write your config
+  file - use **Save to File** for that.
+- One press, one release: concurrent reconnects can no longer release the
+  same held input twice (a per-dispatcher lock guards the held-input
+  registry).
+
+Configuration and command line:
+
+- One config file is picked at start, in this order: the file named by
+  `--config <path>`, else a `user.cfg` that already exists next to the
+  application, else your per-user file `%APPDATA%\wtd\user.cfg` (its
+  folder is created by the first save). Existing portable installs keep
+  working unchanged, and a fresh install needs no setup. Reading a config
+  file at code-import time is gone.
+- One strict command line: a flag the driver does not know stops the
+  start with a `[Start Parameter]` line instead of being skipped silently.
+  All legacy spellings keep working: single-dash options, `=` forms, and
+  the deprecated bare `--save-as <alias>` (it prints a notice naming
+  `--save-device`). `-h` / `--help` prints usage and exits without
+  starting the driver.
+
+Diagnostics:
+
+- Every console line is mirrored to `%APPDATA%\wtd\wtd.log` (UTF-8,
+  rotating at 2 MB with 2 backups), created on first use - a tray start
+  without a console keeps the same grep-able log.
+
+GUI:
+
+- The Focused Device section shows `Device-specific values active:
+  <sections>`: exactly which settings the focused device overrides right
+  now, recomputed on every focus change and apply/save.
+- New `Restore to Defaults` button: clears the focused device's override
+  entry after a confirm dialog naming the sections. The device runs the
+  global values immediately (no restart); pen-area maps and aliases are
+  untouched.
+
+Build and internals:
+
+- Pushing a `v*` tag builds the Windows executable in CI and attaches it
+  to the release.
+- The driver code now lives in a `wtd/` package (`python -m wtd`);
+  behavior and console output are unchanged.
+
+Test suite: 538 -> 656.
+
+## v0.4.0 - November 2026 (synced to `main`; not tagged)
+
+The v0.4.0 wave, since v0.3.0, rebuilt the pen and mapping experience:
+
+- **Tri-modal pen movement.** Three pen modes on the Pen tab: relative
+  (speed control), absolute stretched, and absolute 1:1. The stretched
+  mode reaches every screen on ultrawide and multi-monitor setups, and a
+  per-screen checkbox subset decides which screens the pen reaches.
+- **Pen-area editor with px/mm sensitivity.** A 1:1 pen-area mode maps a
+  drawn or numerically typed rectangle on the tablet surface to the
+  screen union. The canvas editor and numeric rect fields are
+  bidirectional, carry an editable px/mm sensitivity handle, and the
+  mapping answers in DPI-scaled desktop pixel space (the basis is
+  labeled in the panel). The pen area follows orientation changes on
+  Apply and rebind.
+- **Tablet buttons, dial, and touch modifiers.** The tablet buttons and
+  the dial now fire presses and rotation steps, are mappable per control,
+  and each mapped button can hold a touch modifier that temporarily
+  changes touch behavior while pressed.
+- **Wireless size lane.** The wireless receiver cannot report which
+  tablet it is paired to, so the wireless tablet size (small / medium /
+  large) is set explicitly; a loud notice names the three options while
+  unset, and an old renamed setting is migrated with a notice.
+- **Orientation support.** Pen and touch coordinates rotate with the
+  configured tablet orientation; the editor and pen area stay in sync.
+- **Mapping fixes.** Absolute pen mapping is isotropic (equal px/mm on
+  both axes) and centered, and the digitizer extents now use
+  authoritative per-model values; metric-less pen hosts reach the full
+  screen through stretch math instead of clipping.
+- **Redesigned device drawing.** The tablet pictogram in the GUI is
+  redrawn per model and size variant, fits the strip at every rotation
+  angle, and shows the pen area.
+- **Config CLI lanes.** `--list`, `--restore-with <name>`, and
+  `--save-device <alias>` maintenance lanes; the old bare-name `--save-as`
+  alias now prints a deprecation notice naming `--save-device`.
+- **Developer guard.** Running the test suite with a stray `user.cfg` in
+  the repository folder now refuses to collect instead of silently
+  reading it.
+
+## Development log
+
+Development entries, kept verbatim from the work log (`YYMMDD-HHMM`,
+newest first).
 
 261115-0305:
 
