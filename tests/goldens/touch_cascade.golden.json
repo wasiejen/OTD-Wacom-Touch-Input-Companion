@@ -4,8 +4,8 @@
     "generated_by": "tests/generate_goldens.py",
     "harness": "tests/golden_harness.py",
     "scenarios_file": "tests/golden_scenarios.json",
-    "source_commit": "93d72739cc8085ae188a6f3e6490deef0d87b42c",
-    "source_commit_subject": "Merge branch 'u-c0-golden-harness' into wtd_combined (Phase C unit C0: golden-sequence harness for the touch cascade)"
+    "source_commit": "b7aab4ec29846f9f00f3ae7d393786c40002b397",
+    "source_commit_subject": "test: re-point all 39 test modules from touch_controller to wtd (C1)"
   },
   "scenarios": {
     "1f_double_tap_drag_left_hold_release": {
