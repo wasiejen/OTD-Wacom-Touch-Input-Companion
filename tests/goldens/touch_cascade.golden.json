@@ -4,8 +4,8 @@
     "generated_by": "tests/generate_goldens.py",
     "harness": "tests/golden_harness.py",
     "scenarios_file": "tests/golden_scenarios.json",
-    "source_commit": "2a320665d8d1153ea24384a23dbd5a845bdc90ad",
-    "source_commit_subject": "docs: keep the documented dev commands runnable"
+    "source_commit": "849df51e9e75c59a1fcc2d9b23ee51d1b534981b",
+    "source_commit_subject": "tests: golden-sequence harness for the touch cascade (C0)"
   },
   "scenarios": {
     "1f_double_tap_drag_left_hold_release": {
@@ -91,9 +91,44 @@
           "dx": 15,
           "dy": 0,
           "e": "move"
+        },
+        {
+          "dx": 15,
+          "dy": 0,
+          "e": "move"
+        },
+        {
+          "dx": 15,
+          "dy": 0,
+          "e": "move"
+        },
+        {
+          "dx": 15,
+          "dy": 0,
+          "e": "move"
+        },
+        {
+          "dx": 15,
+          "dy": 0,
+          "e": "move"
+        },
+        {
+          "dx": 15,
+          "dy": 0,
+          "e": "move"
+        },
+        {
+          "dx": 16,
+          "dy": 0,
+          "e": "move"
+        },
+        {
+          "dx": 15,
+          "dy": 0,
+          "e": "move"
         }
       ],
-      "desc": "One finger slides right in 24-unit packets, then lifts: cursor-move stream, and the release skips the tap lane because drift exceeded tap_max_movement."
+      "desc": "One finger slides right in 24-unit packets over eleven packets, then lifts: cursor-move stream through the fractional cursor accumulator (the carry finally emits 16 on the last packet), and the release skips the tap lane because drift exceeded tap_max_movement."
     },
     "1f_press_hold_left_drag": {
       "actions": [
@@ -169,13 +204,23 @@
           "e": "wheel"
         },
         {
+          "axis": "y",
+          "delta": -20,
+          "e": "wheel"
+        },
+        {
+          "axis": "y",
+          "delta": -20,
+          "e": "wheel"
+        },
+        {
           "e": "key",
           "name": "ctrl",
           "up": true,
           "vk": 162
         }
       ],
-      "desc": "Two fingers pinch together 20 units per packet: ctrl latch plus negative wheel events, same activation packet behavior."
+      "desc": "Two fingers pinch together 40 units per packet: ctrl latch plus negative wheel events every packet, same activation-packet emission."
     },
     "2f_pinch_out": {
       "actions": [
@@ -191,13 +236,23 @@
           "e": "wheel"
         },
         {
+          "axis": "y",
+          "delta": 20,
+          "e": "wheel"
+        },
+        {
+          "axis": "y",
+          "delta": 20,
+          "e": "wheel"
+        },
+        {
           "e": "key",
           "name": "ctrl",
           "up": true,
           "vk": 162
         }
       ],
-      "desc": "Two fingers spread 20 units per packet: crossing pinch_activation_threshold presses ctrl once (and emits on the activation packet), then one wheel event per packet; the full lift fires the ctrl release leg."
+      "desc": "Two fingers each move 20 units outward per packet (the spread metric grows 20: it is the mean distance to the centroid): crossing pinch_activation_threshold presses ctrl once and emits on the activation packet, then one wheel event per packet; the full lift fires the ctrl release leg."
     },
     "2f_pinch_to_3f_release_ctrl": {
       "actions": [
@@ -225,6 +280,24 @@
         }
       ],
       "desc": "Active 2f pinch (ctrl held; each packet moves both fingers 20 units outward), a third finger lands: the ctrl release leg fires at the report head because num_active left 2, and the 3f transition clears the pinch state; the release itself adds nothing."
+    },
+    "2f_pinch_toggle_off_ctrl_still_presses": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": false,
+          "vk": 162
+        },
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": true,
+          "vk": 162
+        }
+      ],
+      "desc": "Same 2f spread as 2f_pinch_out with the 2f_pinch feature toggle flipped off.",
+      "note": "Quirk documented by the golden: pinch ACTIVATION (the ctrl key-down, and the ctrl key-up on the release leg) is NOT gated by the 2f_pinch toggle -- only the wheel emission inside the active branch is. The stream shows ctrl down/up with zero wheel events."
     },
     "2f_press_hold": {
       "actions": [
@@ -396,6 +469,64 @@
       ],
       "desc": "Three fingers contract toward the centroid by 25 percent in one packet: spread change crosses pinch_discrete_threshold, 3f_pinch_in fires once, mapped undo (ctrl+z tap)."
     },
+    "3f_pinch_out_discrete_redo": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": false,
+          "vk": 162
+        },
+        {
+          "e": "key",
+          "name": "y",
+          "up": false,
+          "vk": 89
+        },
+        {
+          "e": "key",
+          "name": "y",
+          "up": true,
+          "vk": 89
+        },
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": true,
+          "vk": 162
+        }
+      ],
+      "desc": "Three fingers expand away from the centroid by 20+ units in one packet: the positive-sign discrete branch latches 3f_pinch_out (default ON), mapped redo (ctrl+y tap) -- the sign counterpart of 3f_pinch_in_discrete_undo."
+    },
+    "3f_swipe_down": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "lwin",
+          "up": false,
+          "vk": 91
+        },
+        {
+          "e": "key",
+          "name": "down",
+          "up": false,
+          "vk": 40
+        },
+        {
+          "e": "key",
+          "name": "down",
+          "up": true,
+          "vk": 40
+        },
+        {
+          "e": "key",
+          "name": "lwin",
+          "up": true,
+          "vk": 91
+        }
+      ],
+      "desc": "Three fingers swipe down 70 units in one packet: y-dominance branch, 3f_swipe_down (default ON), mapped window_down (lwin+down tap)."
+    },
     "3f_swipe_left": {
       "actions": [
         {
@@ -454,6 +585,35 @@
       ],
       "desc": "Three fingers swipe right 80 units per packet inside the session-duration cap: 3f_swipe_right fires once (latched), mapped window_right (lwin+right tap)."
     },
+    "3f_swipe_up": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "lwin",
+          "up": false,
+          "vk": 91
+        },
+        {
+          "e": "key",
+          "name": "up",
+          "up": false,
+          "vk": 38
+        },
+        {
+          "e": "key",
+          "name": "up",
+          "up": true,
+          "vk": 38
+        },
+        {
+          "e": "key",
+          "name": "lwin",
+          "up": true,
+          "vk": 91
+        }
+      ],
+      "desc": "Three fingers swipe up 70 units in one packet: the y-dominance branch latches 3f_swipe_up (shipped default ON), mapped window_up (lwin+up tap)."
+    },
     "3f_tap": {
       "actions": [
         {
@@ -468,6 +628,35 @@
         }
       ],
       "desc": "Quick three-finger tap: mapped 3f_tap action (middle_click pair)."
+    },
+    "4f_swipe_down_show_desktop": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "lwin",
+          "up": false,
+          "vk": 91
+        },
+        {
+          "e": "key",
+          "name": "d",
+          "up": false,
+          "vk": 68
+        },
+        {
+          "e": "key",
+          "name": "d",
+          "up": true,
+          "vk": 68
+        },
+        {
+          "e": "key",
+          "name": "lwin",
+          "up": true,
+          "vk": 91
+        }
+      ],
+      "desc": "Four fingers swipe down 70 units in one packet: 4f_swipe_down (default ON), mapped show_desktop (lwin+d tap)."
     },
     "4f_swipe_right_next": {
       "actions": [
@@ -497,6 +686,35 @@
         }
       ],
       "desc": "Four fingers swipe right 70 units per packet: 4f_swipe_right fires once, mapped next (alt+right tap)."
+    },
+    "4f_tap_task_view": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "lwin",
+          "up": false,
+          "vk": 91
+        },
+        {
+          "e": "key",
+          "name": "tab",
+          "up": false,
+          "vk": 9
+        },
+        {
+          "e": "key",
+          "name": "tab",
+          "up": true,
+          "vk": 9
+        },
+        {
+          "e": "key",
+          "name": "lwin",
+          "up": true,
+          "vk": 91
+        }
+      ],
+      "desc": "Quick four-finger tap: the peak==4 tap branch (4f_tap shipped ON), mapped task_view (lwin+tab tap)."
     },
     "5f_alt_tab_flow": {
       "actions": [

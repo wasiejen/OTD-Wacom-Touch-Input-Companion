@@ -211,6 +211,11 @@ class CascadeHarness:
 
     # -- capture plumbing -------------------------------------------------
     def _record(self, count, data, size):
+        if count != 1:
+            raise AssertionError(
+                "cascade injected a multi-event SendInput (count=%r); the "
+                "recorder decodes data[0] only -- extend it before accepting "
+                "multi-event emissions" % (count,))
         ii = data[0] if data is not None else None
         if ii is not None:
             self.actions.append(decode_input(ii))

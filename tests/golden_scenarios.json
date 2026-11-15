@@ -7,14 +7,21 @@
   "scenarios": [
     {
       "name": "1f_drag",
-      "desc": "One finger slides right in 24-unit packets, then lifts: cursor-move stream, and the release skips the tap lane because drift exceeded tap_max_movement.",
+      "desc": "One finger slides right in 24-unit packets over eleven packets, then lifts: cursor-move stream through the fractional cursor accumulator (the carry finally emits 16 on the last packet), and the release skips the tap lane because drift exceeded tap_max_movement.",
       "steps": [
         {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 600]]},
         {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 624, 600]]},
         {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 648, 600]]},
         {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 672, 600]]},
         {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 696, 600]]},
-        {"t": 0.080, "kind": "touch", "blocks": [[1, "up", 0, 0]]}
+        {"t": 0.080, "kind": "touch", "blocks": [[1, "move", 720, 600]]},
+        {"t": 0.096, "kind": "touch", "blocks": [[1, "move", 744, 600]]},
+        {"t": 0.112, "kind": "touch", "blocks": [[1, "move", 768, 600]]},
+        {"t": 0.128, "kind": "touch", "blocks": [[1, "move", 792, 600]]},
+        {"t": 0.144, "kind": "touch", "blocks": [[1, "move", 816, 600]]},
+        {"t": 0.160, "kind": "touch", "blocks": [[1, "move", 840, 600]]},
+        {"t": 0.176, "kind": "touch", "blocks": [[1, "move", 864, 600]]},
+        {"t": 0.192, "kind": "touch", "blocks": [[1, "up", 0, 0]]}
       ]
     },
     {
@@ -137,25 +144,39 @@
     },
     {
       "name": "2f_pinch_out",
-      "desc": "Two fingers spread 20 units per packet: crossing pinch_activation_threshold presses ctrl once (and emits on the activation packet), then one wheel event per packet; the full lift fires the ctrl release leg.",
+      "desc": "Two fingers each move 20 units outward per packet (the spread metric grows 20: it is the mean distance to the centroid): crossing pinch_activation_threshold presses ctrl once and emits on the activation packet, then one wheel event per packet; the full lift fires the ctrl release leg.",
       "steps": [
         {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 800], [2, "down", 1000, 800]]},
-        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 590, 800], [2, "move", 1010, 800]]},
-        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 580, 800], [2, "move", 1020, 800]]},
-        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 570, 800], [2, "move", 1030, 800]]},
-        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 560, 800], [2, "move", 1040, 800]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 580, 800], [2, "move", 1020, 800]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 560, 800], [2, "move", 1040, 800]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 540, 800], [2, "move", 1060, 800]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 520, 800], [2, "move", 1080, 800]]},
+        {"t": 0.080, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "2f_pinch_toggle_off_ctrl_still_presses",
+      "desc": "Same 2f spread as 2f_pinch_out with the 2f_pinch feature toggle flipped off.",
+      "note": "Quirk documented by the golden: pinch ACTIVATION (the ctrl key-down, and the ctrl key-up on the release leg) is NOT gated by the 2f_pinch toggle -- only the wheel emission inside the active branch is. The stream shows ctrl down/up with zero wheel events.",
+      "config": {"toggles": {"2f_pinch": false}},
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 800], [2, "down", 1000, 800]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 580, 800], [2, "move", 1020, 800]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 560, 800], [2, "move", 1040, 800]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 540, 800], [2, "move", 1060, 800]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 520, 800], [2, "move", 1080, 800]]},
         {"t": 0.080, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
       ]
     },
     {
       "name": "2f_pinch_in",
-      "desc": "Two fingers pinch together 20 units per packet: ctrl latch plus negative wheel events, same activation packet behavior.",
+      "desc": "Two fingers pinch together 40 units per packet: ctrl latch plus negative wheel events every packet, same activation-packet emission.",
       "steps": [
         {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 800], [2, "down", 1000, 800]]},
-        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 610, 800], [2, "move", 990, 800]]},
-        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 620, 800], [2, "move", 980, 800]]},
-        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 630, 800], [2, "move", 970, 800]]},
-        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 640, 800], [2, "move", 960, 800]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 620, 800], [2, "move", 980, 800]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 640, 800], [2, "move", 960, 800]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 660, 800], [2, "move", 940, 800]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 680, 800], [2, "move", 920, 800]]},
         {"t": 0.080, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
       ]
     },
@@ -336,6 +357,50 @@
         {"t": 0.112, "kind": "touch", "blocks": [[1, "move", 700, 830], [2, "move", 800, 930]]},
         {"t": 0.128, "kind": "touch", "blocks": [[1, "move", 700, 820], [2, "move", 800, 920]]},
         {"t": 0.144, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "3f_swipe_up",
+      "desc": "Three fingers swipe up 70 units in one packet: the y-dominance branch latches 3f_swipe_up (shipped default ON), mapped window_up (lwin+up tap).",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 900], [2, "down", 800, 900], [3, "down", 1000, 900]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 600, 830], [2, "move", 800, 830], [3, "move", 1000, 830]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0], [3, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "3f_swipe_down",
+      "desc": "Three fingers swipe down 70 units in one packet: y-dominance branch, 3f_swipe_down (default ON), mapped window_down (lwin+down tap).",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 900], [2, "down", 800, 900], [3, "down", 1000, 900]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 600, 970], [2, "move", 800, 970], [3, "move", 1000, 970]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0], [3, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "4f_swipe_down_show_desktop",
+      "desc": "Four fingers swipe down 70 units in one packet: 4f_swipe_down (default ON), mapped show_desktop (lwin+d tap).",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 500, 900], [2, "down", 700, 900], [3, "down", 900, 900], [4, "down", 1100, 900]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 500, 970], [2, "move", 700, 970], [3, "move", 900, 970], [4, "move", 1100, 970]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0], [3, "up", 0, 0], [4, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "3f_pinch_out_discrete_redo",
+      "desc": "Three fingers expand away from the centroid by 20+ units in one packet: the positive-sign discrete branch latches 3f_pinch_out (default ON), mapped redo (ctrl+y tap) -- the sign counterpart of 3f_pinch_in_discrete_undo.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 900], [2, "down", 1000, 900], [3, "down", 800, 500]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 550, 950], [2, "move", 1050, 950], [3, "move", 800, 450]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0], [3, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "4f_tap_task_view",
+      "desc": "Quick four-finger tap: the peak==4 tap branch (4f_tap shipped ON), mapped task_view (lwin+tab tap).",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 500, 900], [2, "down", 700, 900], [3, "down", 900, 900], [4, "down", 1100, 900]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0], [3, "up", 0, 0], [4, "up", 0, 0]]}
       ]
     }
   ]

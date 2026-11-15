@@ -79,6 +79,17 @@ def test_golden_header_names_its_generation_source():
         "the quirk-preservation rule must stay stated in the fixture header")
 
 
+def test_golden_file_on_disk_is_canonical_serialization():
+    """On-disk fixture bytes == canonical_json(parsed doc) + newline.
+
+    Formatting or key-order drift in the committed fixture fails here, so the
+    byte-exact stream pins keep meaning byte-exact (reviewer P2).
+    """
+    doc = gh.load_golden_doc()
+    on_disk = gh.GOLDEN_PATH.read_text(encoding="utf-8")
+    assert on_disk == gh.canonical_json(doc) + "\n"
+
+
 def test_scenario_set_covers_the_required_c0_lanes():
     """The curated set stays at or above the C0 minimum and lane-complete.
 
@@ -99,8 +110,11 @@ def test_scenario_set_covers_the_required_c0_lanes():
         "2f_tap_enabled_right_click", "2f_press_hold",
         "2f_pinch_to_3f_release_ctrl",
         "3f_tap", "3f_swipe_right_in_cap", "3f_swipe_left",
-        "3f_pinch_in_discrete_undo", "session_cap_blocks_3f_swipe",
-        "4f_swipe_right_next", "5f_alt_tab_flow",
+        "3f_swipe_up", "3f_swipe_down", "3f_pinch_in_discrete_undo",
+        "3f_pinch_out_discrete_redo", "session_cap_blocks_3f_swipe",
+        "4f_swipe_right_next", "4f_swipe_down_show_desktop", "4f_tap_task_view",
+        "5f_alt_tab_flow",
+        "2f_pinch_toggle_off_ctrl_still_presses",
         "pen_gate_touch_ignored", "pen_touch_interleave_mid_scroll",
     ]
     missing = sorted(set(required) - names)

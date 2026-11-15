@@ -23,6 +23,16 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # product modules (conftest does this for pytest)
 
+# Best effort: under pytest the conftest live-injection guard is always
+# installed; stand up the same belt for a standalone run so only the harness
+# recorder (never a real SendInput) can reach the desktop. The suite installs
+# the guard anyway, so a missing conftest here is only a warning.
+try:
+    import conftest  # noqa: F401  (import installs the injection guard)
+except ImportError:
+    print("[warning] conftest unavailable: generating WITHOUT the live-injection "
+          "guard -- the harness recorder is the only shadow")
+
 import golden_harness
 
 
