@@ -5,6 +5,8 @@ import threading
 import ctypes
 from vk_codes import vk_codes_dict  # Import vk_code dictionary
 from wtd.config import (DEBUG, TOUCH_MODIFIER_KEYS, TOUCH_NO_ACTION, config)
+from wtd._log import logger as _log  # shared wtd logger (see wtd/_log.py)
+
 
 
 
@@ -307,7 +309,7 @@ class ActionDispatcher():
         if modifier is None or modifier == TOUCH_NO_ACTION:
             return
         if modifier not in TOUCH_MODIFIER_KEYS:
-            print(f"[Warning] Unknown touch modifier: {modifier}")
+            _log.info(f"[Warning] Unknown touch modifier: {modifier}")
             return
         if modifier in self.touch_held.values():
             # Another contact already holds this modifier down: record the
@@ -415,7 +417,7 @@ class ActionDispatcher():
             released.append(f"button_{slot}")
 
         if released:
-            print(f"[Safety] Released held input on thread exit: {released}")
+            _log.info(f"[Safety] Released held input on thread exit: {released}")
 
         return released
 
@@ -436,13 +438,13 @@ class ActionDispatcher():
 
     def execute_mapped_action(self, action_name):
         if DEBUG:
-            print(f"[Gesture] Action triggered: {action_name}")
+            _log.info(f"[Gesture] Action triggered: {action_name}")
 
         action_func = self.ACTION_DISPATCH.get(action_name)
         if action_func:
             action_func()
         elif action_name is not None:
-            print(f"[Warning] Unknown action name: {action_name}")
+            _log.info(f"[Warning] Unknown action name: {action_name}")
 
     def dispatch_gesture_event(self, event_type):
         cfg = self.config if self.config is not None else config

@@ -6,6 +6,8 @@ import json
 import os
 import copy
 import hashlib
+from wtd._log import logger as _log  # shared wtd logger (see wtd/_log.py)
+
 
 
 CONFIG_FILE_PATH = "user.cfg"
@@ -602,7 +604,7 @@ class DriverConfig:
             data[f"{PEN_AREA_MAP_PREFIX}{identity}"] = lane
         with open(filepath, "w") as f:
             json.dump(data, f, indent=4)
-        print(f"[Config] Saved settings to '{filepath}'")
+        _log.info(f"[Config] Saved settings to '{filepath}'")
 
     def validate_config_data(self, data, raw_text=""):
         """Validate a loaded dict against the current schema.
@@ -837,7 +839,7 @@ class DriverConfig:
         """Load settings all-or-nothing: validate first, apply only when valid."""
         filepath = filepath or self.config_path
         if not os.path.exists(filepath):
-            print(f"[Config] No '{filepath}' found. Using default driver settings.")
+            _log.info(f"[Config] No '{filepath}' found. Using default driver settings.")
             return False
 
         try:
@@ -845,17 +847,17 @@ class DriverConfig:
                 raw_text = f.read()
             data = json.loads(raw_text)
         except Exception as e:
-            print(f"[Config Error] Failed loading '{filepath}': {e}")
+            _log.info(f"[Config Error] Failed loading '{filepath}': {e}")
             return False
 
         validated, warnings, errors = self.validate_config_data(data, raw_text)
         for note in warnings:
-            print(f"[Config Warning] {note}")
+            _log.info(f"[Config Warning] {note}")
 
         if errors:
             for err in errors:
-                print(f"[Config Error] Invalid setting in '{filepath}': {err}")
-            print(f"[Config Error] Nothing applied from '{filepath}'. "
+                _log.info(f"[Config Error] Invalid setting in '{filepath}': {err}")
+            _log.info(f"[Config Error] Nothing applied from '{filepath}'. "
                   "Existing settings stay in place.")
             return False
 
@@ -875,7 +877,7 @@ class DriverConfig:
             self.pen_area_maps = validated["pen_area_maps"]
 
         self.sync_sensitivities()
-        print(f"[Config] Successfully loaded settings from '{filepath}'")
+        _log.info(f"[Config] Successfully loaded settings from '{filepath}'")
         return True
 
     def device_bindings(self):
@@ -943,11 +945,11 @@ class DriverConfig:
                         if name in DEVICE_SECTION_KEYS}
             validated, warnings, errors = self.validate_config_data(sections, "")
             for note in warnings:
-                print(f"[Config Warning] {lane} '{key}': {note}")
+                _log.info(f"[Config Warning] {lane} '{key}': {note}")
             if errors:
                 for err in errors:
-                    print(f"[Config Error] Invalid {lane} entry '{key}': {err}")
-                print(f"[Config Error] Overlay for '{key}' not applied; "
+                    _log.info(f"[Config Error] Invalid {lane} entry '{key}': {err}")
+                _log.info(f"[Config Error] Overlay for '{key}' not applied; "
                       "previous settings stay.")
                 continue
             for attr, value in validated["motion"].items():

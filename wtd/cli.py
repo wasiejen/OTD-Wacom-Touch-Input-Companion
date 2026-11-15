@@ -10,6 +10,8 @@ from wtd.config import (CONFIG_FILE_PATH, DEBUG, DEVICE_SECTION_KEYS, DriverConf
 from wtd.mapping import (log_metrics_diagnostic)
 from wtd.gestures import (TabletState)
 from wtd.devices import (DeviceManagerThread, build_device_info, shutdown_readers)
+from wtd._log import logger as _log  # shared wtd logger (see wtd/_log.py)
+
 
 
 
@@ -344,9 +346,9 @@ def find_device_entry(config, name):
 def cli_list_devices(config):
     """Print the stored device entries (alias + identity key) and return them."""
     records = config.device_entry_records()
-    print(f"[Config] Stored devices ({len(records)}):")
+    _log.info(f"[Config] Stored devices ({len(records)}):")
     for alias, identity in records:
-        print(config.format_device_entry(alias, identity))
+        _log.info(config.format_device_entry(alias, identity))
     return records
 
 
@@ -360,7 +362,7 @@ def cli_restore_with(config, name):
     """
     found = find_device_entry(config, name)
     if found is None:
-        print(f"[Config Error] No saved device '{name}'. Nothing applied.")
+        _log.info(f"[Config Error] No saved device '{name}'. Nothing applied.")
         return False
 
     lane, key, entry = found
@@ -368,11 +370,11 @@ def cli_restore_with(config, name):
                 if section in DEVICE_SECTION_KEYS}
     validated, warnings, errors = config.validate_config_data(sections, "")
     for note in warnings:
-        print(f"[Config Warning] {lane} '{key}': {note}")
+        _log.info(f"[Config Warning] {lane} '{key}': {note}")
     if errors:
         for err in errors:
-            print(f"[Config Error] Invalid {lane} entry '{key}': {err}")
-        print(f"[Config] Restore of '{name}' aborted; current settings stay in place.")
+            _log.info(f"[Config Error] Invalid {lane} entry '{key}': {err}")
+        _log.info(f"[Config] Restore of '{name}' aborted; current settings stay in place.")
         return False
 
     for attr, value in validated["motion"].items():
@@ -389,7 +391,7 @@ def cli_restore_with(config, name):
     else:
         config.set_device_entry(key, snapshot)
     config.save_to_file()
-    print(f"[Config] Restored '{name}'; current live values re-saved as its state.")
+    _log.info(f"[Config] Restored '{name}'; current live values re-saved as its state.")
     return True
 
 
@@ -401,7 +403,7 @@ def cli_save_as(config, alias):
     """
     config.set_device_entry(alias, snapshot_device_sections(config))
     config.save_to_file()
-    print(f"[Config] Current settings saved under alias '{alias}'.")
+    _log.info(f"[Config] Current settings saved under alias '{alias}'.")
     return True
 
 
@@ -417,7 +419,7 @@ def main():
         # not know is a mistake in the command line, so it is reported and the
         # driver does not start. The loop this replaces matched substrings, which
         # let '-wirelessize' quietly turn on wireless mode.
-        print(f"[Start Parameter] {exc}")
+        _log.info(f"[Start Parameter] {exc}")
         return 1
 
     list_devices, restore_with, save_as_alias, save_as_path = \
@@ -425,7 +427,7 @@ def main():
     config_path, save_path, ladder_notes = resolve_config_ladder(
         start.config, save_as_path)
     for note in start_notes + ladder_notes:
-        print(note)
+        _log.info(note)
 
     # U412 / TODO #412: opt-in startup metrics readout (env WTD_METRICS_DIAG=1),
     # silent by default; diagnostic only, no mapping is consulted or changed.
@@ -433,18 +435,18 @@ def main():
 
     if start.debug:
         DEBUG = True
-        print("[Start Parameter] DEBUG active")
+        _log.info("[Start Parameter] DEBUG active")
     if start.wireless:
         prefer_wireless = True
-        print("[Start Parameter] Wireless preference active")
+        _log.info("[Start Parameter] Wireless preference active")
 
     if config_path != CONFIG_FILE_PATH:
-        print(f"[Start Parameter] Config file: '{config_path}'")
+        _log.info(f"[Start Parameter] Config file: '{config_path}'")
     # Unit B1: one config object, built here from the resolved lane. The
     # import-time global carries defaults only, so no file is read at import.
     config = DriverConfig(config_path)
     if save_path != config_path:
-        print(f"[Start Parameter] Save file: '{save_path}'")
+        _log.info(f"[Start Parameter] Save file: '{save_path}'")
     config.save_path = save_path
 
     # CLI maintenance lanes run against the loaded file and exit: the manager
@@ -461,7 +463,7 @@ def main():
             cli_save_as(config, save_as_alias)
         return 0 if applied else 1
 
-    print("\n=== Initializing Wacom Device Manager Thread ===")
+    _log.info("\n=== Initializing Wacom Device Manager Thread ===")
 
     touch_enabled_event = threading.Event()
     touch_enabled_event.set()
@@ -495,7 +497,7 @@ def main():
         config.set_available_actions(actions)
         gui_config.set_available_actions(actions)
 
-    print("\n=== Wacom Touch Driver Running ===")
+    _log.info("\n=== Wacom Touch Driver Running ===")
 
     try:
         from gui import launch_gui
@@ -513,6 +515,6 @@ def main():
     finally:
         stop_event.set()
         shutdown_readers(manager)
-        print("\n=== Wacom Touch Driver successfully stopped ===")
+        _log.info("\n=== Wacom Touch Driver successfully stopped ===")
 
     return 0

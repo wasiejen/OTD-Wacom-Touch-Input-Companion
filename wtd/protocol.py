@@ -3,6 +3,8 @@ report decoders moved from touch_controller."""
 
 import time
 from wtd.config import (WIRELESS_RECEIVER_PRODUCT_ID, WIRELESS_TABLET_SIZES, WIRELESS_TABLET_SIZE_TO_PRODUCT)
+from wtd._log import logger as _log  # shared wtd logger (see wtd/_log.py)
+
 
 
 # ==============================================================================
@@ -90,16 +92,16 @@ def pen_specs_for_product(product_id, cfg=None):
             size = getattr(cfg, "wireless_tablet_size", None) if cfg is not None else None
             if size in WIRELESS_TABLET_SIZES:
                 model = WIRELESS_TABLET_SIZE_TO_PRODUCT[size]
-                print(f"pen_specs= wireless_tablet_size={size} product={product_id} using={model}")
+                _log.info(f"pen_specs= wireless_tablet_size={size} product={product_id} using={model}")
                 return PEN_SPECS_BY_PRODUCT[model]
-            print("!! WIRELESS TABLET SIZE NOT SET: receiver id 132 cannot detect its paired tablet.\n"
+            _log.info("!! WIRELESS TABLET SIZE NOT SET: receiver id 132 cannot detect its paired tablet.\n"
                   "!! choose one: small (788) | medium (789) | large (791) - GUI Pen tab "
                   "\"Wireless Tablet Size\", or \"motion_and_thresholds.wireless_tablet_size\" "
                   "in the config file.\n"
                   "!! using MEDIUM extents (789) until a size is chosen: FALLBACK, not a default.\n"
                   "pen_specs= wireless_tablet_size=unset product=132 using=789 fallback=not_chosen")
             return PEN_SPECS_DEFAULT
-        print(f"pen_specs= no-table product={product_id} using=medium")
+        _log.info(f"pen_specs= no-table product={product_id} using=medium")
         return PEN_SPECS_DEFAULT
     return specs
 
@@ -149,7 +151,7 @@ def parse_pen_packet(report, state):
     if pen_status in (0xE0, 0xE1, 0xE2):
         if not state.pen_in_proximity:
             state.pen_in_proximity = True
-            print("[Palm Rejection] Pen detected -> Touch Disabled")
+            _log.info("[Palm Rejection] Pen detected -> Touch Disabled")
     elif pen_status == 0x80:
         if state.pen_in_proximity:
             state.pen_in_proximity = False
@@ -159,7 +161,7 @@ def parse_pen_packet(report, state):
                             state.start_time[i] = current_time
             #reset_tablet_state(full=True)
             
-            print("[Palm Rejection] Pen left hover area -> Touch Enabled")
+            _log.info("[Palm Rejection] Pen left hover area -> Touch Enabled")
 
 def decode_button_report(report):
     """Split the 10-byte 0x03 button/dial report into its column values.

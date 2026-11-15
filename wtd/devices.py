@@ -10,6 +10,8 @@ from wtd.protocol import (BUTTON_REPORT_ID, BUTTON_REPORT_LENGTH, IDLE_BACKOFF_M
 from wtd.sender import (ActionDispatcher)
 from wtd.mapping import (process_pen_report)
 from wtd.gestures import (TabletState, process_button_report, process_touch_report)
+from wtd._log import logger as _log  # shared wtd logger (see wtd/_log.py)
+
 
 
 def handle_report_by_id(report, state, action_dispatch, cfg):
@@ -58,7 +60,7 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
     try:
         dev.open_path(path)
         dev.set_nonblocking(True)
-        print(f"{header} Started successfully.")
+        _log.info(f"{header} Started successfully.")
 
         pen_specs = None
         if interface_type == "Pen":
@@ -71,7 +73,7 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
             state.pen_identity = device_identity_hash(
                 device_info.get("path") or b"",
                 device_info.get("serial_number") or "")
-            print(f"{header} Init report not sent: upstream sends FeatureInitReport "
+            _log.info(f"{header} Init report not sent: upstream sends FeatureInitReport "
                   "'02 08' at device open; requirement unknown (pen data reads without it).")
 
         # Timed reads exist only on some HID bindings; the Windows hidapi wheel
@@ -83,7 +85,7 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
         while not stop_event.is_set():
             # Check pause state requirement
             if not touch_enabled_event.is_set():
-                print(f"{header} Interrupted by touch disabled. Exiting interface thread.")
+                _log.info(f"{header} Interrupted by touch disabled. Exiting interface thread.")
                 break
 
             # Read and process packets according to input type
@@ -128,21 +130,21 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
                 stop_event.wait(idle_backoff)
 
     except OSError as e:
-        print(f"{header} Read Error (Disconnected/OSError): {e}")
+        _log.info(f"{header} Read Error (Disconnected/OSError): {e}")
     except Exception as e:
-        print(f"{header} Unexpected Error: {e}")
+        _log.info(f"{header} Unexpected Error: {e}")
         if DEBUG:
             raise e
     finally:
         try:
             action_dispatch.release_held_inputs()
         except Exception as e:
-            print(f"{header} Held-input release failed: {e}")
+            _log.info(f"{header} Held-input release failed: {e}")
         try:
             dev.close()
         except Exception:
             pass
-        print(f"{header} Interface thread closed.")
+        _log.info(f"{header} Interface thread closed.")
 
 # ==============================================================================
 # MASTER DEVICE MANAGEMENT THREAD
@@ -199,7 +201,7 @@ class DeviceManagerThread(threading.Thread):
         self._skipped_notice = None
 
     def run(self):
-        print("[Manager Thread] Started Master Management Thread.")
+        _log.info("[Manager Thread] Started Master Management Thread.")
         
         while not self.stop_event.is_set():
             # Wait until touch is ENABLED. If already enabled, wait(timeout) acts as a normal sleep delay.
@@ -212,7 +214,7 @@ class DeviceManagerThread(threading.Thread):
             else:
                 self.touch_enabled_event.wait()
 
-        print("[Manager Thread] Master Management Thread stopped.")
+        _log.info("[Manager Thread] Master Management Thread stopped.")
 
 
 
@@ -292,7 +294,7 @@ class DeviceManagerThread(threading.Thread):
 
                 # If any thread died (e.g. from OSError or paused), clean up state
                 if not pen_alive or not touch_alive or not buttons_alive:
-                    print(f"[Manager] Device disconnected/stopped: {conn['product_string']} ({dev_id})")
+                    _log.info(f"[Manager] Device disconnected/stopped: {conn['product_string']} ({dev_id})")
                     dead_keys.append(dev_id)
 
             for dev_id in dead_keys:
@@ -309,7 +311,7 @@ class DeviceManagerThread(threading.Thread):
                 self._skipped_notice = skipped_ids
                 held_back = "wired" if self.prefer_wireless else "wireless"
                 for pair in skipped_devices:
-                    print(f"[Manager] Holding back {held_back} device "
+                    _log.info(f"[Manager] Holding back {held_back} device "
                           f"{pair['product_string']} ({pair['id']})")
 
             for dev_pair in active_devices:
@@ -328,7 +330,7 @@ class DeviceManagerThread(threading.Thread):
                             dev_pair['product_id'], dev_pair['wireless'],
                             self.base_config.device_bindings())
                     conn_config = self.base_config.fork_for_device(alias, identity)
-                    print(f"\n[Manager] New Device Detected! Initializing: {dev_pair['product_string']} "
+                    _log.info(f"\n[Manager] New Device Detected! Initializing: {dev_pair['product_string']} "
                           f"(settings alias: {alias or 'none - global sections only'})")
                     
                     # Create unique state & dispatcher context per device
@@ -371,7 +373,7 @@ class DeviceManagerThread(threading.Thread):
 
                     t_pen.start()
                     t_touch.start()
-                    print(f"[Manager] Spawned Pen (Interface: {pen_dev.get('interface_number')}) "
+                    _log.info(f"[Manager] Spawned Pen (Interface: {pen_dev.get('interface_number')}) "
                           f"& Touch (Interface: {touch_dev.get('interface_number')}) threads for {dev_id}")
 
                     if buttons_dev is not None:
@@ -386,7 +388,7 @@ class DeviceManagerThread(threading.Thread):
                         )
                         threads['Buttons'] = t_buttons
                         t_buttons.start()
-                        print(f"[Manager] Spawned Buttons thread "
+                        _log.info(f"[Manager] Spawned Buttons thread "
                               f"(Interface: {buttons_dev.get('interface_number')}) for {dev_id}")
 
     def get_primary_state_and_action(self):
@@ -469,11 +471,11 @@ def shutdown_readers(manager, budget=SHUTDOWN_JOIN_BUDGET_SECONDS):
         try:
             released = dispatcher.release_held_inputs()
         except Exception as e:
-            print(f"[Shutdown] Dispatcher sweep failed: {e}")
+            _log.info(f"[Shutdown] Dispatcher sweep failed: {e}")
             continue
         swept.extend(released)
 
-    print(f"[Shutdown] Readers joined; still running: {len(stragglers)}. "
+    _log.info(f"[Shutdown] Readers joined; still running: {len(stragglers)}. "
           f"Last-resort sweep released: {swept if swept else 'nothing'}")
 
 

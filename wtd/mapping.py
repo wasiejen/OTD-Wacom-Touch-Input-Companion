@@ -8,6 +8,8 @@ import ctypes
 import hashlib
 from wtd.config import (resolved_pen_mode, union_rect_from_records)
 from wtd.protocol import (PEN_BUTTON_1_MASK, PEN_BUTTON_2_MASK, PEN_REPORT_ID, PEN_REPORT_LENGTH, PEN_ROTATION_FLAG, PEN_STATUS_COORDS, PEN_STATUS_OUT_OF_RANGE, PEN_TOOL_REPORT_STATUS, PEN_VIRTUAL_RESOLUTION, decode_pen_position, decode_pen_pressure)
+from wtd._log import logger as _log  # shared wtd logger (see wtd/_log.py)
+
 
              
 
@@ -230,7 +232,7 @@ def metrics_readout_line():
 def log_metrics_diagnostic():
     """Print the readout once when the env gate is on; silent otherwise."""
     if metrics_diag_enabled():
-        print(metrics_readout_line())
+        _log.info(metrics_readout_line())
 
 
 # --- display identity (U414 / #406, approved proposal §2) ---------------------
@@ -502,7 +504,7 @@ def _log_pen_mapping_diagnostic(state, config, pen_specs, metrics, mode,
     else:
         scales = "px_mm_x=na px_mm_y=na band_x=na band_y=na"
     monitors = monitor_count()
-    print("pen_abs_map mode=%s product=%s declared=%dx%d box=%dx%d "
+    _log.info("pen_abs_map mode=%s product=%s declared=%dx%d box=%dx%d "
           "box_mm=%.4fx%.4f obs=%dx%d screen=%sx%s monitors=%s %s"
           % (mode, state.pen_product_id,
              pen_specs["max_x"], pen_specs["max_y"],
@@ -717,7 +719,7 @@ def process_pen_report(report, state, action_dispatch, config, pen_specs,
     state.pen_obs_max_y = max(state.pen_obs_max_y, y)
     grown_specs = pen_effective_specs(pen_specs, state)
     if grown_specs is not pen_specs and not state.pen_extents_scaled_logged:
-        print(f"pen_extents_autoscale declared_x={pen_specs['max_x']} "
+        _log.info(f"pen_extents_autoscale declared_x={pen_specs['max_x']} "
               f"declared_y={pen_specs['max_y']} "
               f"observed_x={state.pen_obs_max_x} "
               f"observed_y={state.pen_obs_max_y} using=observed")
