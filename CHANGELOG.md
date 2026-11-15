@@ -4,6 +4,25 @@ All notable changes are documented here. Entries are development timestamps
 (`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
 on GitHub mark shipped states — `v0.2.2` is the latest release.
 
+261115-0153:
+
+  - PACKAGE SPLIT (estate WTD plan Phase C unit C1, review Item 3 + the
+    remaining halves of Items 9/11): `touch_controller.py` (4013 lines) is
+    split into the `wtd/` package - `config`, `protocol`, `sender`, `mapping`,
+    `gestures`, `devices`, `cli`, `_log`, `__main__`. Move-then-split commit
+    discipline: commit 1 is a pure verbatim move behind a forwarding
+    compatibility shim with the whole untouched suite green; later commits
+    re-point tests, gui, probe, and the build entry, then delete the shim -
+    no `touch_controller` import remains anywhere. Console output is
+    byte-identical: all 65 print sites now flow through the shared `wtd`
+    logger (named handler `wtd_stream`, bare-message formatter, stdout
+    resolved per emit), and the two hunting-contract diagnostic lines are
+    pinned verbatim in `tests/test_diag_string_contract.py`. The last
+    module-global config fallbacks die: `ActionDispatcher(state, cfg)` and
+    `DeviceManagerThread(..., base_config, ...)` are required now. The
+    exe/`-m` entry is `wtd/__main__.py` (spec + bat updated). Suite:
+    640 passed (636 baseline + 4 contract pins), goldens byte-stable.
+
 261115-0043:
 
   - RELEASE WORKFLOW (estate WTD plan Phase B unit B3, review Item 11 minus the
