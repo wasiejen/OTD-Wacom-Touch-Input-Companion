@@ -5,7 +5,8 @@ import hid
 import time
 import threading
 import re
-from wtd.config import (DEBUG, device_identity_hash, resolve_device_alias)
+from wtd import config as wtd_config
+from wtd.config import (device_identity_hash, resolve_device_alias)
 from wtd.protocol import (BUTTON_REPORT_ID, BUTTON_REPORT_LENGTH, IDLE_BACKOFF_MIN_SECONDS, IDLE_POLL_SECONDS, PEN_REPORT_LENGTH, SHUTDOWN_JOIN_BUDGET_SECONDS, parse_pen_packet, pen_specs_for_product)
 from wtd.sender import (ActionDispatcher)
 from wtd.mapping import (process_pen_report)
@@ -133,7 +134,7 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
         _log.info(f"{header} Read Error (Disconnected/OSError): {e}")
     except Exception as e:
         _log.info(f"{header} Unexpected Error: {e}")
-        if DEBUG:
+        if wtd_config.DEBUG:
             raise e
     finally:
         try:

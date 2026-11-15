@@ -3,7 +3,7 @@ touch_controller."""
 
 import time
 import math
-from wtd.config import (DEBUG)
+from wtd import config as wtd_config
 from wtd.protocol import (BUTTON_PRESS_MASKS, BUTTON_TOUCH_MASKS, CENTRAL_BUTTON_SLOT, DIAL_ANGLE_ACTIVE, DIAL_ANGLE_MASK, MAX_TOUCH_CONTACTS, STATUS_ACTIVE_CONTACTS, STATUS_RELEASE_TERMINAL, STATUS_TOUCH_DOWN, decode_button_report, dial_angle_delta, parse_sub_block)
 from wtd.mapping import (TOUCH_ROTATION_CENTER, apply_orientation)
 from wtd._log import logger as _log  # shared wtd logger (see wtd/_log.py)
@@ -282,7 +282,7 @@ def process_touch_report(report, state, action_dispatch, cfg):
             state.peak_contact_count = max(state.peak_contact_count, len(state.active_contacts))
             if len(state.active_contacts) == 1 and state.last_num_active == 0:
                 state.session_start_time = current_time
-                if DEBUG: _log.info(f"Debug: new session triggered")
+                if wtd_config.DEBUG: _log.info(f"Debug: new session triggered")
                 time_since_last_tap = current_time - state.last_f1_tap_time
                 state.drag_candidate = (time_since_last_tap <= cfg.double_tap_timeout)
             if len(state.active_contacts) == 1:
@@ -312,7 +312,7 @@ def process_touch_report(report, state, action_dispatch, cfg):
     
     if state.session_start_time is not None:
         state.session_duration = current_time - state.session_start_time
-        #if DEBUG: _log.info(f"Debug: session duration: {session_duration}")
+        #if wtd_config.DEBUG: _log.info(f"Debug: session duration: {session_duration}")
     if state.start_time[contact_index] is not None:
         hold_duration = current_time - state.start_time[contact_index]
     else:
@@ -323,13 +323,13 @@ def process_touch_report(report, state, action_dispatch, cfg):
         (cx, cy), spread =  compute_centroid_and_spread(state.active_contacts)
         
         if state.last_num_active != num_active or state.mf_start_centroid is None:
-            if DEBUG: _log.info(f"Debug: Reset due to active Contact number change.")
+            if wtd_config.DEBUG: _log.info(f"Debug: Reset due to active Contact number change.")
             # if state.mf_start_centroid is None:
             state.mf_start_centroid = (cx, cy)
             state.mf_start_spread = spread
             state.last_pinch_distance = spread
             state.last_alt_tab_x = cx  
-    # if DEBUG: _log.info(f"Debug: {num_active} fingers detected with Gesture: state: {state.active_gesture}")
+    # if wtd_config.DEBUG: _log.info(f"Debug: {num_active} fingers detected with Gesture: state: {state.active_gesture}")
 
     if not state.pen_in_proximity:
         
@@ -383,7 +383,7 @@ def process_touch_report(report, state, action_dispatch, cfg):
                             ):
                             ad.dispatch_gesture_event("1f_double_tap")
                             #ad.execute_mapped_action("left_hold")
-                            if DEBUG: _log.info("[Gesture] 1F Double Tap Drag Initiated")
+                            if wtd_config.DEBUG: _log.info("[Gesture] 1F Double Tap Drag Initiated")
 
                     state.last_f1_pos = pos
 
@@ -504,7 +504,7 @@ def process_touch_report(report, state, action_dispatch, cfg):
 
             elif state.session_start_time is not None and state.active_gesture is None:
 
-                #if DEBUG: _log.info(f"session_duration: {session_duration}, cfg.max_tap_duratio: {cfg.max_tap_duration}, sd<max_dur: {session_duration <= cfg.max_tap_duration}")
+                #if wtd_config.DEBUG: _log.info(f"session_duration: {session_duration}, cfg.max_tap_duratio: {cfg.max_tap_duration}, sd<max_dur: {session_duration <= cfg.max_tap_duration}")
                 if state.session_duration <= cfg.max_tap_duration and not state.scroll_active:
                     if state.peak_contact_count == 1:
                         if not state.was_moved or not state.is_dragging_cursor:
@@ -555,14 +555,14 @@ def process_touch_report(report, state, action_dispatch, cfg):
                         and not state.scroll_active
                         ):
                     ad.dispatch_gesture_event("1f_press")
-                    if DEBUG: _log.info("[Gesture] 1F Press & Hold Drag Initiated")
+                    if wtd_config.DEBUG: _log.info("[Gesture] 1F Press & Hold Drag Initiated")
                     
             elif num_active >= 2 and cfg.feature_toggles.get(f"{num_active}f_press", False):    
                 if (hold_duration >= cfg.press_hold_duration 
                         and dist_centroid <= cfg.tap_max_movement
                         and abs(delta_spread_total) <= cfg.pinch_discrete_threshold
                         ):
-                    if DEBUG: _log.info(f"[Gesture] Press hold for {num_active} Fingers triggered")
+                    if wtd_config.DEBUG: _log.info(f"[Gesture] Press hold for {num_active} Fingers triggered")
                     gesture_name = f"{num_active}f_press"
                     ad.dispatch_gesture_event(gesture_name)                    
         

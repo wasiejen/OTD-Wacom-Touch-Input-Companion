@@ -250,7 +250,7 @@ def test_main_passes_manager_bundle_without_connection(tmp_path, monkeypatch):
     # main() reassigns the module globals; re-registering the current values
     # makes monkeypatch restore them at teardown.
     monkeypatch.setattr(cli, "config", wtd_config.config)
-    monkeypatch.setattr(cli, "DEBUG", wtd_config.DEBUG)
+    monkeypatch.setattr(wtd_config, "DEBUG", wtd_config.DEBUG)
     monkeypatch.setattr(sys, "argv", ["touch_controller.py"])
     monkeypatch.setattr(time, "sleep", lambda s: None)
     monkeypatch.setattr(cli, "DeviceManagerThread", FakeManagerThread)

@@ -6,7 +6,8 @@ import threading
 import argparse
 import os
 import sys
-from wtd.config import (CONFIG_FILE_PATH, DEBUG, DEVICE_SECTION_KEYS, DriverConfig, appdata_config_path, config, snapshot_device_sections)
+from wtd import config as wtd_config
+from wtd.config import (CONFIG_FILE_PATH, DEVICE_SECTION_KEYS, DriverConfig, appdata_config_path, config, snapshot_device_sections)
 from wtd.mapping import (log_metrics_diagnostic)
 from wtd.gestures import (TabletState)
 from wtd.devices import (DeviceManagerThread, build_device_info, shutdown_readers)
@@ -408,7 +409,6 @@ def cli_save_as(config, alias):
 
 
 def main():
-    global DEBUG
     global config
     prefer_wireless = False
 
@@ -434,7 +434,7 @@ def main():
     log_metrics_diagnostic()
 
     if start.debug:
-        DEBUG = True
+        wtd_config.DEBUG = True  # runtime-shared: readers gate on wtd.config.DEBUG
         _log.info("[Start Parameter] DEBUG active")
     if start.wireless:
         prefer_wireless = True

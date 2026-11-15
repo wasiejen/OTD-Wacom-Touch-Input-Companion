@@ -4,7 +4,8 @@ emits them, moved from touch_controller."""
 import threading
 import ctypes
 from vk_codes import vk_codes_dict  # Import vk_code dictionary
-from wtd.config import (DEBUG, TOUCH_MODIFIER_KEYS, TOUCH_NO_ACTION)
+from wtd import config as wtd_config
+from wtd.config import (TOUCH_MODIFIER_KEYS, TOUCH_NO_ACTION)
 from wtd._log import logger as _log  # shared wtd logger (see wtd/_log.py)
 
 
@@ -437,7 +438,7 @@ class ActionDispatcher():
         self.state.active_gesture = None
 
     def execute_mapped_action(self, action_name):
-        if DEBUG:
+        if wtd_config.DEBUG:
             _log.info(f"[Gesture] Action triggered: {action_name}")
 
         action_func = self.ACTION_DISPATCH.get(action_name)
