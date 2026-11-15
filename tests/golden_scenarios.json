@@ -1,0 +1,342 @@
+{
+  "_meta": {
+    "comment": "Scripted scenario inputs for the touch-cascade golden harness (Phase C unit C0). Times are seconds from the scenario start on the fake clock; a touch report is built from each consecutive step's 'blocks'. Statuses: down=0xC0, move=0x80, up=0x20. Pen steps feed parse_pen_packet only (the palm-rejection gate), interleaved like the Pen and Touch reader threads share one TabletState. Slot ids start at 1: slot 0 decodes as an empty block.",
+    "format": "steps: [{t, kind: touch|pen, blocks: [[slot, status, x, y]...], status: in|tip_down|out}]",
+    "config": "per-scenario flips: {toggles: {...}, mapping: {...}} over the shipped DriverConfig defaults; motion thresholds stay default on purpose (see golden_harness.make_config)."
+  },
+  "scenarios": [
+    {
+      "name": "1f_drag",
+      "desc": "One finger slides right in 24-unit packets, then lifts: cursor-move stream, and the release skips the tap lane because drift exceeded tap_max_movement.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 600]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 624, 600]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 648, 600]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 672, 600]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 696, 600]]},
+        {"t": 0.080, "kind": "touch", "blocks": [[1, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "1f_tap_single",
+      "desc": "Quick single-finger tap inside max_tap_duration with zero drift: mapped 1f_tap action (left_click pair).",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 600]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "1f_double_tap_drag_left_hold_release",
+      "desc": "Tap, second touch inside double_tap_timeout: 1f_double_tap fires left_hold on the second touch-down packet; the lift fires left_hold_release.",
+      "note": "Quirks documented by the golden: the double-tap fires on the second touch-DOWN packet (zero drift, window still open); dispatch latches active_gesture but handle_left_hold clears it again, so the cursor lane re-opens and moves keep flowing while the button is held; the is_left_held guard on the double-tap condition is what keeps a second left_hold dispatch away.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 600]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "up", 0, 0]]},
+        {"t": 0.100, "kind": "touch", "blocks": [[1, "down", 610, 605]]},
+        {"t": 0.116, "kind": "touch", "blocks": [[1, "move", 630, 605]]},
+        {"t": 0.132, "kind": "touch", "blocks": [[1, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "1f_double_tap_static_drag_holds",
+      "desc": "Double-tap whose second touch keeps drift under tap_max_movement for three packets inside the window: one left_hold only, then cursor moves keep flowing while the button stays held.",
+      "note": "Contract-lock golden: the is_left_held guard on the double-tap condition (not active_gesture, which handle_left_hold re-clears) blocks the per-packet re-dispatch that the open drift condition would otherwise allow -- C2 must keep that guard.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 600]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "up", 0, 0]]},
+        {"t": 0.100, "kind": "touch", "blocks": [[1, "down", 602, 600]]},
+        {"t": 0.116, "kind": "touch", "blocks": [[1, "move", 604, 600]]},
+        {"t": 0.132, "kind": "touch", "blocks": [[1, "move", 606, 600]]},
+        {"t": 0.200, "kind": "touch", "blocks": [[1, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "1f_tap_outside_double_window",
+      "desc": "Two taps 0.4 s apart, double_tap_timeout is 0.25 s: two independent left_click pairs, no left_hold, drag_candidate stays off.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 600]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "up", 0, 0]]},
+        {"t": 0.400, "kind": "touch", "blocks": [[1, "down", 600, 600]]},
+        {"t": 0.416, "kind": "touch", "blocks": [[1, "move", 608, 600]]},
+        {"t": 0.432, "kind": "touch", "blocks": [[1, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "1f_press_hold_left_drag",
+      "desc": "Static single-finger hold crossing press_hold_duration: 1f_press fires left_hold once; the lift fires left_hold_release.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 800, 800]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 800, 800]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 800, 800]]},
+        {"t": 0.096, "kind": "touch", "blocks": [[1, "move", 800, 800]]},
+        {"t": 0.128, "kind": "touch", "blocks": [[1, "move", 800, 800]]},
+        {"t": 0.160, "kind": "touch", "blocks": [[1, "move", 800, 800]]},
+        {"t": 0.192, "kind": "touch", "blocks": [[1, "move", 800, 800]]},
+        {"t": 0.224, "kind": "touch", "blocks": [[1, "move", 800, 800]]},
+        {"t": 0.256, "kind": "touch", "blocks": [[1, "move", 800, 800]]},
+        {"t": 0.288, "kind": "touch", "blocks": [[1, "move", 800, 800]]},
+        {"t": 0.304, "kind": "touch", "blocks": [[1, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "2f_scroll_up",
+      "desc": "Two fingers translate up 10 units per packet: scroll latches once the centroid travel crosses scroll_activation_threshold, then one wheel event per packet; the lift skips the tap lane (scroll_active).",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 700, 900], [2, "down", 800, 1000]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 700, 890], [2, "move", 800, 990]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 700, 880], [2, "move", 800, 980]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 700, 870], [2, "move", 800, 970]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 700, 860], [2, "move", 800, 960]]},
+        {"t": 0.080, "kind": "touch", "blocks": [[1, "move", 700, 850], [2, "move", 800, 950]]},
+        {"t": 0.096, "kind": "touch", "blocks": [[1, "move", 700, 840], [2, "move", 800, 940]]},
+        {"t": 0.112, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "2f_scroll_down",
+      "desc": "Two fingers translate down 10 units per packet: same latch, wheel events carry the opposite sign.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 700, 900], [2, "down", 800, 1000]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 700, 910], [2, "move", 800, 1010]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 700, 920], [2, "move", 800, 1020]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 700, 930], [2, "move", 800, 1030]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 700, 940], [2, "move", 800, 1040]]},
+        {"t": 0.080, "kind": "touch", "blocks": [[1, "move", 700, 950], [2, "move", 800, 1050]]},
+        {"t": 0.096, "kind": "touch", "blocks": [[1, "move", 700, 960], [2, "move", 800, 1060]]},
+        {"t": 0.112, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "2f_scroll_left",
+      "desc": "Two fingers translate left 10 units per packet: horizontal wheel (HWHEEL) events.",
+      "note": "Quirk documented by the golden: the horizontal step uses NEGATED scroll_sensitivity_x (vertical does not negate), so a leftward glide emits positive HWHEEL deltas -- the shipped x/y asymmetry.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 700, 900], [2, "down", 800, 1000]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 690, 900], [2, "move", 790, 1000]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 680, 900], [2, "move", 780, 1000]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 670, 900], [2, "move", 770, 1000]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 660, 900], [2, "move", 760, 1000]]},
+        {"t": 0.080, "kind": "touch", "blocks": [[1, "move", 650, 900], [2, "move", 750, 1000]]},
+        {"t": 0.096, "kind": "touch", "blocks": [[1, "move", 640, 900], [2, "move", 740, 1000]]},
+        {"t": 0.112, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "2f_scroll_right",
+      "desc": "Two fingers translate right 10 units per packet: horizontal wheel events on the same negated-x lane (see 2f_scroll_left), so a rightward glide emits negative HWHEEL deltas.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 700, 900], [2, "down", 800, 1000]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 710, 900], [2, "move", 810, 1000]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 720, 900], [2, "move", 820, 1000]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 730, 900], [2, "move", 830, 1000]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 740, 900], [2, "move", 840, 1000]]},
+        {"t": 0.080, "kind": "touch", "blocks": [[1, "move", 750, 900], [2, "move", 850, 1000]]},
+        {"t": 0.096, "kind": "touch", "blocks": [[1, "move", 760, 900], [2, "move", 860, 1000]]},
+        {"t": 0.112, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "2f_pinch_out",
+      "desc": "Two fingers spread 20 units per packet: crossing pinch_activation_threshold presses ctrl once (and emits on the activation packet), then one wheel event per packet; the full lift fires the ctrl release leg.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 800], [2, "down", 1000, 800]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 590, 800], [2, "move", 1010, 800]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 580, 800], [2, "move", 1020, 800]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 570, 800], [2, "move", 1030, 800]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 560, 800], [2, "move", 1040, 800]]},
+        {"t": 0.080, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "2f_pinch_in",
+      "desc": "Two fingers pinch together 20 units per packet: ctrl latch plus negative wheel events, same activation packet behavior.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 800], [2, "down", 1000, 800]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 610, 800], [2, "move", 990, 800]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 620, 800], [2, "move", 980, 800]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 630, 800], [2, "move", 970, 800]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 640, 800], [2, "move", 960, 800]]},
+        {"t": 0.080, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "2f_to_1f_scroll_continuation",
+      "desc": "Active 2f scroll, then one finger lifts: 2f_scroll is in the continuation list, so the remaining finger restarts 1f cursor tracking and keeps moving the cursor after the lift.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 700, 900], [2, "down", 800, 1000]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 700, 890], [2, "move", 800, 990]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 700, 880], [2, "move", 800, 980]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 700, 870], [2, "move", 800, 970]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 700, 860], [2, "move", 800, 960]]},
+        {"t": 0.080, "kind": "touch", "blocks": [[1, "move", 700, 850], [2, "move", 800, 950]]},
+        {"t": 0.096, "kind": "touch", "blocks": [[2, "up", 0, 0]]},
+        {"t": 0.112, "kind": "touch", "blocks": [[1, "move", 720, 840]]},
+        {"t": 0.128, "kind": "touch", "blocks": [[1, "move", 740, 830]]},
+        {"t": 0.144, "kind": "touch", "blocks": [[1, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "2f_tap_default_disabled",
+      "desc": "Quick two-finger tap with the shipped defaults: 2f_tap feature toggle is False out of the box, so the stream is empty.",
+      "note": "Documents the shipped default (2f_tap off), not a bug: the tap lane runs but dispatch_gesture_event refuses while the toggle is off.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 700, 900], [2, "down", 800, 1000]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "2f_tap_enabled_right_click",
+      "desc": "Same two-finger tap with the 2f_tap toggle flipped on: mapped right_click pair fires on the release report.",
+      "config": {"toggles": {"2f_tap": true}},
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 700, 900], [2, "down", 800, 1000]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "2f_press_hold",
+      "desc": "Two static fingers crossing press_hold_duration: 2f_press fires once (dispatch latches active_gesture), mapped right_click pair.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 700, 900], [2, "down", 800, 1000]]},
+        {"t": 0.040, "kind": "touch", "blocks": [[1, "move", 700, 900], [2, "move", 800, 1000]]},
+        {"t": 0.080, "kind": "touch", "blocks": [[1, "move", 700, 900], [2, "move", 800, 1000]]},
+        {"t": 0.120, "kind": "touch", "blocks": [[1, "move", 700, 900], [2, "move", 800, 1000]]},
+        {"t": 0.160, "kind": "touch", "blocks": [[1, "move", 700, 900], [2, "move", 800, 1000]]},
+        {"t": 0.200, "kind": "touch", "blocks": [[1, "move", 700, 900], [2, "move", 800, 1000]]},
+        {"t": 0.240, "kind": "touch", "blocks": [[1, "move", 700, 900], [2, "move", 800, 1000]]},
+        {"t": 0.280, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "2f_pinch_to_3f_release_ctrl",
+      "desc": "Active 2f pinch (ctrl held; each packet moves both fingers 20 units outward), a third finger lands: the ctrl release leg fires at the report head because num_active left 2, and the 3f transition clears the pinch state; the release itself adds nothing.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 800], [2, "down", 1000, 800]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 580, 800], [2, "move", 1020, 800]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 560, 800], [2, "move", 1040, 800]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 540, 800], [2, "move", 1060, 800]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[3, "down", 800, 600]]},
+        {"t": 0.120, "kind": "touch", "blocks": [[3, "move", 800, 600]]},
+        {"t": 0.180, "kind": "touch", "blocks": [[3, "move", 800, 600]]},
+        {"t": 0.240, "kind": "touch", "blocks": [[3, "move", 800, 600]]},
+        {"t": 0.300, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0], [3, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "3f_tap",
+      "desc": "Quick three-finger tap: mapped 3f_tap action (middle_click pair).",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 900], [2, "down", 800, 900], [3, "down", 1000, 900]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0], [3, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "3f_swipe_right_in_cap",
+      "desc": "Three fingers swipe right 80 units per packet inside the session-duration cap: 3f_swipe_right fires once (latched), mapped window_right (lwin+right tap).",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 900], [2, "down", 800, 900], [3, "down", 1000, 900]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 680, 900], [2, "move", 880, 900], [3, "move", 1080, 900]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 760, 900], [2, "move", 960, 900], [3, "move", 1160, 900]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 840, 900], [2, "move", 1040, 900], [3, "move", 1240, 900]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0], [3, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "3f_swipe_left",
+      "desc": "Three fingers swipe left: 3f_swipe_left fires once, mapped window_left (lwin+left tap).",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 900], [2, "down", 800, 900], [3, "down", 1000, 900]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 520, 900], [2, "move", 720, 900], [3, "move", 920, 900]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0], [3, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "3f_pinch_in_discrete_undo",
+      "desc": "Three fingers contract toward the centroid by 25 percent in one packet: spread change crosses pinch_discrete_threshold, 3f_pinch_in fires once, mapped undo (ctrl+z tap).",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 900], [2, "down", 1000, 900], [3, "down", 800, 500]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 650, 850], [2, "move", 950, 850], [3, "move", 800, 550]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0], [3, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "session_cap_blocks_3f_swipe",
+      "desc": "Session starts as a 1f touch; two more fingers land and swipe right only after max_gesture_touch_session_duration passed: the 3f recognition lane stays shut, the late release also skips the tap lane (session over max_tap_duration). Control counterpart of 3f_swipe_right_in_cap.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 600, 600]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 610, 600]]},
+        {"t": 0.340, "kind": "touch", "blocks": [[2, "down", 1000, 600], [3, "down", 800, 400]]},
+        {"t": 0.356, "kind": "touch", "blocks": [[1, "move", 680, 600], [2, "move", 1080, 600], [3, "move", 880, 400]]},
+        {"t": 0.372, "kind": "touch", "blocks": [[1, "move", 760, 600], [2, "move", 1160, 600], [3, "move", 960, 400]]},
+        {"t": 0.388, "kind": "touch", "blocks": [[1, "move", 840, 600], [2, "move", 1240, 600], [3, "move", 1040, 400]]},
+        {"t": 0.420, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0], [3, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "4f_swipe_right_next",
+      "desc": "Four fingers swipe right 70 units per packet: 4f_swipe_right fires once, mapped next (alt+right tap).",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 500, 900], [2, "down", 700, 900], [3, "down", 900, 900], [4, "down", 1100, 900]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 570, 900], [2, "move", 770, 900], [3, "move", 970, 900], [4, "move", 1170, 900]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 640, 900], [2, "move", 840, 900], [3, "move", 1040, 900], [4, "move", 1240, 900]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0], [3, "up", 0, 0], [4, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "5f_alt_tab_flow",
+      "desc": "Five fingers land: 5f_alt_tab initiates (ctrl+alt+tab tap); twelve 70-unit step packets cross alt_tab_step_threshold twice through the f5_counter rate limiter; the full lift commits (enter tap).",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 400, 900], [2, "down", 600, 900], [3, "down", 800, 900], [4, "down", 1000, 900], [5, "down", 1200, 900]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 470, 900], [2, "move", 670, 900], [3, "move", 870, 900], [4, "move", 1070, 900], [5, "move", 1270, 900]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 540, 900], [2, "move", 740, 900], [3, "move", 940, 900], [4, "move", 1140, 900], [5, "move", 1340, 900]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 610, 900], [2, "move", 810, 900], [3, "move", 1010, 900], [4, "move", 1210, 900], [5, "move", 1410, 900]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 680, 900], [2, "move", 880, 900], [3, "move", 1080, 900], [4, "move", 1280, 900], [5, "move", 1480, 900]]},
+        {"t": 0.080, "kind": "touch", "blocks": [[1, "move", 750, 900], [2, "move", 950, 900], [3, "move", 1150, 900], [4, "move", 1350, 900], [5, "move", 1550, 900]]},
+        {"t": 0.096, "kind": "touch", "blocks": [[1, "move", 820, 900], [2, "move", 1020, 900], [3, "move", 1220, 900], [4, "move", 1420, 900], [5, "move", 1620, 900]]},
+        {"t": 0.112, "kind": "touch", "blocks": [[1, "move", 890, 900], [2, "move", 1090, 900], [3, "move", 1290, 900], [4, "move", 1490, 900], [5, "move", 1690, 900]]},
+        {"t": 0.128, "kind": "touch", "blocks": [[1, "move", 960, 900], [2, "move", 1160, 900], [3, "move", 1360, 900], [4, "move", 1560, 900], [5, "move", 1760, 900]]},
+        {"t": 0.144, "kind": "touch", "blocks": [[1, "move", 1030, 900], [2, "move", 1230, 900], [3, "move", 1430, 900], [4, "move", 1630, 900], [5, "move", 1830, 900]]},
+        {"t": 0.160, "kind": "touch", "blocks": [[1, "move", 1100, 900], [2, "move", 1300, 900], [3, "move", 1500, 900], [4, "move", 1700, 900], [5, "move", 1900, 900]]},
+        {"t": 0.176, "kind": "touch", "blocks": [[1, "move", 1170, 900], [2, "move", 1370, 900], [3, "move", 1570, 900], [4, "move", 1770, 900], [5, "move", 1970, 900]]},
+        {"t": 0.192, "kind": "touch", "blocks": [[1, "move", 1240, 900], [2, "move", 1440, 900], [3, "move", 1640, 900], [4, "move", 1840, 900], [5, "move", 2040, 900]]},
+        {"t": 0.208, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0], [3, "up", 0, 0], [4, "up", 0, 0], [5, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "pen_gate_touch_ignored",
+      "desc": "Pen enters proximity and lands on the tablet mid-session: 1f tap attempts and a 2f pinch attempt emit NOTHING while the gate is closed; after the pen leaves, the next clean 1f tap works again.",
+      "steps": [
+        {"t": 0.000, "kind": "pen", "status": "in"},
+        {"t": 0.016, "kind": "pen", "status": "tip_down"},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "down", 600, 600]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 620, 600]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "up", 0, 0]]},
+        {"t": 0.080, "kind": "touch", "blocks": [[2, "down", 1000, 1000], [3, "down", 1200, 1200]]},
+        {"t": 0.096, "kind": "touch", "blocks": [[2, "move", 980, 1000], [3, "move", 1220, 1200]]},
+        {"t": 0.112, "kind": "touch", "blocks": [[2, "up", 0, 0], [3, "up", 0, 0]]},
+        {"t": 0.128, "kind": "pen", "status": "out"},
+        {"t": 0.144, "kind": "touch", "blocks": [[1, "down", 600, 600]]},
+        {"t": 0.160, "kind": "touch", "blocks": [[1, "up", 0, 0]]}
+      ]
+    },
+    {
+      "name": "pen_touch_interleave_mid_scroll",
+      "desc": "2f scroll runs, pen enters proximity mid-gesture and leaves again: the gated packets emit nothing while the contacts keep moving, and the first post-pen packet compares against the STALE pre-pen centroid.",
+      "note": "Quirk documented by the golden: last_2finger_centroid is not re-based across the pen gap, so the first post-pen wheel event carries the whole skipped travel; pen-leave also rewrites session_start_time/start_time.",
+      "steps": [
+        {"t": 0.000, "kind": "touch", "blocks": [[1, "down", 700, 900], [2, "down", 800, 1000]]},
+        {"t": 0.016, "kind": "touch", "blocks": [[1, "move", 700, 890], [2, "move", 800, 990]]},
+        {"t": 0.032, "kind": "touch", "blocks": [[1, "move", 700, 880], [2, "move", 800, 980]]},
+        {"t": 0.048, "kind": "touch", "blocks": [[1, "move", 700, 870], [2, "move", 800, 970]]},
+        {"t": 0.064, "kind": "touch", "blocks": [[1, "move", 700, 860], [2, "move", 800, 960]]},
+        {"t": 0.070, "kind": "pen", "status": "in"},
+        {"t": 0.080, "kind": "touch", "blocks": [[1, "move", 700, 850], [2, "move", 800, 950]]},
+        {"t": 0.096, "kind": "touch", "blocks": [[1, "move", 700, 840], [2, "move", 800, 940]]},
+        {"t": 0.100, "kind": "pen", "status": "out"},
+        {"t": 0.112, "kind": "touch", "blocks": [[1, "move", 700, 830], [2, "move", 800, 930]]},
+        {"t": 0.128, "kind": "touch", "blocks": [[1, "move", 700, 820], [2, "move", 800, 920]]},
+        {"t": 0.144, "kind": "touch", "blocks": [[1, "up", 0, 0], [2, "up", 0, 0]]}
+      ]
+    }
+  ]
+}

@@ -1,0 +1,625 @@
+{
+  "_meta": {
+    "comment": "GENERATED FILE - do not edit. Goldens capture CURRENT cascade behavior including latent quirks (C0 rule: no fixes ride the harness). Regenerate with 'python tests/generate_goldens.py' from the repo root; the pin module compares action streams byte-exact.",
+    "generated_by": "tests/generate_goldens.py",
+    "harness": "tests/golden_harness.py",
+    "scenarios_file": "tests/golden_scenarios.json",
+    "source_commit": "2a320665d8d1153ea24384a23dbd5a845bdc90ad",
+    "source_commit_subject": "docs: keep the documented dev commands runnable"
+  },
+  "scenarios": {
+    "1f_double_tap_drag_left_hold_release": {
+      "actions": [
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": false
+        },
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": true
+        },
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": false
+        },
+        {
+          "dx": 11,
+          "dy": 0,
+          "e": "move"
+        },
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": true
+        }
+      ],
+      "desc": "Tap, second touch inside double_tap_timeout: 1f_double_tap fires left_hold on the second touch-down packet; the lift fires left_hold_release.",
+      "note": "Quirks documented by the golden: the double-tap fires on the second touch-DOWN packet (zero drift, window still open); dispatch latches active_gesture but handle_left_hold clears it again, so the cursor lane re-opens and moves keep flowing while the button is held; the is_left_held guard on the double-tap condition is what keeps a second left_hold dispatch away."
+    },
+    "1f_double_tap_static_drag_holds": {
+      "actions": [
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": false
+        },
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": true
+        },
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": false
+        },
+        {
+          "dx": 1,
+          "dy": 0,
+          "e": "move"
+        },
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": true
+        }
+      ],
+      "desc": "Double-tap whose second touch keeps drift under tap_max_movement for three packets inside the window: one left_hold only, then cursor moves keep flowing while the button stays held.",
+      "note": "Contract-lock golden: the is_left_held guard on the double-tap condition (not active_gesture, which handle_left_hold re-clears) blocks the per-packet re-dispatch that the open drift condition would otherwise allow -- C2 must keep that guard."
+    },
+    "1f_drag": {
+      "actions": [
+        {
+          "dx": 15,
+          "dy": 0,
+          "e": "move"
+        },
+        {
+          "dx": 15,
+          "dy": 0,
+          "e": "move"
+        },
+        {
+          "dx": 15,
+          "dy": 0,
+          "e": "move"
+        },
+        {
+          "dx": 15,
+          "dy": 0,
+          "e": "move"
+        }
+      ],
+      "desc": "One finger slides right in 24-unit packets, then lifts: cursor-move stream, and the release skips the tap lane because drift exceeded tap_max_movement."
+    },
+    "1f_press_hold_left_drag": {
+      "actions": [
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": false
+        },
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": true
+        }
+      ],
+      "desc": "Static single-finger hold crossing press_hold_duration: 1f_press fires left_hold once; the lift fires left_hold_release."
+    },
+    "1f_tap_outside_double_window": {
+      "actions": [
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": false
+        },
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": true
+        },
+        {
+          "dx": 2,
+          "dy": 0,
+          "e": "move"
+        },
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": false
+        },
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": true
+        }
+      ],
+      "desc": "Two taps 0.4 s apart, double_tap_timeout is 0.25 s: two independent left_click pairs, no left_hold, drag_candidate stays off."
+    },
+    "1f_tap_single": {
+      "actions": [
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": false
+        },
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": true
+        }
+      ],
+      "desc": "Quick single-finger tap inside max_tap_duration with zero drift: mapped 1f_tap action (left_click pair)."
+    },
+    "2f_pinch_in": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": false,
+          "vk": 162
+        },
+        {
+          "axis": "y",
+          "delta": -40,
+          "e": "wheel"
+        },
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": true,
+          "vk": 162
+        }
+      ],
+      "desc": "Two fingers pinch together 20 units per packet: ctrl latch plus negative wheel events, same activation packet behavior."
+    },
+    "2f_pinch_out": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": false,
+          "vk": 162
+        },
+        {
+          "axis": "y",
+          "delta": 40,
+          "e": "wheel"
+        },
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": true,
+          "vk": 162
+        }
+      ],
+      "desc": "Two fingers spread 20 units per packet: crossing pinch_activation_threshold presses ctrl once (and emits on the activation packet), then one wheel event per packet; the full lift fires the ctrl release leg."
+    },
+    "2f_pinch_to_3f_release_ctrl": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": false,
+          "vk": 162
+        },
+        {
+          "axis": "y",
+          "delta": 40,
+          "e": "wheel"
+        },
+        {
+          "axis": "y",
+          "delta": 20,
+          "e": "wheel"
+        },
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": true,
+          "vk": 162
+        }
+      ],
+      "desc": "Active 2f pinch (ctrl held; each packet moves both fingers 20 units outward), a third finger lands: the ctrl release leg fires at the report head because num_active left 2, and the 3f transition clears the pinch state; the release itself adds nothing."
+    },
+    "2f_press_hold": {
+      "actions": [
+        {
+          "btn": "right",
+          "e": "btn",
+          "up": false
+        },
+        {
+          "btn": "right",
+          "e": "btn",
+          "up": true
+        }
+      ],
+      "desc": "Two static fingers crossing press_hold_duration: 2f_press fires once (dispatch latches active_gesture), mapped right_click pair."
+    },
+    "2f_scroll_down": {
+      "actions": [
+        {
+          "axis": "y",
+          "delta": 12,
+          "e": "wheel"
+        },
+        {
+          "axis": "y",
+          "delta": 12,
+          "e": "wheel"
+        },
+        {
+          "axis": "y",
+          "delta": 12,
+          "e": "wheel"
+        }
+      ],
+      "desc": "Two fingers translate down 10 units per packet: same latch, wheel events carry the opposite sign."
+    },
+    "2f_scroll_left": {
+      "actions": [
+        {
+          "axis": "x",
+          "delta": 12,
+          "e": "wheel"
+        },
+        {
+          "axis": "x",
+          "delta": 12,
+          "e": "wheel"
+        },
+        {
+          "axis": "x",
+          "delta": 12,
+          "e": "wheel"
+        }
+      ],
+      "desc": "Two fingers translate left 10 units per packet: horizontal wheel (HWHEEL) events.",
+      "note": "Quirk documented by the golden: the horizontal step uses NEGATED scroll_sensitivity_x (vertical does not negate), so a leftward glide emits positive HWHEEL deltas -- the shipped x/y asymmetry."
+    },
+    "2f_scroll_right": {
+      "actions": [
+        {
+          "axis": "x",
+          "delta": -12,
+          "e": "wheel"
+        },
+        {
+          "axis": "x",
+          "delta": -12,
+          "e": "wheel"
+        },
+        {
+          "axis": "x",
+          "delta": -12,
+          "e": "wheel"
+        }
+      ],
+      "desc": "Two fingers translate right 10 units per packet: horizontal wheel events on the same negated-x lane (see 2f_scroll_left), so a rightward glide emits negative HWHEEL deltas."
+    },
+    "2f_scroll_up": {
+      "actions": [
+        {
+          "axis": "y",
+          "delta": -12,
+          "e": "wheel"
+        },
+        {
+          "axis": "y",
+          "delta": -12,
+          "e": "wheel"
+        },
+        {
+          "axis": "y",
+          "delta": -12,
+          "e": "wheel"
+        }
+      ],
+      "desc": "Two fingers translate up 10 units per packet: scroll latches once the centroid travel crosses scroll_activation_threshold, then one wheel event per packet; the lift skips the tap lane (scroll_active)."
+    },
+    "2f_tap_default_disabled": {
+      "actions": [],
+      "desc": "Quick two-finger tap with the shipped defaults: 2f_tap feature toggle is False out of the box, so the stream is empty.",
+      "note": "Documents the shipped default (2f_tap off), not a bug: the tap lane runs but dispatch_gesture_event refuses while the toggle is off."
+    },
+    "2f_tap_enabled_right_click": {
+      "actions": [
+        {
+          "btn": "right",
+          "e": "btn",
+          "up": false
+        },
+        {
+          "btn": "right",
+          "e": "btn",
+          "up": true
+        }
+      ],
+      "desc": "Same two-finger tap with the 2f_tap toggle flipped on: mapped right_click pair fires on the release report."
+    },
+    "2f_to_1f_scroll_continuation": {
+      "actions": [
+        {
+          "axis": "y",
+          "delta": -12,
+          "e": "wheel"
+        },
+        {
+          "axis": "y",
+          "delta": -12,
+          "e": "wheel"
+        },
+        {
+          "dx": 12,
+          "dy": -6,
+          "e": "move"
+        },
+        {
+          "dx": 12,
+          "dy": -6,
+          "e": "move"
+        }
+      ],
+      "desc": "Active 2f scroll, then one finger lifts: 2f_scroll is in the continuation list, so the remaining finger restarts 1f cursor tracking and keeps moving the cursor after the lift."
+    },
+    "3f_pinch_in_discrete_undo": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": false,
+          "vk": 162
+        },
+        {
+          "e": "key",
+          "name": "z",
+          "up": false,
+          "vk": 90
+        },
+        {
+          "e": "key",
+          "name": "z",
+          "up": true,
+          "vk": 90
+        },
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": true,
+          "vk": 162
+        }
+      ],
+      "desc": "Three fingers contract toward the centroid by 25 percent in one packet: spread change crosses pinch_discrete_threshold, 3f_pinch_in fires once, mapped undo (ctrl+z tap)."
+    },
+    "3f_swipe_left": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "lwin",
+          "up": false,
+          "vk": 91
+        },
+        {
+          "e": "key",
+          "name": "left",
+          "up": false,
+          "vk": 37
+        },
+        {
+          "e": "key",
+          "name": "left",
+          "up": true,
+          "vk": 37
+        },
+        {
+          "e": "key",
+          "name": "lwin",
+          "up": true,
+          "vk": 91
+        }
+      ],
+      "desc": "Three fingers swipe left: 3f_swipe_left fires once, mapped window_left (lwin+left tap)."
+    },
+    "3f_swipe_right_in_cap": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "lwin",
+          "up": false,
+          "vk": 91
+        },
+        {
+          "e": "key",
+          "name": "right",
+          "up": false,
+          "vk": 39
+        },
+        {
+          "e": "key",
+          "name": "right",
+          "up": true,
+          "vk": 39
+        },
+        {
+          "e": "key",
+          "name": "lwin",
+          "up": true,
+          "vk": 91
+        }
+      ],
+      "desc": "Three fingers swipe right 80 units per packet inside the session-duration cap: 3f_swipe_right fires once (latched), mapped window_right (lwin+right tap)."
+    },
+    "3f_tap": {
+      "actions": [
+        {
+          "btn": "middle",
+          "e": "btn",
+          "up": false
+        },
+        {
+          "btn": "middle",
+          "e": "btn",
+          "up": true
+        }
+      ],
+      "desc": "Quick three-finger tap: mapped 3f_tap action (middle_click pair)."
+    },
+    "4f_swipe_right_next": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "alt",
+          "up": false,
+          "vk": 164
+        },
+        {
+          "e": "key",
+          "name": "right",
+          "up": false,
+          "vk": 39
+        },
+        {
+          "e": "key",
+          "name": "right",
+          "up": true,
+          "vk": 39
+        },
+        {
+          "e": "key",
+          "name": "alt",
+          "up": true,
+          "vk": 164
+        }
+      ],
+      "desc": "Four fingers swipe right 70 units per packet: 4f_swipe_right fires once, mapped next (alt+right tap)."
+    },
+    "5f_alt_tab_flow": {
+      "actions": [
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": false,
+          "vk": 162
+        },
+        {
+          "e": "key",
+          "name": "alt",
+          "up": false,
+          "vk": 164
+        },
+        {
+          "e": "key",
+          "name": "tab",
+          "up": false,
+          "vk": 9
+        },
+        {
+          "e": "key",
+          "name": "tab",
+          "up": true,
+          "vk": 9
+        },
+        {
+          "e": "key",
+          "name": "alt",
+          "up": true,
+          "vk": 164
+        },
+        {
+          "e": "key",
+          "name": "ctrl",
+          "up": true,
+          "vk": 162
+        },
+        {
+          "e": "key",
+          "name": "right",
+          "up": false,
+          "vk": 39
+        },
+        {
+          "e": "key",
+          "name": "right",
+          "up": true,
+          "vk": 39
+        },
+        {
+          "e": "key",
+          "name": "right",
+          "up": false,
+          "vk": 39
+        },
+        {
+          "e": "key",
+          "name": "right",
+          "up": true,
+          "vk": 39
+        },
+        {
+          "e": "key",
+          "name": "enter",
+          "up": false,
+          "vk": 13
+        },
+        {
+          "e": "key",
+          "name": "enter",
+          "up": true,
+          "vk": 13
+        }
+      ],
+      "desc": "Five fingers land: 5f_alt_tab initiates (ctrl+alt+tab tap); twelve 70-unit step packets cross alt_tab_step_threshold twice through the f5_counter rate limiter; the full lift commits (enter tap)."
+    },
+    "pen_gate_touch_ignored": {
+      "actions": [
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": false
+        },
+        {
+          "btn": "left",
+          "e": "btn",
+          "up": true
+        }
+      ],
+      "desc": "Pen enters proximity and lands on the tablet mid-session: 1f tap attempts and a 2f pinch attempt emit NOTHING while the gate is closed; after the pen leaves, the next clean 1f tap works again."
+    },
+    "pen_touch_interleave_mid_scroll": {
+      "actions": [
+        {
+          "axis": "y",
+          "delta": -12,
+          "e": "wheel"
+        },
+        {
+          "axis": "y",
+          "delta": -427,
+          "e": "wheel"
+        },
+        {
+          "axis": "y",
+          "delta": -12,
+          "e": "wheel"
+        }
+      ],
+      "desc": "2f scroll runs, pen enters proximity mid-gesture and leaves again: the gated packets emit nothing while the contacts keep moving, and the first post-pen packet compares against the STALE pre-pen centroid.",
+      "note": "Quirk documented by the golden: last_2finger_centroid is not re-based across the pen gap, so the first post-pen wheel event carries the whole skipped travel; pen-leave also rewrites session_start_time/start_time."
+    },
+    "session_cap_blocks_3f_swipe": {
+      "actions": [
+        {
+          "dx": 3,
+          "dy": 0,
+          "e": "move"
+        }
+      ],
+      "desc": "Session starts as a 1f touch; two more fingers land and swipe right only after max_gesture_touch_session_duration passed: the 3f recognition lane stays shut, the late release also skips the tap lane (session over max_tap_duration). Control counterpart of 3f_swipe_right_in_cap."
+    }
+  }
+}
