@@ -4,7 +4,9 @@ Output contract (review Item 3 / Item 11, the maintainer's hunting contract):
 emitted lines are byte-identical to the pre-split print() text, so the
 handlers format the bare message and the console sink resolves the CURRENT
 sys.stdout at every emit (capsys-style captures and redirection keep
-working). Both sinks carry exactly the same line text. The handlers are
+working). Both sinks carry the same line text; the file sink uses the
+platform line ending (per-line content identical; line endings follow
+the channel: LF on pipes/console, CRLF per line in Windows files). The handlers are
 named 'wtd_stream' and 'wtd_file' so the logging module itself can tell
 them apart. The package logger does not propagate: a host application's
 root handlers must not double-print product lines. Level INFO keeps every
@@ -40,7 +42,15 @@ LOG_BACKUP_COUNT = 2
 
 
 def log_file_path():
-    """The no-console sink path: %APPDATA%\\wtd\\wtd.log."""
+    """The no-console sink path: %APPDATA%\\wtd\\wtd.log.
+
+    WTD_LOG_FILE overrides the full path (test-harness seam only; the
+    product never sets it) so suite runs never contaminate the
+    maintainer's live hunting file - R1 reviewer P1-2.
+    """
+    override = os.environ.get("WTD_LOG_FILE")
+    if override:
+        return override
     return os.path.join(os.environ["APPDATA"], LOG_DIR_NAME, LOG_FILE_NAME)
 
 
@@ -98,6 +108,7 @@ def install_sinks():
     as an import-time failure).
     """
     logger = logging.getLogger("wtd")
+    had_handlers = bool(logger.handlers)
     added = []
     if find_sink(logger, "wtd_stream") is None:
         stream = logging.StreamHandler(_CurrentStdout())
@@ -111,8 +122,11 @@ def install_sinks():
             pass  # console-only fallback: never break the product on the file
     for handler in added:
         logger.addHandler(handler)
-    logger.setLevel(logging.INFO)
-    logger.propagate = False
+    if not had_handlers:
+        # First init only: a host or test that re-levels/re-routes the
+        # logger afterwards keeps its setting across re-inits (R1 P2-4).
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
     return added
 
 

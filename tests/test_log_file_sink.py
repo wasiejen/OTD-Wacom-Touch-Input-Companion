@@ -11,6 +11,7 @@ the console text pinned in test_diag_string_contract.py, with no console
 
 import io
 import logging
+import os
 
 import pytest
 
@@ -107,21 +108,67 @@ def test_hunting_contract_lines_land_in_the_file(file_sink, capsys, monkeypatch)
         state, config, PEN_SPECS_DEFAULT, (0, 0, 2560, 1440), "isotropic",
         44704, 27940, (10.0, 10.0), (12.5, 3.0))
     written = io.open(str(path), encoding="utf-8").read()
-    assert written == METRICS_LINE + PEN_MAP_LINE
+    # File lines end with the platform newline; compare per-line text.
+    assert written.replace("\r\n", "\n") == METRICS_LINE + PEN_MAP_LINE
+    # The console sink also received the same two lines (capsys drains it,
+    # proving the sinks carry identical content; the tray has no console).
+    console = capsys.readouterr().out
+    assert console == METRICS_LINE + PEN_MAP_LINE
 
 
-def test_file_sink_is_skipped_silently_when_the_path_is_bad(monkeypatch):
-    # A string where a mapping is required makes handler construction raise:
-    # install_sinks must swallow it and keep the console sink alone.
-    monkeypatch.setattr(_log, "make_file_sink", lambda path: "not-a-handler")
-    added = _log.install_sinks()
-    assert [h for h in added if getattr(h, "get_name", None) is not None] == []
-    assert _log.find_sink(logging.getLogger("wtd"), "wtd_stream") is not None
+def test_file_sink_is_skipped_silently_when_construction_fails(monkeypatch):
+    # Discriminating (R1 P1-1): detach the real file sink, make construction
+    # raise, and re-install. install_sinks must swallow the failure, add no
+    # file sink, and keep the console sink working.
+    logger = logging.getLogger("wtd")
+    real = _log.find_sink(logger, "wtd_file")
+    logger.removeHandler(real)
+    try:
+        def boom(path):
+            raise OSError("no path for you")
+        monkeypatch.setattr(_log, "make_file_sink", boom)
+        added = _log.install_sinks()
+        assert _log.find_sink(logger, "wtd_file") is None
+        assert _log.find_sink(logger, "wtd_stream") is not None
+        logger.info("console-only proof")  # must not raise
+    finally:
+        logger.addHandler(real)
+    assert _log.find_sink(logger, "wtd_file") is real
 
 
 def test_log_file_path_is_the_appdata_folder_family(monkeypatch, tmp_path):
+    monkeypatch.delenv("WTD_LOG_FILE")  # suite sets it (P1-2 seam)
     monkeypatch.setenv("APPDATA", str(tmp_path))
     import ntpath
     assert _log.log_file_path().lower().endswith(
         ntpath.join("wtd", "wtd.log").lower())
     assert _log.log_file_path().lower().startswith(str(tmp_path).lower())
+
+
+def test_log_file_path_honours_the_test_override(monkeypatch, tmp_path):
+    # P1-2 seam: with WTD_LOG_FILE set, that is the sink path; unset, it is
+    # the %APPDATA% folder family (LOG_DIR_NAME stays paired with the config
+    # lane's APPDATA_DIR_NAME - P2-3).
+    monkeypatch.setenv("WTD_LOG_FILE", str(tmp_path / "hunt.log"))
+    assert _log.log_file_path() == str(tmp_path / "hunt.log")
+    monkeypatch.delenv("WTD_LOG_FILE")
+    monkeypatch.setenv("APPDATA", str(tmp_path))
+    from wtd import config as wtd_config
+    assert _log.LOG_DIR_NAME == wtd_config.APPDATA_DIR_NAME
+    assert _log.log_file_path() == os.path.join(
+        str(tmp_path), _log.LOG_DIR_NAME, _log.LOG_FILE_NAME)
+
+
+def test_reinit_keeps_host_level_and_routing():
+    # P2-4: a re-init must not re-force level/propagate over a host choice.
+    logger = logging.getLogger("wtd")
+    old_level, old_prop = logger.level, logger.propagate
+    try:
+        logger.setLevel(logging.WARNING)
+        logger.propagate = True
+        _log.install_sinks()
+        assert logger.level == logging.WARNING
+        assert logger.propagate is True
+    finally:
+        logger.setLevel(old_level)
+        logger.propagate = old_prop

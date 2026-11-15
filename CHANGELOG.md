@@ -10,8 +10,9 @@ on GitHub mark shipped states — `v0.2.2` is the latest release.
     Item 11): the shared `wtd` logger grows a second named sink -
     `RotatingFileHandler` on `%APPDATA%\wtd\wtd.log` (same per-user folder
     family as the config lane), UTF-8, 2 MB x 2 backups, formatter unchanged
-    (`%(message)s`) so every file line is byte-identical to the console text
-    (hunting contract). Folder and file are created on demand at the FIRST
+    (`%(message)s`) so every file line carries the console text verbatim
+    (hunting contract; line endings follow the channel: LF console,
+    CRLF file - pinned per-line in tests). Folder and file are created on demand at the FIRST
     emitted line (`delay=True` + lazy parent create); if the folder cannot
     be created the file sink is skipped and the console stays the channel.
     `install_sinks()` is idempotent per handler name (GUI + CLI + tray flows
