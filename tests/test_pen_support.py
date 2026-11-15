@@ -12,20 +12,15 @@ import pytest
 
 from conftest import FakeDevice
 
-import touch_controller
-from touch_controller import (
-    ActionDispatcher,
-    DriverConfig,
-    TabletState,
-    decode_pen_position,
-    decode_pen_pressure,
-    parse_pen_packet,
-    pen_rotation_center,
-    pen_specs_for_product,
-    process_pen_report,
-    rotated_pen_extents,
-    update_pen_cursor,
-)
+from wtd.config import DriverConfig
+from wtd.gestures import TabletState
+from wtd.mapping import (pen_rotation_center, process_pen_report, rotated_pen_extents, update_pen_cursor)
+from wtd.protocol import (decode_pen_position, decode_pen_pressure, parse_pen_packet, pen_specs_for_product)
+from wtd.sender import ActionDispatcher
+from wtd import config
+from wtd import devices
+from wtd import mapping
+from wtd import protocol
 
 SPECS = {"max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7}
 HOVER_ROW = [0x02, 0x20, 0x00, 0x00, 0x32, 0xB6, 0x00, 0x00, 0x00, 0xFD]
@@ -60,7 +55,7 @@ def state():
 
 @pytest.fixture
 def dispatcher(state):
-    return ActionDispatcher(state)
+    return ActionDispatcher(state, DriverConfig())
 
 
 def process(report, state, dispatcher, config):
@@ -71,7 +66,7 @@ def process(report, state, dispatcher, config):
 def process_791(report, state, dispatcher, config):
     """The authoritative 791 OTD table: the maintainer's Large tablet lane."""
     process_pen_report(report, state, dispatcher, config,
-                       touch_controller.PEN_SPECS_BY_PRODUCT[791],
+                       protocol.PEN_SPECS_BY_PRODUCT[791],
                        screen_metrics=SQUARE_1440)
 
 
@@ -254,7 +249,7 @@ def test_known_models_route_to_their_own_tables_quietly(capsys):
     # All three wired model ids resolve to their OWN table, no print.
     for product_id in (789, 788, 791):
         specs = pen_specs_for_product(product_id)
-        assert specs is touch_controller.PEN_SPECS_BY_PRODUCT[product_id]
+        assert specs is protocol.PEN_SPECS_BY_PRODUCT[product_id]
     assert capsys.readouterr().out == ""
 
 
@@ -264,11 +259,11 @@ def test_models_carry_valued_distinct_tables():
     # 2c4b9a5649eb34cd74bc8b1b1041dbb0356ae762, Digitizer block of
     # Wacom/PTH-451.json (788), Wacom/PTH-651.json (789) and
     # Wacom/PTH-851.json (791).
-    assert touch_controller.PEN_SPECS_BY_PRODUCT[788] == {
+    assert protocol.PEN_SPECS_BY_PRODUCT[788] == {
         "max_x": 31496, "max_y": 19685, "width_mm": 157.48, "height_mm": 98.425}
-    assert touch_controller.PEN_SPECS_BY_PRODUCT[791] == {
+    assert protocol.PEN_SPECS_BY_PRODUCT[791] == {
         "max_x": 65024, "max_y": 40640, "width_mm": 325.12, "height_mm": 203.2}
-    assert touch_controller.PEN_SPECS_BY_PRODUCT[789] == {
+    assert protocol.PEN_SPECS_BY_PRODUCT[789] == {
         "max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7}
 
 
@@ -277,7 +272,7 @@ def test_pen_tables_are_200_counts_per_mm_on_every_axis():
     # both axes (the old filled 4096 square ran 18.97 x 30.43 / 34.54), and
     # every row spans 16:10 in counts -- so the default 1:1 lane maps a
     # centered band, not an aspect-skewed fill.
-    for specs in touch_controller.PEN_SPECS_BY_PRODUCT.values():
+    for specs in protocol.PEN_SPECS_BY_PRODUCT.values():
         assert abs(specs["max_x"] / specs["width_mm"] - 200.0) < 1e-6
         assert abs(specs["max_y"] / specs["height_mm"] - 200.0) < 1e-6
         assert abs(specs["max_x"] / specs["max_y"] - 1.6) < 1e-6
@@ -346,25 +341,25 @@ def test_autoscale_grows_the_box_and_prints_one_named_line(state, dispatcher, co
 def test_effective_specs_drive_rotation_center_and_extents(state):
     # The grown box feeds BOTH consumers: rotation center and extents take
     # the grown max, not the declared 65024x40640.
-    specs = touch_controller.PEN_SPECS_BY_PRODUCT[791]
+    specs = protocol.PEN_SPECS_BY_PRODUCT[791]
     state.pen_obs_max_x = 65535
     state.pen_obs_max_y = 65535
-    grown = touch_controller.pen_effective_specs(specs, state)
+    grown = mapping.pen_effective_specs(specs, state)
     assert grown is not specs
     assert grown["max_x"] == 65535
     assert grown["max_y"] == 65535
     assert grown["width_mm"] == 325.12
-    assert touch_controller.pen_rotation_center(grown) == (32767.5, 32767.5)
-    assert touch_controller.rotated_pen_extents(grown, 0) == (0, 0, 65535, 65535)
+    assert mapping.pen_rotation_center(grown) == (32767.5, 32767.5)
+    assert mapping.rotated_pen_extents(grown, 0) == (0, 0, 65535, 65535)
 
 
 def test_effective_specs_passthrough_within_declared_box(state):
     # A model reporting inside its declared box (789 lane) returns the
     # declared dict unchanged: no copy, no grow.
-    specs = touch_controller.PEN_SPECS_BY_PRODUCT[789]
+    specs = protocol.PEN_SPECS_BY_PRODUCT[789]
     state.pen_obs_max_x = 1000
     state.pen_obs_max_y = 1000
-    assert touch_controller.pen_effective_specs(specs, state) is specs
+    assert mapping.pen_effective_specs(specs, state) is specs
 
 
 def test_in_range_reports_keep_the_box_and_stay_quiet(state, dispatcher, config,
@@ -375,7 +370,7 @@ def test_in_range_reports_keep_the_box_and_stay_quiet(state, dispatcher, config,
     assert capsys.readouterr().out == ""
     assert state.pen_obs_max_x == 44704
     assert state.pen_obs_max_y == 27940
-    assert touch_controller.pen_effective_specs(SPECS, state) is SPECS
+    assert mapping.pen_effective_specs(SPECS, state) is SPECS
 
 
 def test_relative_mode_uses_the_grown_box(state, dispatcher, config, stub_send_input):
@@ -436,12 +431,12 @@ def test_autoscale_floor_cannot_shrink_below_declared_extents(state):
     # box return the declared dict unchanged (identity); a mixed exceed
     # grows only the x axis and the y axis can never fall below the
     # declared 40640 floor.
-    specs = touch_controller.PEN_SPECS_BY_PRODUCT[791]
+    specs = protocol.PEN_SPECS_BY_PRODUCT[791]
     state.pen_obs_max_x = 40000
     state.pen_obs_max_y = 40000
-    assert touch_controller.pen_effective_specs(specs, state) is specs
+    assert mapping.pen_effective_specs(specs, state) is specs
     state.pen_obs_max_x = 70000
-    grown = touch_controller.pen_effective_specs(specs, state)
+    grown = mapping.pen_effective_specs(specs, state)
     assert grown["max_x"] == 70000
     assert grown["max_y"] == 40640
     assert grown["width_mm"] == 325.12
@@ -458,13 +453,13 @@ def test_wireless_size_selects_only_the_model_extents_preset(config, state, disp
     # byte-identical events to the wired 791 lane for the same coordinate.
     config.wireless_tablet_size = "large"
     routed = pen_specs_for_product(132, config)
-    assert routed is touch_controller.PEN_SPECS_BY_PRODUCT[791]
+    assert routed is protocol.PEN_SPECS_BY_PRODUCT[791]
     update_pen_cursor(state, dispatcher, config, routed, 65024, 40640,
                       screen_metrics=SQUARE_1440)
     wireless_event = stub_send_input[-1]
     stub_send_input.clear()
     update_pen_cursor(state, dispatcher, config,
-                      touch_controller.PEN_SPECS_BY_PRODUCT[791], 65024, 40640,
+                      protocol.PEN_SPECS_BY_PRODUCT[791], 65024, 40640,
                       screen_metrics=SQUARE_1440)
     assert wireless_event == stub_send_input[-1]
 
@@ -475,7 +470,7 @@ def test_wireless_receiver_id_without_config_prints_the_unset_notice(capsys):
     # loud unset notice names the choices and the MEDIUM extents stay the
     # labeled FALLBACK. The byte-exact block is pinned in
     # tests/test_wireless_tablet_size.py; this lane pins the shape.
-    assert pen_specs_for_product(132) is touch_controller.PEN_SPECS_DEFAULT
+    assert pen_specs_for_product(132) is protocol.PEN_SPECS_DEFAULT
     out = capsys.readouterr().out
     assert "WIRELESS TABLET SIZE NOT SET" in out
     assert out.endswith(
@@ -489,17 +484,17 @@ def test_wireless_size_from_config_routes_the_receiver(capsys, config):
     # notice), and the named line reports the routing byte-exactly.
     capsys.readouterr()  # drain the fixture's config-load banner
     config.wireless_tablet_size = "medium"
-    assert pen_specs_for_product(132, config) is touch_controller.PEN_SPECS_BY_PRODUCT[789]
+    assert pen_specs_for_product(132, config) is protocol.PEN_SPECS_BY_PRODUCT[789]
     assert capsys.readouterr().out == "pen_specs= wireless_tablet_size=medium product=132 using=789\n"
 
 
 def test_wireless_size_large_and_small_select_their_tables(capsys, config):
     capsys.readouterr()  # drain the fixture's config-load banner
     config.wireless_tablet_size = "large"
-    assert pen_specs_for_product(132, config) is touch_controller.PEN_SPECS_BY_PRODUCT[791]
+    assert pen_specs_for_product(132, config) is protocol.PEN_SPECS_BY_PRODUCT[791]
     assert capsys.readouterr().out == "pen_specs= wireless_tablet_size=large product=132 using=791\n"
     config.wireless_tablet_size = "small"
-    assert pen_specs_for_product(132, config) is touch_controller.PEN_SPECS_BY_PRODUCT[788]
+    assert pen_specs_for_product(132, config) is protocol.PEN_SPECS_BY_PRODUCT[788]
     assert capsys.readouterr().out == "pen_specs= wireless_tablet_size=small product=132 using=788\n"
 
 
@@ -507,7 +502,7 @@ def test_unknown_product_with_config_keeps_the_no_table_line(capsys, config):
     # An id that is not the receiver keeps the plain fallback line: the
     # size setting applies to the receiver only.
     capsys.readouterr()  # drain the fixture's config-load banner
-    assert pen_specs_for_product(999, config) is touch_controller.PEN_SPECS_DEFAULT
+    assert pen_specs_for_product(999, config) is protocol.PEN_SPECS_DEFAULT
     assert capsys.readouterr().out == "pen_specs= no-table product=999 using=medium\n"
 
 
@@ -546,14 +541,14 @@ def test_wireless_thread_resolves_the_size_from_config(fake_hid, stub_send_input
     dev = FakeDevice(reports=[build_pen_report(0xE0, x=100, y=100)])
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     enabled = threading.Event()
     enabled.set()
     stop = threading.Event()
     config.wireless_tablet_size = "large"
 
     thread = threading.Thread(
-        target=touch_controller.run_interface,
+        target=devices.run_interface,
         args=("Pen", {"interface_number": 1, "path": b"fake-path", "product_id": 132},
               state, dispatcher, enabled, stop),
         kwargs={"idle_poll": 0.02, "cfg": config},
@@ -572,7 +567,7 @@ def test_wireless_thread_resolves_the_size_from_config(fake_hid, stub_send_input
 
 
 def test_unknown_product_prints_the_named_fallback_line(capsys):
-    assert pen_specs_for_product(999) is touch_controller.PEN_SPECS_DEFAULT
+    assert pen_specs_for_product(999) is protocol.PEN_SPECS_DEFAULT
     assert capsys.readouterr().out == "pen_specs= no-table product=999 using=medium\n"
 
 
@@ -596,13 +591,13 @@ def test_pen_thread_processes_full_report_and_logs_init_note(fake_hid, stub_send
     dev = FakeDevice(reports=[build_pen_report(0xE0, x=1000, y=1000, pressure=100)])
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     enabled = threading.Event()
     enabled.set()
     stop = threading.Event()
 
     thread = threading.Thread(
-        target=touch_controller.run_interface,
+        target=devices.run_interface,
         args=("Pen", {"interface_number": 1, "path": b"fake-path", "product_id": 789},
               state, dispatcher, enabled, stop),
         # cfg is required since unit B2 (no module-global fallback).

@@ -15,9 +15,11 @@ save.
 import pytest
 
 import gui
-import touch_controller
 from gui import PenAreaCanvasModel
-from touch_controller import pen_area_rect_aspect_lock
+from wtd.mapping import pen_area_rect_aspect_lock
+from wtd import config as wtd_config
+from wtd import mapping
+from wtd import protocol
 
 SCREEN = (0, 0, 3440, 1440)
 ORIGIN_SCREEN = (-1440, 0, 4880, 2560)
@@ -150,13 +152,13 @@ def root():
 @pytest.fixture
 def widget_config(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
-    return touch_controller.DriverConfig()
+    return wtd_config.DriverConfig()
 
 
 def _build_widget(root, widget_config, monkeypatch, metrics=SCREEN):
     monkeypatch.setattr(gui, "virtual_desktop_metrics", lambda: metrics)
     monkeypatch.setattr(gui, "monitor_records", lambda: list(RECORDS))
-    touch_controller.reset_pen_area_key_cache()
+    mapping.reset_pen_area_key_cache()
     device_info = {"connection": {"identity": "0123456789ab", "product_id": 791},
                    "base_config": widget_config}
     return gui.PenAreaEditor(root, widget_config, device_info)
@@ -168,7 +170,7 @@ def test_widget_save_writes_fractional_entry_for_current_display_key(root, widge
     widget = _build_widget(root, widget_config, monkeypatch)
     assert widget.persist_entry() is True
     entry = list(widget_config.pen_area_maps["0123456789ab"]["entries"])[0]
-    assert entry["display_key"] == touch_controller.display_key_for_records(RECORDS)
+    assert entry["display_key"] == mapping.display_key_for_records(RECORDS)
     assert entry["monitors"] == RECORDS
     rect_frac = entry["rect_frac"]
     assert len(rect_frac) == 4
@@ -217,15 +219,15 @@ def test_widget_falls_back_to_pad_aspect_rect(root, widget_config, monkeypatch):
                    "base_config": widget_config}
     widget = gui.PenAreaEditor(root, widget_config, device_info)
     assert widget.model is not None
-    box = touch_controller.rotated_pen_box_mm(
-        touch_controller.PEN_SPECS_BY_PRODUCT[791], 0)
+    box = mapping.rotated_pen_box_mm(
+        protocol.PEN_SPECS_BY_PRODUCT[791], 0)
     assert widget.model.desktop_w / widget.model.desktop_h == pytest.approx(
         box[0] / box[1], rel=1e-6)
     assert len(widget.model.monitor_canvas_rects()) == 1
     assert widget.persist_entry() is True
     entry = list(widget_config.pen_area_maps["0123456789ab"]["entries"])[0]
     assert entry["monitors"] == []
-    assert entry["display_key"] == touch_controller.display_key_for_records([])
+    assert entry["display_key"] == mapping.display_key_for_records([])
 
 
 def test_widget_loads_stored_fraction_back_into_model_px(root, widget_config, monkeypatch):
@@ -238,7 +240,7 @@ def test_widget_loads_stored_fraction_back_into_model_px(root, widget_config, mo
     widget = gui.PenAreaEditor(root, widget_config, device_info)
     widget.model.rect = [516.0, 144.0, 1720.0, 720.0]  # 16:10-ish; aspect may lock
     assert widget.persist_entry() is True
-    key = touch_controller.display_key_for_records(RECORDS)
+    key = mapping.display_key_for_records(RECORDS)
     frac = widget_config.pen_area_maps["0123456789ab"]["entries"][0]["rect_frac"]
     reopened = gui.PenAreaEditor(root, widget_config, device_info)
     # U424r5 R5-E: the reopened model RE-DERIVES a mismatched stored

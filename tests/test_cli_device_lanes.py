@@ -5,16 +5,8 @@ Device-free: tmp files only, no real device, no GUI window, no driver start.
 
 import json
 
-from touch_controller import (
-    DEVICE_SETTINGS_PREFIX,
-    DriverConfig,
-    cli_list_devices,
-    cli_restore_with,
-    cli_save_as,
-    looks_like_path,
-    resolve_cli_lanes,
-    resolve_config_paths,
-)
+from wtd.cli import (cli_list_devices, cli_restore_with, cli_save_as, looks_like_path, resolve_cli_lanes, resolve_config_paths)
+from wtd.config import (DEVICE_SETTINGS_PREFIX, DriverConfig)
 
 
 def test_list_prints_alias_and_identity_key(monkeypatch, tmp_path, capsys):

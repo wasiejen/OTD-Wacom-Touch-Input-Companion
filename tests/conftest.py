@@ -21,6 +21,7 @@ import traceback
 import types
 
 import pytest
+from wtd import devices
 
 # ==============================================================================
 # TEST-CWD GUARD (estate TODO #425) - runs at conftest IMPORT time, i.e.
@@ -32,7 +33,7 @@ import pytest
 # COLLECTION to fail with a named message. A module-level raise in this file
 # is what pytest reports as a collection error.
 #
-# WHY the guard exists: touch_controller.CONFIG_FILE_PATH is the bare
+# WHY the guard exists: wtd.config.CONFIG_FILE_PATH is the bare
 # relative name "user.cfg", and several test modules instantiate
 # DriverConfig() without chdir - any user.cfg left in the pytest CWD by a
 # debug run silently overrides the mapping defaults those tests assume
@@ -361,11 +362,10 @@ def make_hid_module(devices=None, device_queue=None):
 
 @pytest.fixture
 def fake_hid(monkeypatch):
-    """Install a fake hid module before touch_controller resolves hid."""
+    """Install a fake hid module before the devices lane resolves hid."""
     module = make_hid_module()
     monkeypatch.setitem(sys.modules, "hid", module)
-    import touch_controller
-    monkeypatch.setattr(touch_controller, "hid", module)
+    monkeypatch.setattr(devices, "hid", module)
     return module
 
 

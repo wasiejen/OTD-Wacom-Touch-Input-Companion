@@ -5,7 +5,8 @@ Pure selection plus one fake-hid enumeration check; no real device.
 
 import threading
 
-from touch_controller import DeviceManagerThread, select_active_device_pairs
+from wtd.config import DriverConfig
+from wtd.devices import DeviceManagerThread, select_active_device_pairs
 
 
 def make_pair(dev_id, wireless):
@@ -63,7 +64,7 @@ def test_enumeration_marks_wireless_pairs(fake_hid):
          "product_string": "Wacom Intuos Pro", "interface_number": 1,
          "path": b"ACM&WI&22&MI_01"},
     ]
-    manager = DeviceManagerThread(threading.Event(), threading.Event())
+    manager = DeviceManagerThread(threading.Event(), threading.Event(), DriverConfig())
 
     pairs = manager.enumerate_wacom_devices()
 

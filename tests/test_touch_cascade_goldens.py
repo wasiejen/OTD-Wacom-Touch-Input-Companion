@@ -170,7 +170,7 @@ def test_harness_run_leaves_no_injection_offender_and_restores_state(capsys):
     assert conftest.inject_offenders == [] or len(conftest.inject_offenders) == offenders_before, (
         "harness injection reached the guard: %r"
         % (conftest.inject_offenders[offenders_before:],))
-    assert gh.touch_controller.time is not harness.clock, "clock swap was not restored"
+    assert gh._wtd_gestures.time is not harness.clock, "clock swap was not restored"
 
 
 def test_fake_clock_refuses_sleep_loud():

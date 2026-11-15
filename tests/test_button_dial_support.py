@@ -13,20 +13,13 @@ import pytest
 
 from conftest import PlainDevice
 
-import touch_controller
-from touch_controller import (
-    ActionDispatcher,
-    BUTTON_CENTRAL_MASK,
-    BUTTON_PRESS_MASKS,
-    CENTRAL_BUTTON_SLOT,
-    DIAL_ANGLE_RANGE,
-    DeviceManagerThread,
-    DriverConfig,
-    TabletState,
-    decode_button_report,
-    dial_angle_delta,
-    process_button_report,
-)
+from wtd.config import DriverConfig
+from wtd.devices import DeviceManagerThread
+from wtd.gestures import (TabletState, process_button_report)
+from wtd.protocol import (BUTTON_CENTRAL_MASK, BUTTON_PRESS_MASKS, CENTRAL_BUTTON_SLOT, DIAL_ANGLE_RANGE, decode_button_report, dial_angle_delta)
+from wtd.sender import ActionDispatcher
+from wtd import config
+from wtd import devices
 
 BTN_KEYS = [f"btn{n}_press" for n in range(1, 9)] + ["central_press"]
 DIAL_KEYS = ["dial_cw", "dial_ccw"]
@@ -64,7 +57,7 @@ def state():
 
 @pytest.fixture
 def dispatcher(state):
-    return ActionDispatcher(state)
+    return ActionDispatcher(state, DriverConfig())
 
 
 def process(report, state, dispatcher, config):
@@ -337,13 +330,13 @@ def test_buttons_thread_processes_report_and_releases_on_exit(fake_hid, stub_sen
     dev = PlainDevice(reports=[build_button_report(press=0x01, touch=0x01)])
     fake_hid._queue.append(dev)
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     enabled = threading.Event()
     enabled.set()
     stop = threading.Event()
 
     thread = threading.Thread(
-        target=touch_controller.run_interface,
+        target=devices.run_interface,
         args=("Buttons", {"interface_number": 2, "path": b"fake-path"},
               state, dispatcher, enabled, stop),
         # cfg is required since unit B2 (no module-global fallback).
@@ -377,7 +370,7 @@ def make_wired_interfaces(extra=None):
 
 def test_enumeration_attaches_optional_third_interface(fake_hid):
     fake_hid.enumerate = lambda: make_wired_interfaces(extra=2)
-    manager = DeviceManagerThread(threading.Event(), threading.Event())
+    manager = DeviceManagerThread(threading.Event(), threading.Event(), DriverConfig())
 
     pair = manager.enumerate_wacom_devices()[0]
 
@@ -387,7 +380,7 @@ def test_enumeration_attaches_optional_third_interface(fake_hid):
 
 def test_enumeration_has_no_buttons_device_for_two_interfaces(fake_hid):
     fake_hid.enumerate = lambda: make_wired_interfaces()
-    manager = DeviceManagerThread(threading.Event(), threading.Event())
+    manager = DeviceManagerThread(threading.Event(), threading.Event(), DriverConfig())
 
     pair = manager.enumerate_wacom_devices()[0]
 
@@ -402,7 +395,7 @@ def test_manager_spawns_buttons_thread_next_to_pen_touch(fake_hid):
     enabled = threading.Event()
     enabled.set()
     stop = threading.Event()
-    manager = DeviceManagerThread(enabled, stop)
+    manager = DeviceManagerThread(enabled, stop, DriverConfig())
     manager.manage_connections()
 
     conn = next(iter(manager.active_connections.values()))
@@ -421,7 +414,7 @@ def test_manager_keeps_two_threads_without_third_interface(fake_hid):
     enabled = threading.Event()
     enabled.set()
     stop = threading.Event()
-    manager = DeviceManagerThread(enabled, stop)
+    manager = DeviceManagerThread(enabled, stop, DriverConfig())
     manager.manage_connections()
 
     conn = next(iter(manager.active_connections.values()))

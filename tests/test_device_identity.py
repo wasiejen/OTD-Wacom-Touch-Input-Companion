@@ -15,13 +15,8 @@ from test_device_settings import (
     FakeMessageBox,
 )
 
-from touch_controller import (
-    DEVICE_ALIAS_PREFIX,
-    DEVICE_SETTINGS_PREFIX,
-    DeviceManagerThread,
-    DriverConfig,
-    device_identity_hash,
-)
+from wtd.config import (DEVICE_ALIAS_PREFIX, DEVICE_SETTINGS_PREFIX, DriverConfig, device_identity_hash)
+from wtd.devices import DeviceManagerThread
 
 
 WACOM_PATH = b"ACM&W87&0&MI_00"

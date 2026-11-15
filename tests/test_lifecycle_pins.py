@@ -24,7 +24,7 @@ opt-in side of the session injection guard), and no fixed sleeps. The lanes
 synchronize on threading events and on the fake devices' own lifecycle
 signals, so a slow machine waits longer but never reads state that has not
 happened yet. Two bounded waits are exempt, and both are device-side rather
-than test-side: main()'s own 1.0 s startup readout (touch_controller.py:3626),
+than test-side: main()'s own 1.0 s startup readout (wtd/cli.py main() startup readout),
 which the driver cannot skip, and READER_DWELL_SECONDS inside the fake devices
 (conftest's FakeDevice.read_timeout models the same dwell) - the shutdown
 lanes' margin has to be owned by the device, not by machine speed, so removing
@@ -49,18 +49,16 @@ import types
 
 import pytest
 
-import touch_controller
-from touch_controller import (
-    ActionDispatcher,
-    DeviceManagerThread,
-    DriverConfig,
-    TabletState,
-    run_interface,
-)
+from wtd.config import DriverConfig
+from wtd.devices import (DeviceManagerThread, run_interface)
+from wtd.gestures import TabletState
+from wtd.sender import ActionDispatcher
 import gui
 from vk_codes import vk_codes_dict
 
 from conftest import PlainDevice, SignalDevice
+from wtd import cli
+from wtd import config
 
 JOIN_WINDOW_SECONDS = 1.0
 EVENT_WAIT_SECONDS = 2.0
@@ -205,7 +203,7 @@ def test_shutdown_stop_event_releases_held_modifier_in_join_window(fake_hid,
     """Item 1 / A2: a quit with Ctrl held must still release the modifier.
 
     The dispatcher holds Ctrl when the app quits. main()'s finally sets
-    stop_event and returns without joining (touch_controller.py:3662-3666) and
+    stop_event and returns without joining (wtd/cli.py main() finally) and
     every reader is a daemon thread (:3247-3258), so in the live build the
     reader's finally (:3041-3050) only runs if that thread happens to notice
     the flag before the interpreter tears the process down - the race Item 1
@@ -215,7 +213,7 @@ def test_shutdown_stop_event_releases_held_modifier_in_join_window(fake_hid,
     below pins that missing joiner.
     """
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     dispatcher.press_key("ctrl")
     stub_send_input.clear()
 
@@ -243,7 +241,7 @@ def test_shutdown_stop_event_releases_left_button_in_join_window(fake_hid,
     system-wide.
     """
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     dispatcher.handle_left_hold()
     stub_send_input.clear()
 
@@ -265,7 +263,7 @@ def test_shutdown_stop_event_releases_left_button_in_join_window(fake_hid,
 
 
 def drive_main(fake_hid, monkeypatch, tmp_path, devices, on_launch=None):
-    """Run touch_controller.main() device-free over the given fake devices.
+    """Run cli.main() device-free over the given fake devices.
 
     argv, the module config and the gui import are patched; the stub GUI closes
     as soon as it is launched. At that moment every device is handed the
@@ -273,11 +271,11 @@ def drive_main(fake_hid, monkeypatch, tmp_path, devices, on_launch=None):
     runs, so a lane can put the runtime mid-gesture exactly while the GUI is
     open. Returns the seconds main() spent, so a lane can assert a bounded
     shutdown without sleeping. The 1.0 s main() costs on its own is its startup
-    readout (touch_controller.py:3626).
+    readout (wtd/cli.py main()).
     """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["touch_controller.py"])
-    monkeypatch.setattr(touch_controller, "config", DriverConfig())
+    monkeypatch.setattr(cli, "config", DriverConfig())
     fake_hid.enumerate = lambda: wired_pair(789, "VID_056A&PID_0315")
     fake_hid._queue.extend(devices)
 
@@ -297,7 +295,7 @@ def drive_main(fake_hid, monkeypatch, tmp_path, devices, on_launch=None):
     monkeypatch.setitem(sys.modules, "gui", gui_stub)
 
     started = time.monotonic()
-    touch_controller.main()
+    cli.main()
     return time.monotonic() - started
 
 
@@ -475,7 +473,7 @@ def grant_live_vocabulary(base, conn):
     """Give the base config the action vocabulary main() gives it.
 
     main() reads the list off the live dispatcher and stores it on the base
-    config (touch_controller.py:3703-3716). A stored identity entry is validated
+    config (wtd/cli.py main()). A stored identity entry is validated
     against that list when a connection reforks, so a churn lane that skipped
     this step would watch a legitimate Apply rejected as an unknown action
     instead of testing the durability it names.
@@ -649,7 +647,7 @@ def test_two_sequential_reader_exits_release_the_modifier_once(fake_hid,
     pins the once-only claim when the two exits overlap.
     """
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     dispatcher.press_key("ctrl")
     stub_send_input.clear()
 
@@ -705,7 +703,7 @@ def test_concurrent_reader_exits_release_the_modifier_once(fake_hid,
     what the ups == 1 assert pins.
     """
     state = TabletState()
-    dispatcher = ActionDispatcher(state)
+    dispatcher = ActionDispatcher(state, DriverConfig())
     dispatcher.press_key("ctrl")
     stub_send_input.clear()
 
@@ -796,7 +794,7 @@ def test_primary_connection_binds_the_first_enumerated_device(fake_hid):
         assert primary["product_id"] == 789, (
             "primary bind did not follow enumeration order: got product_id "
             f"{primary['product_id']}")
-        assert primary["identity"] == touch_controller.device_identity_hash(
+        assert primary["identity"] == config.device_identity_hash(
             b"HID#VID_056A&PID_0315&MI_00", "")
 
         state, action = manager.get_primary_state_and_action()

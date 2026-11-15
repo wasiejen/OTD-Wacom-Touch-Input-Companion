@@ -26,12 +26,11 @@ import pytest
 
 from conftest import PlainDevice
 
-from touch_controller import (
-    ActionDispatcher,
-    DriverConfig,
-    TabletState,
-    run_interface,
-)
+from wtd.config import DriverConfig
+from wtd.devices import run_interface
+from wtd.gestures import TabletState
+from wtd.sender import ActionDispatcher
+from wtd import config
 
 VK_VOLUME_UP = 0xAF
 VK_VOLUME_DOWN = 0xAE

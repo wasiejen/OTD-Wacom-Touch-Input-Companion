@@ -9,18 +9,12 @@ import json
 
 import pytest
 
-from touch_controller import (
-    DriverConfig,
-    ActionDispatcher,
-    TabletState,
-    TOUCH_ROTATION_CENTER,
-    ORIENTATION_MAX_DEGREES,
-    apply_orientation,
-    pen_rotation_center,
-    process_pen_report,
-    process_touch_report,
-    rotate_point,
-)
+from wtd.config import (DriverConfig, ORIENTATION_MAX_DEGREES)
+from wtd.gestures import (TabletState, process_touch_report)
+from wtd.mapping import (TOUCH_ROTATION_CENTER, apply_orientation, pen_rotation_center, process_pen_report, rotate_point)
+from wtd.sender import ActionDispatcher
+from wtd import config
+from wtd import mapping
 
 
 SPECS = {"max_x": 44704, "max_y": 27940, "width_mm": 223.52, "height_mm": 139.7}
@@ -53,7 +47,7 @@ def config(monkeypatch, tmp_path):
     # so every absolute case maps on a SQUARE synthetic desktop -- there the
     # isotropic px/mm fit and the old normalized-space parity give one number
     # and the emitted corners stay independent of the machine's real desktop.
-    monkeypatch.setattr("touch_controller.virtual_desktop_metrics",
+    monkeypatch.setattr("wtd.mapping.virtual_desktop_metrics",
                         lambda: (0, 0, 1440, 1440))
     return DriverConfig()
 
@@ -65,7 +59,7 @@ def state():
 
 @pytest.fixture
 def dispatcher(state):
-    return ActionDispatcher(state)
+    return ActionDispatcher(state, DriverConfig())
 
 
 # --- rotation core -----------------------------------------------------------

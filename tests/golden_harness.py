@@ -22,7 +22,7 @@ Capture point
 Time control
     The cascade reads wall time through ``time.time()`` (double-tap window,
     press-hold, tap duration, session cap). A run installs a fake clock over
-    ``touch_controller.time`` and sets it to ``start + step.t`` before each
+    ``time`` in every cascade module and sets it to ``start + step.t`` before each
     report, so every scenario is fully deterministic -- goldens regenerate
     byte-identical.
 
@@ -43,16 +43,16 @@ import json
 import subprocess
 from pathlib import Path
 
-import touch_controller
 from vk_codes import vk_codes_dict
-from touch_controller import (
-    MAX_TOUCH_CONTACTS,
-    ActionDispatcher,
-    DriverConfig,
-    TabletState,
-    parse_pen_packet,
-    process_touch_report,
-)
+from wtd import cli as _wtd_cli
+from wtd import devices as _wtd_devices
+from wtd import gestures as _wtd_gestures
+from wtd import mapping as _wtd_mapping
+from wtd import protocol as _wtd_protocol
+from wtd.config import DriverConfig
+from wtd.gestures import TabletState, process_touch_report
+from wtd.protocol import MAX_TOUCH_CONTACTS, parse_pen_packet
+from wtd.sender import ActionDispatcher
 
 TESTS_DIR = Path(__file__).resolve().parent
 REPO_ROOT = TESTS_DIR.parent
@@ -64,7 +64,7 @@ GOLDEN_PATH = TESTS_DIR / "goldens" / "touch_cascade.golden.json"
 # guards read as huge instead of as a fresh event.
 FAKE_START = 1_000_000.0
 
-# Touch sub-block statuses (touch_controller constants).
+# Touch sub-block statuses (wtd.protocol report constants).
 TOUCH_STATUS = {"down": 0xC0, "move": 0x80, "up": 0x20}
 
 # Pen-proximity statuses accepted by parse_pen_packet: in-range marks the
@@ -116,7 +116,7 @@ def _signed32(value):
 
 
 class FakeClock:
-    """Deterministic stand-in for the ``time`` module inside touch_controller.
+    """Deterministic stand-in for the ``time`` module inside the cascade.
 
     The cascade path reads only ``time.time()``; ``sleep`` fails loud so a
     future cascade that blocks inside a report cannot hide a wall-clock wait
@@ -241,14 +241,18 @@ class CascadeHarness:
         """
         user32 = ctypes.windll.user32
         previous_send = user32.SendInput
-        previous_time = touch_controller.time
-        touch_controller.time = self.clock
+        clock_mods = (_wtd_gestures, _wtd_devices, _wtd_cli,
+                                _wtd_mapping, _wtd_protocol)
+        previous_time = [m.time for m in clock_mods]
+        for m in clock_mods:
+            m.time = self.clock
         user32.SendInput = self._record
         try:
             for step in self.steps:
                 self._dispatch(step)
         finally:
-            touch_controller.time = previous_time
+            for m, prev in zip(clock_mods, previous_time):
+                m.time = prev
             user32.SendInput = previous_send
         return self.actions
 

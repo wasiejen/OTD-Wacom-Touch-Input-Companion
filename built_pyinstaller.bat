@@ -18,7 +18,7 @@ pyinstaller --onefile --windowed ^
     --hidden-import "pynput.mouse._win32" ^
     --hidden-import "pystray._win32" ^
     --name "OTD_Wacom_Touch_Driver" ^
-    touch_controller.py %*
+    wtd/__main__.py %*
 
 :: --- Rename and move executable ---
 :: Define source (dist) and destination (current dir)

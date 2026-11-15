@@ -10,18 +10,13 @@ import types
 import gui
 import pytest
 
-from touch_controller import (
-    ActionDispatcher,
-    DeviceManagerThread,
-    DriverConfig,
-    MODEL_CLASS_ALIASES,
-    TabletState,
-    WIRELESS_DEFAULT_ALIAS,
-    resolve_device_alias,
-    run_interface,
-)
+from wtd.config import (DriverConfig, MODEL_CLASS_ALIASES, WIRELESS_DEFAULT_ALIAS, resolve_device_alias)
+from wtd.devices import (DeviceManagerThread, run_interface)
+from wtd.gestures import TabletState
+from wtd.sender import ActionDispatcher
 
 from conftest import ExplodingDevice
+from wtd import config
 
 
 def fresh_config(monkeypatch, tmp_path):
@@ -231,12 +226,10 @@ def test_dispatcher_uses_connection_config(monkeypatch, tmp_path, stub_send_inpu
     assert ActionDispatcher.MOUSEEVENTF_MIDDLEUP in flags
 
 
-def test_dispatcher_without_cfg_falls_back_to_module_config(monkeypatch, tmp_path, stub_send_input):
+def test_dispatcher_with_explicit_cfg_defaults_fires_nothing(monkeypatch, tmp_path, stub_send_input):
     """2f_tap is off by default, so a plain dispatcher fires nothing."""
     monkeypatch.chdir(tmp_path)
-    import touch_controller
-    monkeypatch.setattr(touch_controller, "config", DriverConfig())
-    dispatcher = ActionDispatcher(TabletState())
+    dispatcher = ActionDispatcher(TabletState(), DriverConfig())
 
     dispatcher.dispatch_gesture_event("2f_tap")
 

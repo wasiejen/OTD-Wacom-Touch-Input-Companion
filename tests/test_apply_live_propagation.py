@@ -32,12 +32,10 @@ import pytest
 
 from conftest import PlainDevice
 
-import touch_controller
-from touch_controller import (
-    DeviceManagerThread,
-    DriverConfig,
-    run_interface,
-)
+from wtd.config import DriverConfig
+from wtd.devices import (DeviceManagerThread, run_interface)
+from wtd import config
+from wtd import devices as wtd_devices
 
 VK_VOLUME_UP = 0xAF
 VK_VOLUME_DOWN = 0xAE
@@ -85,7 +83,7 @@ def decoy_global(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     global_cfg = DriverConfig()
     global_cfg.action_mapping["btn1_press"] = "volume_up"
-    monkeypatch.setattr(touch_controller, "config", global_cfg)
+    monkeypatch.setattr(config, "config", global_cfg)
     return global_cfg
 
 
@@ -185,7 +183,7 @@ def test_manager_passes_fork_to_every_reader_spawn(fake_hid, decoy_global,
                                 enabled, stop, idle_poll=None, cfg=None):
         calls.append((interface_type, cfg))
 
-    monkeypatch.setattr(touch_controller, "run_interface", recording_run_interface)
+    monkeypatch.setattr(wtd_devices, "run_interface", recording_run_interface)
     base = DriverConfig()
     fake_hid.enumerate = lambda: wired_trio_devices(789)
     enabled = threading.Event()

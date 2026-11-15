@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['touch_controller.py'],
+    ['wtd/__main__.py'],
     pathex=[],
     binaries=[],
     datas=[('.venv/Lib/site-packages/hid.cp312-win_amd64.pyd', '.')],

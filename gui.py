@@ -6,28 +6,10 @@ from PIL import Image, ImageDraw, ImageFont
 import pystray
 from pystray import MenuItem as item
 
-from touch_controller import (
-    ORIENTATION_MAX_DEGREES,
-    TOUCH_ACTION_CHOICES,
-    WIRELESS_RECEIVER_PRODUCT_ID,
-    WIRELESS_TABLET_SIZES,
-    display_key_for_records,
-    monitor_records,
-    pen_area_rect_aspect_lock,
-    pen_mm_per_px,
-    pen_specs_for_product,
-    resolved_pen_mode,
-    reset_pen_area_key_cache,
-    rotate_point,
-    rotated_pen_box_mm,
-    select_pen_area_entry,
-    snapshot_device_sections,
-    union_rect_from_records,
-    virtual_desktop_dpi,
-    virtual_desktop_metrics,
-    PEN_MODES,
-    PEN_SPECS_BY_PRODUCT,
-)
+from wtd.config import (ORIENTATION_MAX_DEGREES, TOUCH_ACTION_CHOICES, WIRELESS_RECEIVER_PRODUCT_ID, WIRELESS_TABLET_SIZES, resolved_pen_mode, snapshot_device_sections, union_rect_from_records, PEN_MODES)
+from wtd.mapping import (display_key_for_records, monitor_records, pen_area_rect_aspect_lock, pen_mm_per_px, reset_pen_area_key_cache, rotate_point, rotated_pen_box_mm, select_pen_area_entry, virtual_desktop_dpi, virtual_desktop_metrics)
+from wtd.protocol import (pen_specs_for_product, PEN_SPECS_BY_PRODUCT)
+from wtd import config
 
 # Wireless tablet size GUI lane (U386 / TODO #385). The combo offers the
 # explicit unset label plus the tablet-size vocabulary; the notice text is
@@ -754,7 +736,7 @@ class PenAreaEditor(ttk.Frame):
         """Follow a tablet-orientation change (U424r4 R4-B / #424 item B).
 
         PEN PATH WINS: the pen maps the STORED rect as the footprint and
-        fills it with the ROTATED extents (touch_controller
+        fills it with the ROTATED extents (wtd.mapping
         pen_area_norm_projection + update_pen_cursor), so the editor
         keeps the rect px footprint EXACTLY and only updates its box_mm
         - the mm readout, the sensitivity (w-axis) echo and the aspect

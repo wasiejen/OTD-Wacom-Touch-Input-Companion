@@ -39,7 +39,7 @@ PEN_STATUS = (0xE0, 0xE1, 0xE2, 0x80, 0x20, 0x22)
 def decode_report(report):
     """Classify one input report as touch/ pen/ unknown.
 
-    Heuristic based on the formats touch_controller.py parses:
+    Heuristic based on the formats the wtd protocol lane parses:
       - touch: report id 0x02, len >= 10, count byte 1..10, first sub-block
         slot id 0x81 (SYNC) or 1..10 with a known status nibble
       - pen: report id 0x02, short len, status byte in PEN_STATUS
