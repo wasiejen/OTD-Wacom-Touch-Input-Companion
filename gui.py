@@ -1020,7 +1020,10 @@ class SettingsWindow(tk.Toplevel):
         # computed from the base config on every focus/apply/save refresh.
         self.identity_hint_label = ttk.Label(frame, text="", wraplength=400,
                                              justify="left")
-        self.identity_hint_label.grid(row=5, column=0, columnspan=4, sticky="w",
+        # Row 7: rows 3-5 belong to the copy-lane checkbuttons (row 5 was
+        # the reviewer P1 overlap), row 6 is the button row; the wireless
+        # lane moved to row 8 below.
+        self.identity_hint_label.grid(row=7, column=0, columnspan=4, sticky="w",
                                       pady=(6, 0))
         self._refresh_identity_hint()
 
@@ -1092,7 +1095,7 @@ class SettingsWindow(tk.Toplevel):
         is_wireless = conn.get("product_id") == WIRELESS_RECEIVER_PRODUCT_ID
         packed = frame.winfo_manager() == "grid"
         if is_wireless and not packed:
-            frame.grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
+            frame.grid(row=8, column=0, columnspan=4, sticky="w", pady=(8, 0))
         elif not is_wireless and packed:
             frame.grid_forget()
         if hasattr(self, "wireless_size_combo"):

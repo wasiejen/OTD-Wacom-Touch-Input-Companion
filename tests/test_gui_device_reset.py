@@ -46,8 +46,6 @@ def _root():
     if _ROOT[0] is not None and _ROOT[0].winfo_exists():
         return _ROOT[0]
     for mod in list(sys.modules.values()):
-        root = getattr(mod, "_tk_root", None) if isinstance(mod, object) else None
-        root = getattr(mod, "root", None) or root
         candidate = getattr(mod, "_tk_root", None)
         if candidate is not None and candidate.winfo_exists():
             return candidate
