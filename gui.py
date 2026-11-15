@@ -736,7 +736,7 @@ class PenAreaEditor(ttk.Frame):
         """Follow a tablet-orientation change (U424r4 R4-B / #424 item B).
 
         PEN PATH WINS: the pen maps the STORED rect as the footprint and
-        fills it with the ROTATED extents (touch_controller
+        fills it with the ROTATED extents (wtd.mapping
         pen_area_norm_projection + update_pen_cursor), so the editor
         keeps the rect px footprint EXACTLY and only updates its box_mm
         - the mm readout, the sensitivity (w-axis) echo and the aspect

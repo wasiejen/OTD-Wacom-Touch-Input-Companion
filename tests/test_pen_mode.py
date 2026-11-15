@@ -99,7 +99,8 @@ def test_mode_switch_applies_live_no_restart(cfg, stub_send_input):
     # #386 shape: the running reader picks the new lane on the NEXT report.
     state = TabletState()
     dispatcher = ActionDispatcher(state, cfg)
-    specs = __import__("touch_controller").PEN_SPECS_BY_PRODUCT[791]
+    from wtd.protocol import PEN_SPECS_BY_PRODUCT
+    specs = PEN_SPECS_BY_PRODUCT[791]
     cfg.feature_toggles["pen_absolute_mode"] = True  # legacy says absolute
     cfg.pen_mode = None
     update_pen_cursor(state, dispatcher, cfg, specs, 100, 100,

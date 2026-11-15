@@ -11,7 +11,6 @@ mapping change; default OFF is byte-unchanged behavior. RED-before at
 import sys
 import pytest
 
-import touch_controller
 from wtd.config import union_rect_from_records
 from wtd.mapping import (METRICS_DIAG_ENV, log_metrics_diagnostic, metrics_diag_enabled, metrics_readout_line)
 from wtd import cli

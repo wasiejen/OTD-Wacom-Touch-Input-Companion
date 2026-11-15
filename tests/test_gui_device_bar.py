@@ -20,7 +20,6 @@ import tkinter as tk
 import pytest
 
 import gui
-import touch_controller
 from wtd.config import DriverConfig
 from wtd.gestures import TabletState
 from wtd import cli

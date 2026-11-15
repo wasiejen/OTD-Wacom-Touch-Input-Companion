@@ -24,7 +24,7 @@ opt-in side of the session injection guard), and no fixed sleeps. The lanes
 synchronize on threading events and on the fake devices' own lifecycle
 signals, so a slow machine waits longer but never reads state that has not
 happened yet. Two bounded waits are exempt, and both are device-side rather
-than test-side: main()'s own 1.0 s startup readout (touch_controller.py:3626),
+than test-side: main()'s own 1.0 s startup readout (wtd/cli.py main() startup readout),
 which the driver cannot skip, and READER_DWELL_SECONDS inside the fake devices
 (conftest's FakeDevice.read_timeout models the same dwell) - the shutdown
 lanes' margin has to be owned by the device, not by machine speed, so removing
@@ -49,7 +49,6 @@ import types
 
 import pytest
 
-import touch_controller
 from wtd.config import DriverConfig
 from wtd.devices import (DeviceManagerThread, run_interface)
 from wtd.gestures import TabletState
@@ -204,7 +203,7 @@ def test_shutdown_stop_event_releases_held_modifier_in_join_window(fake_hid,
     """Item 1 / A2: a quit with Ctrl held must still release the modifier.
 
     The dispatcher holds Ctrl when the app quits. main()'s finally sets
-    stop_event and returns without joining (touch_controller.py:3662-3666) and
+    stop_event and returns without joining (wtd/cli.py main() finally) and
     every reader is a daemon thread (:3247-3258), so in the live build the
     reader's finally (:3041-3050) only runs if that thread happens to notice
     the flag before the interpreter tears the process down - the race Item 1
@@ -272,7 +271,7 @@ def drive_main(fake_hid, monkeypatch, tmp_path, devices, on_launch=None):
     runs, so a lane can put the runtime mid-gesture exactly while the GUI is
     open. Returns the seconds main() spent, so a lane can assert a bounded
     shutdown without sleeping. The 1.0 s main() costs on its own is its startup
-    readout (touch_controller.py:3626).
+    readout (wtd/cli.py main()).
     """
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["touch_controller.py"])
@@ -474,7 +473,7 @@ def grant_live_vocabulary(base, conn):
     """Give the base config the action vocabulary main() gives it.
 
     main() reads the list off the live dispatcher and stores it on the base
-    config (touch_controller.py:3703-3716). A stored identity entry is validated
+    config (wtd/cli.py main()). A stored identity entry is validated
     against that list when a connection reforks, so a churn lane that skipped
     this step would watch a legitimate Apply rejected as an unknown action
     instead of testing the durability it names.
