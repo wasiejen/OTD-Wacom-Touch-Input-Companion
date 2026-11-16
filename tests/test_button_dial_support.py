@@ -338,7 +338,7 @@ def test_buttons_thread_processes_report_and_releases_on_exit(fake_hid, stub_sen
     thread = threading.Thread(
         target=devices.run_interface,
         args=("Buttons", {"interface_number": 2, "path": b"fake-path"},
-              state, dispatcher, enabled, stop),
+              state, dispatcher, stop),
         # cfg is required since unit B2 (no module-global fallback).
         kwargs={"idle_poll": 0.02, "cfg": cfg},
         daemon=True,
@@ -348,7 +348,7 @@ def test_buttons_thread_processes_report_and_releases_on_exit(fake_hid, stub_sen
     deadline = time.monotonic() + 1.0
     while state.button_press_mask == 0 and time.monotonic() < deadline:
         time.sleep(0.002)
-    enabled.clear()
+    stop.set()
     thread.join(timeout=0.5)
 
     assert not thread.is_alive()

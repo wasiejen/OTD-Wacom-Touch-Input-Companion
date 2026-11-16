@@ -150,18 +150,20 @@ def mouse_events(events, dw_flags):
     return [e for e in events if e[0] == "mouse" and e[1] == dw_flags]
 
 
-def start_reader(fake_hid, interface_type, state, dispatcher, enabled, stop):
+def start_reader(fake_hid, interface_type, state, dispatcher, stop,
+                 dev_cls=SignalDevice):
     """Spawn one daemon reader over its own signal device, as the manager does.
 
     Returns only after the reader entered its read loop (device signal, not a
-    sleep), so the caller's stop/pause always lands on a running reader.
+    sleep), so the caller's stop (and, since #448, only stop - touch state
+    ends no reader now) always lands on a running reader.
     """
-    dev = SignalDevice()
+    dev = dev_cls()
     fake_hid._queue.append(dev)
     thread = threading.Thread(
         target=run_interface,
         args=(interface_type, {"interface_number": 1, "path": b"fake-path"},
-              state, dispatcher, enabled, stop),
+              state, dispatcher, stop),
         # cfg is required since unit B2 (no module-global fallback): a harness
         # reader gets its own defaults config.
         kwargs={"idle_poll": TICK, "cfg": DriverConfig()},
@@ -170,6 +172,32 @@ def start_reader(fake_hid, interface_type, state, dispatcher, enabled, stop):
     thread.start()
     assert dev.first_read.wait(EVENT_WAIT_SECONDS), "reader never entered its read loop"
     return thread, dev
+
+
+class ChurnDevice(SignalDevice):
+    """TRAY unit (#448): SignalDevice plus an on-command disconnect.
+
+    Idle reads until the test sets explode; every read after that raises
+    OSError - the reader's own disconnect exit. This is the churn shape
+    now that a touch stop is emission gating and no longer ends reader
+    threads (the pause-driven churn it replaces is retired).
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.explode = threading.Event()
+
+    def _explode(self):
+        if self.explode.is_set():
+            raise OSError("churn: simulated disconnect")
+
+    def read(self, max_size=64):
+        self._explode()
+        return super().read(max_size)
+
+    def read_timeout(self, max_size, timeout_ms):
+        self._explode()
+        return super().read(max_size)
 
 
 def join_readers(*threads):
@@ -220,7 +248,7 @@ def test_shutdown_stop_event_releases_held_modifier_in_join_window(fake_hid,
     enabled = threading.Event()
     enabled.set()
     stop = threading.Event()
-    thread, dev = start_reader(fake_hid, "Touch", state, dispatcher, enabled, stop)
+    thread, dev = start_reader(fake_hid, "Touch", state, dispatcher, stop)
 
     stop.set()
     thread.join(JOIN_WINDOW_SECONDS)
@@ -248,7 +276,7 @@ def test_shutdown_stop_event_releases_left_button_in_join_window(fake_hid,
     enabled = threading.Event()
     enabled.set()
     stop = threading.Event()
-    thread, dev = start_reader(fake_hid, "Touch", state, dispatcher, enabled, stop)
+    thread, dev = start_reader(fake_hid, "Touch", state, dispatcher, stop)
 
     stop.set()
     thread.join(JOIN_WINDOW_SECONDS)
@@ -488,21 +516,23 @@ def start_manager(enabled, stop, base):
     return manager
 
 
-def churn(manager, enabled, all_threads):
-    """Pause, wait the readers out, resume, run one reconnect pass.
+def churn(manager, churn_devices, all_threads):
+    """Kill the readers by disconnect, then run one reconnect pass.
 
-    Returns the respawned connections. This is the churn Item 2 reports on: the
-    pause drops the enable event, both readers break out, and the next pass
-    deletes the dead entry and forks a fresh config for the identity.
+    TRAY unit (#448) re-engineer of the pause-driven churn: a touch stop
+    is emission gating now, so it ends no reader; the devices explode
+    instead (the real disconnect shape). Returns the respawned
+    connections: the next manage_connections pass deletes the dead entry
+    and forks a fresh config for the identity, exactly as before.
     """
-    enabled.clear()
+    for dev in churn_devices:
+        dev.explode.set()
     join_readers(*all_threads)
     stuck = live_threads(all_threads)
     assert not stuck, (
-        f"{len(stuck)} reader(s) outlived the pause: the manager keeps a live "
-        "connection in that case, so this lane would certify survival without "
-        "ever reforking anything")
-    enabled.set()
+        f"{len(stuck)} reader(s) outlived the disconnect: the manager keeps a "
+        "live connection in that case, so this lane would certify survival "
+        "without ever reforking anything")
     manager.manage_connections()
     return manager.list_connections()
 
@@ -529,7 +559,8 @@ def test_apply_live_survives_pause_reconnect(fake_hid, monkeypatch, tmp_path):
     monkeypatch.setattr(gui, "ToastNotification", lambda *args, **kwargs: None)
     base = live_base_config({"btn1_press": BASE_ACTION})
     fake_hid.enumerate = lambda: wired_pair(789, "VID_056A&PID_0315")
-    fake_hid._queue.extend(PlainDevice() for _ in range(4))
+    churn_devices = [ChurnDevice() for _ in range(4)]
+    fake_hid._queue.extend(churn_devices)
 
     enabled = threading.Event()
     enabled.set()
@@ -549,7 +580,9 @@ def test_apply_live_survives_pause_reconnect(fake_hid, monkeypatch, tmp_path):
         assert win.apply_settings() is True, "the apply lane rejected its own values"
         assert conn["config"].action_mapping["btn1_press"] == APPLIED_ACTION
 
-        respawned = churn(manager, enabled, all_threads)
+        # The pair's own two readers rode devices[0:2]; explode exactly
+        # those so the respawn (queue tail) starts from clean devices.
+        respawned = churn(manager, churn_devices[:2], all_threads)
         assert respawned, "no connection after the respawn"
         fresh = next(c for c in respawned if c["product_id"] == 789)
         assert fresh["config"] is not conn["config"], (
@@ -585,7 +618,8 @@ def test_apply_live_does_not_leak_between_devices(fake_hid, monkeypatch, tmp_pat
     base = live_base_config({"btn1_press": BASE_ACTION})
     fake_hid.enumerate = lambda: (wired_pair(789, "VID_056A&PID_0315")
                                   + wired_pair(788, "VID_056A&PID_030C"))
-    fake_hid._queue.extend(PlainDevice() for _ in range(4))
+    churn_devices = [ChurnDevice() for _ in range(4)]
+    fake_hid._queue.extend(churn_devices)
     third = "volume_mute"
 
     enabled = threading.Event()
@@ -618,7 +652,8 @@ def test_apply_live_does_not_leak_between_devices(fake_hid, monkeypatch, tmp_pat
         assert (base.device_settings[b["identity"]]["action_mapping"]["btn1_press"]
                 == third)
 
-        respawned = churn(manager, enabled, all_threads)
+        # Both pairs' four readers rode devices[0:4]; explode all.
+        respawned = churn(manager, churn_devices, all_threads)
         assert len(respawned) == 2, "both devices should have respawned"
         all_threads = [t for c in respawned for t in c["threads"].values()]
         ra = next(c for c in respawned if c["product_id"] == 789)
@@ -652,16 +687,14 @@ def test_two_sequential_reader_exits_release_the_modifier_once(fake_hid,
     stub_send_input.clear()
 
     shared_stop = threading.Event()
-    first_enabled = threading.Event()
-    first_enabled.set()
-    second_enabled = threading.Event()
-    second_enabled.set()
+    first_dev = ChurnDevice()
     thread1, dev1 = start_reader(fake_hid, "Touch", state, dispatcher,
-                                 first_enabled, shared_stop)
+                                 shared_stop, dev_cls=lambda: first_dev)
     thread2, dev2 = start_reader(fake_hid, "Pen", state, dispatcher,
-                                 second_enabled, shared_stop)
+                                 shared_stop)
 
-    first_enabled.clear()   # reader 1 exits alone (the pause shape)
+    first_dev.explode.set()  # reader 1 exits alone (the disconnect shape -
+                             # #448: a touch stop ends no reader anymore)
     thread1.join(EVENT_WAIT_SECONDS)
     assert not thread1.is_alive(), "first reader survived the pause"
     assert len(key_ups(stub_send_input, vk_codes_dict["ctrl"])) == 1, (
@@ -730,8 +763,8 @@ def test_concurrent_reader_exits_release_the_modifier_once(fake_hid,
     enabled = threading.Event()
     enabled.set()
     stop = threading.Event()
-    thread1, dev1 = start_reader(fake_hid, "Touch", state, dispatcher, enabled, stop)
-    thread2, dev2 = start_reader(fake_hid, "Pen", state, dispatcher, enabled, stop)
+    thread1, dev1 = start_reader(fake_hid, "Touch", state, dispatcher, stop)
+    thread2, dev2 = start_reader(fake_hid, "Pen", state, dispatcher, stop)
 
     stop.set()      # both finallys run against each other
     join_readers(thread1, thread2)

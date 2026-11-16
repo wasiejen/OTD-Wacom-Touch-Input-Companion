@@ -103,7 +103,7 @@ def test_thread_exit_on_oserror_releases_ctrl(fake_hid, stub_send_input):
     stop = threading.Event()
 
     devices.run_interface(
-        "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, enabled, stop,
+        "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, stop,
         DriverConfig()
     )
 
@@ -124,7 +124,7 @@ def test_thread_exit_on_oserror_releases_left_button(fake_hid, stub_send_input):
     stop = threading.Event()
 
     devices.run_interface(
-        "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, enabled, stop,
+        "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, stop,
         DriverConfig()
     )
 
@@ -143,13 +143,12 @@ def test_run_interface_calls_release_held_inputs_on_exit(fake_hid):
     fake_hid._queue.append(dev)
 
     enabled = threading.Event()
-    enabled.set()
     stop = threading.Event()
     stop.set()
 
     devices.run_interface(
         "Touch", {"interface_number": 1, "path": b"fake"}, TabletState(),
-        RecordingDispatcher(), enabled, stop, DriverConfig()
+        RecordingDispatcher(), stop, DriverConfig()
     )
 
     assert calls == ["released"]

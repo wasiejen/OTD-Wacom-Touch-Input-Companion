@@ -2672,6 +2672,10 @@ class SettingsWindow(tk.Toplevel):
 
 
 class DriverTrayApp:
+    # TRAY unit (#448): icon-state poll cadence for toggle-driven changes
+    # (a button-mapped touch_toggle flips the flag off the reader thread).
+    ICON_WATCH_MS = 500
+
     def __init__(self, root, state_ref, config_ref, enabled_event_ref, stop_event_ref, device_info=None):
         self.root = root
         self.state = state_ref
@@ -2682,6 +2686,8 @@ class DriverTrayApp:
         self.icon = None
         self.settings_window = None
         self.icon_cache = IconCache(text="WT")
+        self._icon_state_seen = None
+        self.start_icon_watch()
 
     def toggle_touch(self, icon=None, item=None):
         if self.touch_enabled_event.is_set():
@@ -2690,17 +2696,59 @@ class DriverTrayApp:
             self.touch_enabled_event.set()
         
         status = "Paused" if not self.touch_enabled_event.is_set() else "Active"
-        print(f"[Tray] Touch input is now {status} (touch_paused = {not self.touch_enabled_event.is_set()})")
+        print(f"[Tray] Touch output is now {status} "
+              f"(touch_paused = {not self.touch_enabled_event.is_set()}; "
+              "pen and tablet buttons stay live)")
         self.update_icon()
+
+    def start_icon_watch(self):
+        # TRAY unit (#448): the touch_toggle action can flip the shared
+        # flag from a READER thread (mapped tablet button), and pystray
+        # never re-reads the icon image on its own - so a slow Tk timer
+        # polls the ONE flag and re-runs update_icon on change (the same
+        # refresh the tray click uses; no second source of state).
+        if self.root is None or not hasattr(self.root, "after"):
+            return
+        self._icon_state_seen = self.touch_enabled_event.is_set()
+        self._tick_icon_watch()
+
+    def _poll_icon_state(self):
+        # One watch tick (test seam): refresh only on an actual change.
+        seen = self.touch_enabled_event.is_set()
+        if seen != self._icon_state_seen:
+            self._icon_state_seen = seen
+            self.update_icon()
+            return True
+        return False
+
+    def _tick_icon_watch(self):
+        # Reviewer P2 (wtd-tray-review): one failing update_icon (a pystray/
+        # win32 hiccup) must not silently end the watcher chain - log it and
+        # keep the tick alive; only a destroyed root ends it.
+        try:
+            self._poll_icon_state()
+        except Exception as exc:
+            print(f"[Tray] icon watch tick failed: {exc}")
+        finally:
+            try:
+                self.root.after(self.ICON_WATCH_MS, self._tick_icon_watch)
+            except tk.TclError:
+                # Root destroyed on quit: the watcher dies with it.
+                pass
         
     def is_touch_enabled(self, item=None):
         return self.touch_enabled_event.is_set()
     
     def update_icon(self):
+        # TRAY unit (#448): the STOP state is TOUCH-OUTPUT-scoped now -
+        # the title says so, so a stopped touch lane is never mistaken
+        # for a dead tablet (pen and tablet buttons keep working).
         if self.icon:
             is_enabled = self.touch_enabled_event.is_set()
             self.icon.icon = self.icon_cache.get(is_enabled)
-            self.icon.title = f"Wacom Touch Driver ({'Enabled' if self.touch_enabled_event.is_set() else 'Disabled'})"
+            self.icon.title = ("Wacom Touch Driver (Touch Enabled)" if is_enabled
+                               else "Wacom Touch Driver (Touch Disabled - "
+                                    "pen and tablet buttons stay live)")
 
     def open_settings(self, icon=None, item=None):
         self.root.after(0, self._show_settings_gui)
@@ -2715,16 +2763,18 @@ class DriverTrayApp:
         print("[Tray] Exiting Wacom Touch Driver...")
         self.stop_event.set()
         #self.state.set_running_global(False)
-        # to stop waiting of device manager if touch is disabled
-        if self.touch_enabled_event:
-            self.touch_enabled_event.set()
+        # TRAY unit (#448): the retired touch-flag unblock hack - the
+        # manager no longer waits on the flag (it only gates emissions),
+        # so quitting with touch stopped needs no event fiddling.
         if self.icon:
             self.icon.stop()
         self.root.after(0, self.root.quit)
 
     def run_tray(self):
         menu = pystray.Menu(
-            item('Enable Touch Input', self.toggle_touch, checked=self.is_touch_enabled, default=True),
+            # #448 wording: OUTPUT vocabulary (pen and tablet buttons stay
+            # live regardless), matching the tooltip, CHANGELOG, and README.
+            item('Enable Touch Output', self.toggle_touch, checked=self.is_touch_enabled, default=True),
             item('Settings...', self.open_settings),
             pystray.Menu.SEPARATOR,
             item('Exit Driver', self.quit_driver)
@@ -2737,6 +2787,9 @@ class DriverTrayApp:
             "Wacom Touch Driver",
             menu
         )
+        # Reviewer P2 (wtd-tray-review): carry the touch-scoped title and
+        # state color from the FIRST frame, not from the first change.
+        self.update_icon()
         self.icon.run()
 
 

@@ -370,7 +370,14 @@ def process_touch_report(report, state, action_dispatch, cfg):
                             move_y = int(state.cursor_acc_y)
                             
                             if move_x != 0 or move_y != 0:
-                                ad.send_real_mouse_move(move_x, move_y)
+                                # TRAY unit (#448): the touch cursor is
+                                # gated here, NOT inside
+                                # send_real_mouse_move - the PEN relative
+                                # lane shares that emitter (mapping.py
+                                # update_pen_cursor) and must stay live
+                                # while touch is stopped.
+                                if not ad.touch_stopped():
+                                    ad.send_real_mouse_move(move_x, move_y)
                                 state.cursor_acc_x -= move_x
                                 state.cursor_acc_y -= move_y
 
@@ -401,7 +408,13 @@ def process_touch_report(report, state, action_dispatch, cfg):
             if state.active_gesture is None:
                 if abs(delta_spread_total) >= cfg.pinch_activation_threshold:
                     state.active_gesture = "2f_pinch"
-                    ad.press_key("ctrl")
+                    # TRAY unit (#448) choke point (reviewer P1-2): the
+                    # pinch Ctrl-hold press is touch output; its matching
+                    # release_key("ctrl") stays deliberately UNGATED so a
+                    # pinch straddling a stop still lifts the key (worst
+                    # case a benign orphan key-up).
+                    if not ad.touch_stopped():
+                        ad.press_key("ctrl")
                     state.scroll_active = True
                 elif dist_centroid >= cfg.scroll_activation_threshold:
                     state.active_gesture = "2f_scroll"
@@ -460,7 +473,14 @@ def process_touch_report(report, state, action_dispatch, cfg):
                     state.active_gesture = "5f_alt_tab"
                     state.alt_tab_active = True
                     state.last_alt_tab_x = cx
-                    ad.execute_mapped_action("ctrl_alt_tab_initiate")
+                    # TRAY unit (#448) choke point (reviewer P1-1): the
+                    # alt-tab family injects keyboard output DIRECTLY
+                    # (execute_mapped_action, no choke method involved),
+                    # so the touch gate rides each call; all four actions
+                    # are self-balancing key_tap pairs, so gating cannot
+                    # strand a held key.
+                    if not ad.touch_stopped():
+                        ad.execute_mapped_action("ctrl_alt_tab_initiate")
 
                 else:
                     prefix = f"{num_active}f_"
@@ -482,10 +502,13 @@ def process_touch_report(report, state, action_dispatch, cfg):
                 if abs(dx_step) >= cfg.alt_tab_step_threshold:
                     if state.f5_counter >= 1 / cfg.alt_tab_step_sensitivity: # to slow down the windows selection change
                         state.f5_counter = 0
-                        if dx_step > 0:
-                            ad.execute_mapped_action("ctrl_alt_tab_next")
-                        else:
-                            ad.execute_mapped_action("ctrl_alt_tab_prev")
+                        step_action = ("ctrl_alt_tab_next" if dx_step > 0
+                                       else "ctrl_alt_tab_prev")
+                        # gate the INJECTION only; the step bookkeeping
+                        # stays hot so the slow-down counter and origin
+                        # cannot double-fire one resume (#448, P1-1).
+                        if not ad.touch_stopped():
+                            ad.execute_mapped_action(step_action)
                         state.last_alt_tab_x = cx
                     else:
                         state.f5_counter += 1
@@ -495,7 +518,8 @@ def process_touch_report(report, state, action_dispatch, cfg):
         # --- TAPS + RESET / RELEASE ---
         elif num_active == 0:
             if state.alt_tab_active:
-                ad.execute_mapped_action("ctrl_alt_tab_commit")
+                if not ad.touch_stopped():
+                    ad.execute_mapped_action("ctrl_alt_tab_commit")
                 state.alt_tab_active = False
                 state.last_alt_tab_x = 0
                 

@@ -8,6 +8,20 @@ states: `v0.3.0` is the latest tag, `v0.4.0` is synced on `main`, and
 
 ## [Unreleased]
 
+System tray and touch on/off (BEHAVIOR CHANGE - this changes a habit):
+
+- The tray's stop switch no longer stops the whole tablet: it stops TOUCH
+  output only (gestures, touch cursor, touch scroll, the button touch
+  strips). The pen and the tablet buttons keep working while the icon is
+  red - no driver restart needed to reach them again. (Was: any input at
+  all stopped, pen and buttons included.)
+- New assignable action **Touch toggle**: map it to any tablet button to
+  switch touch output on and off without touching the tray at all. The
+  tray icon and the button always show the same state.
+- The tray tooltip now reads **Touch Enabled** / **Touch Disabled - pen
+  and tablet buttons stay live**, so the red icon cannot be mistaken for
+  a dead tablet.
+
 Configuration and command line:
 
 - New start flag `--elevated` (`-elevated`, WTD mirror of the shipped FST

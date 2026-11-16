@@ -179,8 +179,7 @@ def test_manager_passes_fork_to_every_reader_spawn(fake_hid, decoy_global,
     """
     calls = []
 
-    def recording_run_interface(interface_type, device_info, state, dispatcher,
-                                enabled, stop, idle_poll=None, cfg=None):
+    def recording_run_interface(interface_type, device_info, state, dispatcher, stop, idle_poll=None, cfg=None):
         calls.append((interface_type, cfg))
 
     monkeypatch.setattr(wtd_devices, "run_interface", recording_run_interface)

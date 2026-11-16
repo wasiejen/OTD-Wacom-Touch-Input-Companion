@@ -44,7 +44,7 @@ Specifically designed and tested for the **Wacom Intuos5 / Intuos Pro (PTH-x51)*
   * **2-Finger:** Tap (Right Click), natural horizontal/vertical scrolling, and pinch-to-zoom (Ctrl + Scroll).
   * **3-Finger & 4-Finger:** Tap, directional swipes (Up/Down/Left/Right), and discrete pinch in/out gestures.
   * **5-Finger:** Smooth Alt-Tab window switcher navigation.
-* **System Tray Integration:** Quick access via a dynamic system tray icon (`WT`) with live color indicators (Green = Active, Red = Paused) and a quick toggle option.
+* **System Tray Integration:** Quick access via a dynamic system tray icon (`WT`) with live color indicators (Green = Touch Enabled, Red = Touch Paused - touch gestures/cursor/scroll only: the pen and the tablet buttons keep working while paused) and a quick toggle option. The same touch state is also an assignable action (**Touch toggle**) for any tablet button.
 * **GUI Settings Manager:** Built-in multi-tab configuration menu for live tuning.
 * **Persistent Configuration:** All settings, gesture toggles, threshold timings, and custom action mappings are saved to your `user.cfg` file (see Configuration File).
 * **Per-Device Settings:** Each paired tablet keeps its own values inside one shared `user.cfg` - the Focused Device bar picks the device, and the driver stores identity-keyed overrides per device on top of the global settings.
