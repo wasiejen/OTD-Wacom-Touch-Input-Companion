@@ -68,6 +68,9 @@ GUI:
 - The pen-area rectangle's bottom edge behaves exactly like its left,
   right, and top edges: it hangs past the screens too - only the "at least
   one corner stays on the display" rule decides, on all four sides alike.
+  (This came in with the off-screen rectangle on the 2026-11-16 builds -
+  installs from before that date still stop the bottom edge at the screen;
+  this unit locks the symmetry with tests.)
 - The settings window opens a little smaller: it now fills at most 70 % of
   the screen's work area (was 90 %), so it no longer dwarfs the desktop on
   big monitors.

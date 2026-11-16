@@ -48,8 +48,10 @@ def test_geometry_is_deterministic_pure_math():
 
 def test_fill_rule_exact_on_common_resolutions():
     # Reviewer P2 (60d0651), GUI-B B3 re-pin: 0.7 is NOT exact in IEEE
-    # floats (1080*0.7 = 755.99999999999995), so this leg now genuinely
-    # locks the helper's +0.5 rounding: 756 and 945 on two common
-    # resolutions, and any future non-exact fill cannot lose a pixel.
+    # floats and 1350*0.7 lands below the integer (944.9999999999999),
+    # so this leg genuinely locks the helper's +0.5 rounding: 756 and 945
+    # on two common resolutions (1080*0.7 happens to land exact at 756.0
+    # - reviewer P2), and any future fill cannot lose a pixel to float
+    # noise.
     assert gui.initial_window_geometry((0, 0, 1000, 1080))[1] == 756
     assert gui.initial_window_geometry((0, 0, 1000, 1350))[1] == 945

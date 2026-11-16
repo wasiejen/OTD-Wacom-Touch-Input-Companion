@@ -589,18 +589,48 @@ def test_widget_offscreen_rect_persists_and_reopens_at_the_same_px(
 # never through a copied matrix.
 
 
-def test_gui_b_overlay_corners_equal_the_mapping_rotation_of_the_blue_corners():
-    # GUI-B B1 pin: overlay corners == blue corners projected through the
-    # mapping rotation at 0/45/90/270 (rotate_point is the authority).
-    rect = [500.0, 120.0, 1920.0, 1200.0]
-    cx = rect[0] + rect[2] / 2.0
-    cy = rect[1] + rect[3] / 2.0
+def test_gui_b_overlay_corners_equal_the_projected_device_corners():
+    # GUI-B B1 pin, reviewer P1 re-pin (delegation: "the overlay is
+    # literally the projection footprint, not an approximation"): each
+    # overlay corner equals a DEVICE-box corner run through the pen
+    # cursor's own two steps - rotate_point about pen_rotation_center,
+    # then the extents-to-rect affine. The expected list is re-derived
+    # from wtd.mapping directly (the authority) and compared as ONE
+    # flattened list (no zip: a short or empty return cannot pass -
+    # reviewer P2). At 0 deg the footprint coincides with the blue bbox
+    # corners; at 45/90/270 it is the rotated device box inside the bbox.
+    rect = [0.11, 0.23, 0.61, 0.37]  # fractions, screen 1.0 (U416 form)
+    specs = {"max_x": 43500, "max_y": 27480,
+             "width_mm": 217.5, "height_mm": 137.4}
     for degrees in (0, 45, 90, 270):
-        expected = [mapping.rotate_point(x, y, degrees, cx, cy)
-                    for x, y in gui.rect_corners(rect)]
-        for got, want in zip(gui.projection_overlay_corners(rect, degrees),
-                             expected):
-            assert got == pytest.approx(want)
+        left, top, ext_w, ext_h = mapping.rotated_pen_extents(specs, degrees)
+        cx, cy = mapping.pen_rotation_center(specs)
+        sx, sy = rect[2] / ext_w, rect[3] / ext_h
+        mx, my = float(specs["max_x"]), float(specs["max_y"])
+        expected = []
+        for x, y in ((0.0, 0.0), (mx, 0.0), (mx, my), (0.0, my)):
+            qx, qy = mapping.rotate_point(x, y, degrees, cx, cy)
+            expected.append((rect[0] + (qx - left) * sx,
+                             rect[1] + (qy - top) * sy))
+        got = gui.projection_overlay_corners(rect, degrees, specs)
+        assert len(got) == 4
+        assert [c for corner in got for c in corner] == pytest.approx(
+            [c for corner in expected for c in corner])
+
+
+def test_gui_b_shipped_specs_are_uniform_density():
+    # GUI-B B1 precondition (reviewer P2): every shipped pen-extents row
+    # runs exactly 200 counts/mm on BOTH axes, so the extents-to-rect
+    # affine of the overlay is isotropic and the footprint is a true
+    # rectangle (a grown autoscaled box scales per axis - the overlay
+    # then follows the cursor math per axis exactly as update_pen_cursor
+    # does, so the footprint statement holds either way; this pin only
+    # documents the shipped shape the rectangular claim rests on).
+    for specs in protocol.PEN_SPECS_BY_PRODUCT.values():
+        assert specs["max_x"] / specs["width_mm"] == pytest.approx(
+            200.0, rel=1e-3)
+        assert specs["max_y"] / specs["height_mm"] == pytest.approx(
+            200.0, rel=1e-3)
 
 
 def test_gui_b_rotation_anchor_maps_to_the_rect_center():
@@ -626,27 +656,35 @@ def test_gui_b_rotation_anchor_maps_to_the_rect_center():
         assert ny == pytest.approx(rect[1] + rect[3] / 2.0)
 
 
-def test_gui_b_widget_draws_the_rotated_overlay(root, widget_config,
-                                                monkeypatch):
-    # GUI-B B1 at the canvas level: after a 45 deg angle the dashed overlay
-    # polygon is the ROTATED footprint (it spills past the axis-aligned
-    # blue bbox at 45 deg, so this leg is discriminating on an
-    # axis-aligned draw), its points equal the model corners through the
-    # same rotation, and its style differs from the blue bbox (lighter
-    # outline vs solid #00c8ff).
+def test_gui_b_widget_draws_the_rotated_overlay_inside_the_bbox(root,
+                                                                widget_config,
+                                                                monkeypatch):
+    # GUI-B B1 at the canvas level, reviewer P1 re-pin: after a real
+    # reorient to 45 deg the overlay equals the projected device corners,
+    # lies INSIDE the blue bbox, and touches all four bbox edges (the
+    # rotated device box touches its own extents box, and the affine
+    # carries the touch to the rect). The first draft asserted the
+    # OPPOSITE (a circumscribed spill) and would have locked the defect.
+    # Style stays clearly different from the blue frame (lighter outline
+    # vs solid #00c8ff).
     widget = _build_widget(root, widget_config, monkeypatch)
-    widget.orientation_degrees = 45
-    widget._redraw()
+    widget.reorient(protocol.PEN_SPECS_BY_PRODUCT[791], 45)
     overlay_items = widget.canvas.find_withtag("penarea_projection")
     assert overlay_items
     coords = widget.canvas.coords(overlay_items[0])
     expected = [widget.model.canvas_xy(*corner)
                 for corner in gui.projection_overlay_corners(
-                    widget.model.rect, 45)]
+                    widget.model.rect, 45, widget.pen_specs)]
     assert coords == pytest.approx(
         [p for corner in expected for p in corner])
     rc = widget.model.rect_canvas()
-    assert max(coords[0::2]) > rc[2] + 1e-6  # rotated: spills past the bbox
+    xs, ys = coords[0::2], coords[1::2]
+    tol = 0.5  # canvas px; the aspect lock rounds rh to whole px
+    assert min(xs) >= rc[0] - tol and max(xs) <= rc[2] + tol
+    assert min(ys) >= rc[1] - tol and max(ys) <= rc[3] + tol
+    for extreme, edge in ((min(xs), rc[0]), (max(xs), rc[2]),
+                          (min(ys), rc[1]), (max(ys), rc[3])):
+        assert extreme == pytest.approx(edge, abs=tol)  # touches each edge
     assert (widget.canvas.itemconfig(overlay_items[0], "outline")[-1]
             == "#aee4ff")
     rect_items = widget.canvas.find_withtag("penarea_rect")
@@ -654,21 +692,27 @@ def test_gui_b_widget_draws_the_rotated_overlay(root, widget_config,
             == "#00c8ff")
 
 
-def test_gui_b_widget_reorient_updates_the_overlay(root, widget_config,
-                                                   monkeypatch):
-    # GUI-B B1: reorient() carries the new angle to the overlay (the pen
-    # path follows the same config value), so after a 90 deg reorient the
-    # drawn polygon equals the corners rotated by 90.
+def test_gui_b_widget_reorient_updates_and_90_skips_the_overlay(
+        root, widget_config, monkeypatch):
+    # GUI-B B1: reorient() carries the new angle AND the new device
+    # extents to the overlay (the pen path follows the same config
+    # value); at 90-degree multiples the footprint coincides with the
+    # bbox exactly, so the dashed overlay is skipped instead of
+    # over-drawing the solid blue frame (reviewer P2).
     widget = _build_widget(root, widget_config, monkeypatch)
-    widget.reorient(protocol.PEN_SPECS_BY_PRODUCT[791], 90)
-    overlay_items = widget.canvas.find_withtag("penarea_projection")
-    coords = widget.canvas.coords(overlay_items[0])
+    widget.reorient(protocol.PEN_SPECS_BY_PRODUCT[791], 45)
+    items = widget.canvas.find_withtag("penarea_projection")
+    assert items
+    coords = widget.canvas.coords(items[0])
     expected = [widget.model.canvas_xy(*corner)
                 for corner in gui.projection_overlay_corners(
-                    widget.model.rect, 90)]
+                    widget.model.rect, 45, widget.pen_specs)]
     assert coords == pytest.approx(
         [p for corner in expected for p in corner])
+    widget.reorient(protocol.PEN_SPECS_BY_PRODUCT[791], 90)
     assert widget.orientation_degrees == 90
+    assert widget.pen_specs is protocol.PEN_SPECS_BY_PRODUCT[791]
+    assert not widget.canvas.find_withtag("penarea_projection")
 
 
 # --- GUI-B B2 (2026-11-16): bottom-edge symmetry under the corner rule.
