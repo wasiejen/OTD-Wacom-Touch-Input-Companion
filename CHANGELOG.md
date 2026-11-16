@@ -36,6 +36,9 @@ Pen cursor responsiveness:
   drain. Clicks, presses, and scrolling are unaffected and always land in
   order at the pen's current position. Advanced users can tune the flush
   rate with the config key `pen_move_flush_hz` (default 250).
+- The flush rate is now also a GUI field: the Pen tab gained a **Move flush
+  Hz** spinbox (30..1000 Hz) for `pen_move_flush_hz`. It applies live like
+  the other pen fields and saves with the rest of the settings.
 
 ## v0.5.0 - 2026-11-15 (pending release tag)
 

@@ -58,7 +58,7 @@ Specifically designed and tested for the **Wacom Intuos5 / Intuos Pro (PTH-x51)*
 Everything in the driver is exposed and editable via the GUI:
 
 1. **Motion & Speed:** Fine-tune base cursor sensitivity, acceleration curves (`speed_low`, `speed_high`), deadzone thresholds, and natural scroll speeds.
-2. **Pen:** Pen movement speed (px/mm for relative deltas), absolute-vs-relative movement toggle, pressure threshold for the left-button hold, and dropdown mapping of the two pen buttons to actions.
+2. **Pen:** Pen movement speed (px/mm for relative deltas), absolute-vs-relative movement toggle, pressure threshold for the left-button hold, the move flush cap (**Move flush Hz**, how often pen cursor updates reach Windows, default 250), and dropdown mapping of the two pen buttons to actions.
 3. **Features & Actions:** Individual check-box toggles for every single gesture type, paired with dropdown selectors to map gestures to standard actions (e.g., Task View, Show Desktop, Alt-Tab, Desktop Switch, Window Maximize/Minimize).
 4. **Thresholds & Advanced:** Adjust physical motion tolerances, tap duration limits, press-and-hold timing, swipe distance limits, and pinch activation limits.
 

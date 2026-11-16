@@ -253,6 +253,27 @@ def parse_orientation_degrees(raw):
     return int(degrees)
 
 
+# Pen move flush cap (the existing config knob `pen_move_flush_hz`, default
+# PEN_MOVE_FLUSH_HZ_DEFAULT = 250 Hz): GUI bounds for the Pen-tab spinbox.
+# The config validator only refuses values <= 0 (wtd/config.py); the GUI
+# keeps the field inside a credible range so an Apply Live can neither park
+# the move slot (the 30 Hz floor) nor remove the cap (the 1000 Hz ceiling,
+# above any credible pad report rate). Fractional Hz stay legal.
+MOVE_FLUSH_HZ_MIN = 30
+MOVE_FLUSH_HZ_MAX = 1000
+
+
+def parse_move_flush_hz(raw):
+    """Float Hz inside MOVE_FLUSH_HZ_MIN..MOVE_FLUSH_HZ_MAX; None when invalid."""
+    try:
+        hz = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not MOVE_FLUSH_HZ_MIN <= hz <= MOVE_FLUSH_HZ_MAX:
+        return None
+    return hz
+
+
 def _drawing_layout_rects(width, height, digitizer):
     """(strip_width, digitizer_width, digitizer_height, right_margin) (U415).
 
@@ -840,6 +861,18 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
                              f"0..{ORIENTATION_MAX_DEGREES}: "
                              f"{numeric_values['orientation_degrees']!r}")
         parsed["orientation_degrees"] = degrees
+
+    if "pen_move_flush_hz" in parsed:
+        # The Pen-tab spinbox lane of the existing WTD-BATCH knob: bounded
+        # per MOVE_FLUSH_HZ_MIN/MAX before the first mutation (the same
+        # all-or-nothing contract as the orientation entry; the config-file
+        # validator keeps its own refuse-only-above-0 rule).
+        flush_hz = parse_move_flush_hz(numeric_values["pen_move_flush_hz"])
+        if flush_hz is None:
+            raise ValueError(f"Field 'pen_move_flush_hz' needs a number "
+                             f"{MOVE_FLUSH_HZ_MIN}..{MOVE_FLUSH_HZ_MAX} Hz: "
+                             f"{numeric_values['pen_move_flush_hz']!r}")
+        parsed["pen_move_flush_hz"] = flush_hz
 
     for key, val in parsed.items():
         setattr(config, key, val)
@@ -1588,6 +1621,7 @@ class SettingsWindow(tk.Toplevel):
         pen_tooltips = {
             "pen_speed": "Relative-mode speed: pixels per millimeter of pen travel. Ignored in absolute mode.",
             "pen_pressure_threshold": "Pressure units (0..2047) at which the left button is held. Below it the button releases; filters light-contact jitter.",
+            "pen_move_flush_hz": "Caps how often pen cursor updates reach Windows (default 250; lower only to test congestion behavior).",
         }
 
         # --- 1. Movement Frame ---
@@ -1624,12 +1658,23 @@ class SettingsWindow(tk.Toplevel):
         pen_fields = [
             ("Speed (px/mm):", "pen_speed", self.config.pen_speed, 4),
             ("Pressure Threshold:", "pen_pressure_threshold", self.config.pen_pressure_threshold, 5),
+            # Mode-independent (like the pressure row): the flush cap governs
+            # the ABSOLUTE-lane slot, and it stays editable in every mode so
+            # the value never hides while a mode switch is in progress.
+            ("Move flush Hz:", "pen_move_flush_hz", self.config.pen_move_flush_hz, 6),
         ]
 
         for label_text, key, initial_val, row_idx in pen_fields:
             lbl = ttk.Label(movement_frame, text=label_text)
             lbl.grid(row=row_idx, column=0, sticky="w", pady=4)
-            ent = ttk.Entry(movement_frame, width=12)
+            if key == "pen_move_flush_hz":
+                # Bounded spinbox (the maintainer's ask for this knob): the
+                # arrow range mirrors parse_move_flush_hz, the Apply Live
+                # check, so neither lane can step out of range.
+                ent = ttk.Spinbox(movement_frame, from_=MOVE_FLUSH_HZ_MIN,
+                                  to=MOVE_FLUSH_HZ_MAX, increment=10, width=12)
+            else:
+                ent = ttk.Entry(movement_frame, width=12)
             ent.insert(0, str(initial_val))
             ent.grid(row=row_idx, column=1, sticky="e", pady=4)
             self.entries[key] = ent
