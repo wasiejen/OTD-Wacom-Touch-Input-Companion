@@ -669,3 +669,82 @@ def test_gui_b_widget_reorient_updates_the_overlay(root, widget_config,
     assert coords == pytest.approx(
         [p for corner in expected for p in corner])
     assert widget.orientation_degrees == 90
+
+
+# --- GUI-B B2 (2026-11-16): bottom-edge symmetry under the corner rule.
+# Maintainer live-test report: the rect hangs off left/right/top but the
+# bottom edge "cannot pass the displays' bottom limit". Measured at this
+# tip (wtd_combined 1304699): NO bottom clamp exists at any level - the
+# pure clamp_rect_to_display treats all four corner regions equally (its
+# straight-down leg is pinned in test_corner_rule_drag_out_from_each_
+# corner_direction), and headless probes of move_by, the field lane, the
+# resize lane, and the widget drag events all let the rect hang below the
+# display bottom. The pins below mirror the existing side-direction pins
+# and lock that symmetry as the contract; the rule, quoted (maintainer):
+# "at least one corner of the pen-area rectangle must remain inside the
+# display area" - >=1 corner inside stands, no side is privileged.
+
+
+def test_gui_b_drag_down_hangs_the_rect_below_the_display_freely():
+    # Mirrors test_model_drag_places_rect_partly_offscreen_freely (the UP
+    # leg): a downward drag past the display's bottom limit is legal while
+    # the upper corners stay inside - the rule, quoted: "at least one
+    # corner of the pen-area rectangle must remain inside the display
+    # area". No legacy bottom min()/max() may reappear here.
+    model = _model()
+    model.move_by(-400 * model.scale, 100 * model.scale)
+    assert model.rect == pytest.approx([100.0, 220.0, 1920.0, 1200.0])
+    model.move_by(0, 500 * model.scale)  # hangs 480 px below the screens
+    assert model.rect == pytest.approx([100.0, 720.0, 1920.0, 1200.0])
+    assert model.rect[1] + model.rect[3] == pytest.approx(1920.0)  # past 1440
+    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+
+
+def test_gui_b_drag_down_overshoot_stops_with_a_top_corner_on_the_bottom_edge():
+    # Mirrors test_model_drag_stops_with_one_corner_on_the_display_edge
+    # (left/right legs): an overshoot past the bottom stops at the nearest
+    # rule-valid placement - the top edge rides the display's bottom limit
+    # with both upper corners ON the edge (closed edges), the body hanging
+    # below. Rule, quoted: "at least one corner of the pen-area rectangle
+    # must remain inside the display area".
+    model = _model()
+    model.move_by(0, 100000)
+    assert model.rect == pytest.approx([500.0, 1440.0, 1920.0, 1200.0])
+    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+    # Back up over the top the same way (mirror of the pure rule's
+    # straight-up leg): the bottom edge rides the display's top limit.
+    model.move_by(0, -200000)
+    assert model.rect == pytest.approx([500.0, -1200.0, 1920.0, 1200.0])
+    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+
+
+def test_gui_b_handle_resize_grows_the_rect_past_the_bottom_edge():
+    # Mirrors the RIGHT-edge leg of
+    # test_model_handle_resize_locks_aspect_and_grows_past_the_screens:
+    # with the origin (500, 120) inside the screens, ANY wanted size is
+    # rule-valid, so growing the rect past the display's bottom limit is
+    # legal (aspect stays exact, upper corners stay inside). Rule, quoted:
+    # "at least one corner of the pen-area rectangle must remain inside
+    # the display area".
+    model = _model()
+    handle = model.handle_canvas()
+    model.resize_handle_to(handle[0] + 600 * model.scale,
+                           handle[1] + 600 * model.scale)
+    assert model.rect[1] + model.rect[3] > 1440.0  # hangs below the bottom
+    assert model.rect[3] == round(model.rect[2] * BOX_MM[1] / BOX_MM[0])
+    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+
+
+def test_gui_b_apply_fields_y_past_the_bottom_stays_where_the_rule_holds():
+    # The Y-field lane mirrors the X-field pin
+    # (test_apply_fields_accepts_negative_and_beyond_union_entries): a Y
+    # entry that hangs the bottom edge below the display stands; an entry
+    # that would leave NO corner inside clamps to the nearest placement
+    # (top edge riding the bottom limit). Rule, quoted: "at least one
+    # corner of the pen-area rectangle must remain inside the display
+    # area".
+    model = _model()
+    assert model.apply_fields(y=500.0) == pytest.approx(
+        [500.0, 500.0, 1920.0, 1200.0])  # bottom 1700 > 1440, upper corners in
+    assert model.apply_fields(y=5000.0) == pytest.approx(
+        [500.0, 1440.0, 1920.0, 1200.0])  # nearest rule-valid placement
