@@ -217,7 +217,8 @@ def parse_numeric_values(values):
     return parsed
 
 
-# Device orientation (U74 c): direct numeric entry in 1° steps plus presets.
+# Device orientation (U74 c): direct numeric entry (any angle - the entry
+# wraps by 360 and accepts fractions) plus preset shortcuts.
 ORIENTATION_PRESETS = (0, 90, 180, 270)
 # Generalized tablet aspect for the pictogram (PTH-651 digitizer, mm).
 PICTOGRAM_WIDTH = 223.52
@@ -982,7 +983,9 @@ class SettingsWindow(tk.Toplevel):
                                        self.winfo_screenheight())
         win_w, win_h, win_x, win_y = initial_window_geometry(area)
         self.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
-        self.minsize(460, 480)
+        # The usability floor follows the computed size on degenerate hosts
+        # so the never-larger-than-the-work-area promise holds there too.
+        self.minsize(min(460, win_w), min(480, win_h))
 
         # Shared numeric-entry registry: Motion, Pen and Advanced tabs fill this dict.
         self.entries = {}

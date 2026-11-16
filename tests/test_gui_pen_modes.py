@@ -578,3 +578,6 @@ def test_orientation_field_displays_the_wrapped_angle(modes_cfg, tk_root,
     entry.insert(0, "abc")
     win._normalize_orientation_entry()
     assert entry.get() == "abc"
+    # The handler must stay wired to focus-out (reviewer P2: the behavior
+    # pin above calls the method directly).
+    assert entry.bind("<FocusOut>")

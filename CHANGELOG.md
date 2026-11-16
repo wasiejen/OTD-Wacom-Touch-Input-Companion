@@ -50,8 +50,9 @@ GUI:
   scaling - at 150% it no longer starts too small to work in, and it is
   never larger than the work area.
 - Rotation preview and pen mapping verified one-to-one at exact angles
-  (10 deg shows 10 deg, not the nearest 90) and locked with new tests;
-  the preview fix itself shipped with v0.5.0.
+  (10 deg shows 10 deg, not the nearest 90) and now locked by tests; the
+  exact-angle drawing itself landed 2026-11-11 in this same (untagged)
+  wave - builds installed before that date still show the stepped preview.
 
 ## v0.5.0 - 2026-11-15 (pending release tag)
 

@@ -16,29 +16,26 @@ from wtd._log import logger as _log  # shared wtd logger (see wtd/_log.py)
 # ==============================================================================
 # SHARED ROTATION CONSTANTS (U74)
 # ==============================================================================
-# Defined here, before the config class: the module-level DriverConfig
-# instance at the end of that class validates orientation_degrees, so the
-# bounds constant must exist at import time.
-# Touch sub-blocks decode to 0..4095 (parse_sub_block), so the touch rotation
-# center is that square's middle. The pen rotation center is the digitizer
-# center from the per-model ranges (PEN_SPECS_BY_PRODUCT / PTH-651).
+# Touch sub-blocks decode to 0..4095 (parse_sub_block), so the touch
+# rotation center is that square's middle. The pen rotation center is the
+# digitizer center from the per-model ranges (PEN_SPECS_BY_PRODUCT / PTH-651).
 TOUCH_COORD_MAX = 4095
 TOUCH_ROTATION_CENTER = (TOUCH_COORD_MAX / 2, TOUCH_COORD_MAX / 2)
 
 # ==============================================================================
 # DEVICE ORIENTATION (U74) — shared rotation for touch and pen coordinates
 # ==============================================================================
-# The bounds and center constants (TOUCH_COORD_MAX, TOUCH_ROTATION_CENTER,
-# ORIENTATION_MIN/MAX_DEGREES) live above the config class: the module-level
-# DriverConfig instance validates orientation_degrees at import time.
+# The rotation accepts any angle (fractions since the 2026-11-16 GUI wrap
+# fix; the GUI entry normalizes by 360, the config validator keeps the
+# range refuse 0 <= d < 360).
 
 def rotate_point(x, y, degrees, center_x, center_y):
-    """Rotate a device coordinate about the center by whole degrees.
+    """Rotate a device coordinate about the center by any angle.
 
-    One sin/cos matrix shared by both input paths; 1° precision, no quadrant
-    quantization. Tablet coordinates have y pointing down, so a positive
-    angle turns clockwise on screen. 0° is the identity passthrough and
-    returns the input coordinates unchanged.
+    One sin/cos matrix shared by both input paths; fractions pass through,
+    no quadrant quantization. Tablet coordinates have y pointing down, so
+    a positive angle turns clockwise on screen. 0 is the identity
+    passthrough and returns the input coordinates unchanged.
     """
     if degrees == 0:
         return (x, y)

@@ -16,8 +16,6 @@ APPDATA_DIR_NAME = "wtd"
 
 DEBUG = False 
 # DEBUG = True  
-ORIENTATION_MIN_DEGREES = 0
-ORIENTATION_MAX_DEGREES = 359
 
 # Touch-part config (U381 / #381): byte 5 of the 0x03 report marks a finger in
 # contact with express key n; the configured modifier is held for the duration

@@ -46,8 +46,10 @@ def test_geometry_is_deterministic_pure_math():
     assert all(isinstance(v, int) for v in a)
 
 
-def test_float_fill_products_do_not_lose_a_pixel():
-    # 1080*0.9 and 1350*0.9 land on 972.000...01 / 1215.000...02 in IEEE
-    # floats; the pin-side rule (90% rounded) must still name 972/1215.
+def test_fill_rule_exact_on_common_resolutions():
+    # Reviewer P2 (60d0651): 1080*0.9 and 1350*0.9 are EXACT in IEEE
+    # floats - this leg simply locks the fill rule's output (90% rounded)
+    # on two more common resolutions; the +0.5 rounding in the helper
+    # keeps any future non-exact fill from losing a pixel.
     assert gui.initial_window_geometry((0, 0, 1000, 1080))[1] == 972
     assert gui.initial_window_geometry((0, 0, 1000, 1350))[1] == 1215
