@@ -126,7 +126,12 @@ def test_bad_or_out_of_range_input_is_refused_all_or_nothing(cfg_factory, tk_roo
     original_speed = cfg.pen_speed
     speed.delete(0, tk.END)
     speed.insert(0, "3.5")  # a co-applied change that must never land alone
-    for junk in ("fast", "", "0", "-5", "5", "1001"):
+    # GUI-B B4 (decision 8=a) re-pin: the bounds widened to 1..2000, so the
+    # old junk values 5 and 1001 are legal now; the rejects moved to the
+    # new edges (0/-5 below the floor, 2001 above the ceiling, 0.5 below
+    # the 1 Hz floor the GUI holds even though the validator only refuses
+    # <= 0).
+    for junk in ("fast", "", "0", "-5", "0.5", "2001"):
         spin.delete(0, tk.END)
         spin.insert(0, junk)
         assert win.apply_settings() is False, junk
@@ -134,6 +139,22 @@ def test_bad_or_out_of_range_input_is_refused_all_or_nothing(cfg_factory, tk_roo
     assert cfg.pen_speed == original_speed, (
         "the refused Apply Live still moved pen_speed: not all-or-nothing")
     assert box.errors, "the user got no rejection message"
+
+
+def test_widened_edges_one_and_2000_are_accepted(cfg_factory, tk_root,
+                                                 monkeypatch):
+    # GUI-B B4 (decision 8=a): the widened edges apply through the real
+    # lane - 1 and 2000 Hz go in (the config validator accepts any value
+    # above 0, so the GUI extremes must not reject them).
+    cfg = cfg_factory()
+    win, box = make_window(tk_root, cfg, monkeypatch)
+    spin = win.entries["pen_move_flush_hz"]
+    for edge in ("1", "2000"):
+        spin.delete(0, tk.END)
+        spin.insert(0, edge)
+        assert win.apply_settings() is True, edge
+        assert cfg.pen_move_flush_hz == float(edge), edge
+    assert not box.errors
 
 
 # -- Pin 4: the GUI-applied value survives a config file round trip ---------

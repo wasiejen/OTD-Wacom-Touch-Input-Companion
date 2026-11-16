@@ -10,7 +10,7 @@ import pystray
 from pystray import MenuItem as item
 
 from wtd.config import (DEVICE_SECTION_KEYS, TOUCH_ACTION_CHOICES, WIRELESS_RECEIVER_PRODUCT_ID, WIRELESS_TABLET_SIZES, resolved_pen_mode, snapshot_device_sections, union_rect_from_records, PEN_MODES)
-from wtd.mapping import (display_key_for_records, monitor_records, pen_area_rect_aspect_lock, pen_mm_per_px, reset_pen_area_key_cache, rotate_point, rotated_pen_box_mm, select_pen_area_entry, virtual_desktop_dpi, virtual_desktop_metrics)
+from wtd.mapping import (display_key_for_records, monitor_records, pen_area_rect_aspect_lock, pen_mm_per_px, pen_rotation_center, reset_pen_area_key_cache, rotate_point, rotated_pen_box_mm, rotated_pen_extents, select_pen_area_entry, virtual_desktop_dpi, virtual_desktop_metrics)
 from wtd.protocol import (pen_specs_for_product, PEN_SPECS_BY_PRODUCT)
 from wtd._log import logger as _log
 from wtd import config
@@ -266,12 +266,15 @@ def parse_orientation_degrees(raw):
 
 # Pen move flush cap (the existing config knob `pen_move_flush_hz`, default
 # PEN_MOVE_FLUSH_HZ_DEFAULT = 250 Hz): GUI bounds for the Pen-tab spinbox.
-# The config validator only refuses values <= 0 (wtd/config.py); the GUI
-# keeps the field inside a credible range so an Apply Live can neither park
-# the move slot (the 30 Hz floor) nor remove the cap (the 1000 Hz ceiling,
-# above any credible pad report rate). Fractional Hz stay legal.
-MOVE_FLUSH_HZ_MIN = 30
-MOVE_FLUSH_HZ_MAX = 1000
+# GUI-B B4 / decision 8=a (maintainer 2026-11-16): widened from 30..1000 to
+# 1..2000 in the validator's direction, so extreme test values (e.g. a
+# sub-30 Hz congestion experiment) stay reachable in the GUI too; the
+# config-file validator keeps its own refuse-only-above-0 rule
+# (wtd/config.py). Out-of-range, zero, and negative entries are still
+# rejected consistently (the spinbox arrow range mirrors
+# parse_move_flush_hz, the Apply Live check). Fractional Hz stay legal.
+MOVE_FLUSH_HZ_MIN = 1
+MOVE_FLUSH_HZ_MAX = 2000
 
 
 def parse_move_flush_hz(raw):
@@ -552,6 +555,44 @@ def clamp_rect_to_display(rect, bbox):
         if best_d2 is None or d2 < best_d2:
             best, best_d2 = (px, py), d2
     return [best[0], best[1], rw, rh]
+
+
+def projection_overlay_corners(rect, degrees, pen_specs):
+    """GUI-B B1: the rotated projection footprint inside the blue bbox.
+
+    The editor's blue rect is the axis-aligned BOUNDING BOX of the pen
+    projection (its size follows the rotated mm box; it is never drawn
+    rotated). This returns the ACTUAL footprint: the four device-box
+    corners run through the SAME two steps a pen cursor takes in
+    wtd.mapping.update_pen_cursor - rotation about `pen_rotation_center`
+    by `degrees` via `rotate_point` (the one sin/cos matrix shared by both
+    input paths; y down, positive angle clockwise on screen), then the
+    per-axis affine that maps `rotated_pen_extents` onto the rect (the
+    rect-space form of `pen_area_norm_projection`: off + (q - left) *
+    rw / extent_w). Every overlay corner is exactly where that device
+    corner sends the cursor - the footprint BY CONSTRUCTION, hence always
+    INSIDE the blue bbox, touching its edges where the rotated device box
+    touches the extents box (the reviewer P1 over the first draft, which
+    rotated the bbox itself - a circumscribed box, not the footprint).
+    Returned in CYCLIC order (TL, TR, BR, BL) for the polygon lane
+    (rect_corners' row-major order would draw a bowtie - reviewer P1).
+    Anchor: `pen_rotation_center` projects to the center of the extents
+    box, which the affine carries to the rect center (pinned in
+    test_gui_b_rotation_anchor_maps_to_the_rect_center). Uniform-density
+    digitizers (every shipped PEN_SPECS row is exactly 200 counts/mm on
+    both axes - pinned in
+    test_gui_b_shipped_specs_are_uniform_density) keep the affine
+    isotropic, so the footprint is a true rectangle.
+    """
+    left, top, ext_w, ext_h = rotated_pen_extents(pen_specs, degrees)
+    cx, cy = pen_rotation_center(pen_specs)
+    rx, ry, rw, rh = rect
+    sx, sy = rw / ext_w, rh / ext_h
+    mx, my = float(pen_specs["max_x"]), float(pen_specs["max_y"])
+    rotated = [rotate_point(x, y, degrees, cx, cy)
+               for x, y in ((0.0, 0.0), (mx, 0.0), (mx, my), (0.0, my))]
+    return [(rx + (x - left) * sx, ry + (y - top) * sy)
+            for x, y in rotated]
 
 
 class PenAreaCanvasModel:
@@ -863,6 +904,11 @@ class PenAreaEditor(ttk.Frame):
         product_id = conn.get("product_id")
         specs = pen_specs_for_product(product_id, config)
         box_mm = rotated_pen_box_mm(specs, config.orientation_degrees)
+        # GUI-B B1: the rotated projection overlay follows the SAME angle
+        # the pen path rotates by (reorient keeps it current), and the
+        # SAME device extents the cursor math rotates (reviewer P1).
+        self.orientation_degrees = config.orientation_degrees
+        self.pen_specs = specs
         bounds = None
         usable_records = []
         if metrics is not None and metrics[2] > 0 and metrics[3] > 0:
@@ -939,6 +985,9 @@ class PenAreaEditor(ttk.Frame):
         # pointer interaction required. Apply persists it (the window
         # reorients BEFORE persisting); the pen then follows the entry.
         box = rotated_pen_box_mm(pen_specs, orientation_degrees)
+        # GUI-B B1 overlay follows the pen path's angle AND extents.
+        self.orientation_degrees = orientation_degrees
+        self.pen_specs = pen_specs
         old_bw = self.model.box_mm[0]
         s = self.model.rect[2] / old_bw if old_bw > 0 else None
         self.model.box_mm = (float(box[0]), float(box[1]))
@@ -1005,6 +1054,22 @@ class PenAreaEditor(ttk.Frame):
         rx0, ry0, rx1, ry1 = self.model.rect_canvas()
         self.canvas.create_rectangle(rx0, ry0, rx1, ry1, outline="#00c8ff",
                                      width=2, tags="penarea_rect")
+        # GUI-B B1 (maintainer-accepted design, reviewer P1 fixes): the
+        # blue rect stays the axis-aligned bounding box; the lighter
+        # DASHED outline drawn over it is the ACTUAL projected footprint
+        # (device corners through the cursor's own rotate + extents-to-rect
+        # affine), always INSIDE the blue frame. At the 90-degree multiples
+        # the footprint IS the bbox - there the dashes would just re-draw
+        # the solid blue frame, so the overlay is skipped (reviewer P2).
+        if self.orientation_degrees % 90:
+            overlay = [self.model.canvas_xy(*corner) for corner in
+                       projection_overlay_corners(self.model.rect,
+                                                  self.orientation_degrees,
+                                                  self.pen_specs)]
+            self.canvas.create_polygon(
+                *[p for corner in overlay for p in corner],
+                outline="#aee4ff", fill="", dash=(4, 3),
+                tags="penarea_projection")
         hx, hy = self.model.handle_canvas()
         half = self.HANDLE / 2.0
         self.canvas.create_rectangle(hx - half, hy - half, hx + half, hy + half,
@@ -1095,7 +1160,8 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
 SPI_GETWORKAREA = 0x0030
 WINDOW_NEEDED_W = 870
 WINDOW_NEEDED_H = 1600
-WINDOW_WORKAREA_FILL = 0.9
+WINDOW_WORKAREA_FILL = 0.7  # GUI-B B3 (maintainer 2026-11-16): 0.9 opened
+# the window too big; settled at 70% of the work area (he asked ~66%).
 
 
 def initial_window_geometry(work_area, needed_w=WINDOW_NEEDED_W,
