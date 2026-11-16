@@ -142,6 +142,10 @@ class TestMainWiring:
         monkeypatch.setattr(cli, "_shell32_runas_relaunch", fake_relaunch)
 
     def test_elevation_relaunch_exits_before_guard(self, monkeypatch):
+        # reviewer P1 2026-11-16: the conftest session seam would short-
+        # circuit the handler at the env check, masking this order pin -
+        # run the REAL handler so a wrong order trips the acquire wire.
+        monkeypatch.delenv("WTD_ALLOW_MULTI_INSTANCE", raising=False)
         relaunch_calls = []
         self._patch_frozen_not_elevated(monkeypatch, relaunch_calls)
         monkeypatch.setattr(sys, "argv", ["driver.py", "--elevated"])
