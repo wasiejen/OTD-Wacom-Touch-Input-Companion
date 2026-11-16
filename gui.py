@@ -1621,7 +1621,7 @@ class SettingsWindow(tk.Toplevel):
         pen_tooltips = {
             "pen_speed": "Relative-mode speed: pixels per millimeter of pen travel. Ignored in absolute mode.",
             "pen_pressure_threshold": "Pressure units (0..2047) at which the left button is held. Below it the button releases; filters light-contact jitter.",
-            "pen_move_flush_hz": "Caps how often pen cursor updates reach Windows (default 250; lower only to test congestion behavior).",
+            "pen_move_flush_hz": "Caps how often pen cursor updates reach Windows (default 250; lower only to test congestion behavior). Applies to the absolute modes; the relative lane is unaffected.",
         }
 
         # --- 1. Movement Frame ---

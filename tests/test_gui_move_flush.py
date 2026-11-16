@@ -7,7 +7,7 @@ pen_speed uses) and the per-dispatcher time gate reads the new interval
 live off the connection's config object (the U386 fork contract, tested
 here at the reader's own read point _move_flush_interval); bad or
 out-of-range input is refused all-or-nothing (the orientation_degrees
-pattern); the value round-trips through the config file.
+pattern); the GUI-applied value round-trips through the config file.
 
 Headless withdrawn root, the test_gui_pen_modes pattern (WM-103: one
 process root, never destroyed; windows withdrawn, winfo_viewable 0).
@@ -136,10 +136,18 @@ def test_bad_or_out_of_range_input_is_refused_all_or_nothing(cfg_factory, tk_roo
     assert box.errors, "the user got no rejection message"
 
 
-# -- Pin 4: the applied value survives a config file round trip -------------
+# -- Pin 4: the GUI-applied value survives a config file round trip ---------
+# (reviewer P2-3: driven THROUGH the spinbox + Apply Live, so the pin is
+# non-discriminating on the pre-change code, unlike a config-only preset.)
 
-def test_value_round_trips_through_the_config_file(cfg_factory, tmp_path):
-    cfg = cfg_factory(pen_move_flush_hz=120.0)
+def test_applied_value_round_trips_through_the_config_file(cfg_factory, tk_root,
+                                                           monkeypatch, tmp_path):
+    cfg = cfg_factory()
+    win, _ = make_window(tk_root, cfg, monkeypatch)
+    spin = win.entries["pen_move_flush_hz"]
+    spin.delete(0, tk.END)
+    spin.insert(0, "120")
+    assert win.apply_settings() is True
     path = tmp_path / "rt_user.cfg"
     cfg.save_to_file(str(path))
     fresh = DriverConfig()
