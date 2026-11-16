@@ -170,11 +170,16 @@ def test_oor_flushes_move_before_release_pair(state, dispatcher, config,
                                ("mouse", LEFTUP, 0, 0, 0)]
 
 
-def test_oor_with_nothing_held_still_lands_position(dispatcher,
+def test_oor_with_nothing_held_still_lands_position(state, dispatcher, config,
                                                      stub_send_input):
-    dispatcher.queue_pen_absolute_move(5, 6)
-    dispatcher.flush_pending_move()
-    assert stub_send_input == [("mouse", ABS_FLAGS, 0, 5, 6)]
+    # OOR on a pen that holds nothing: the parked move still lands (the
+    # release pair is absent) and nothing else follows.
+    process(build_pen_report(0x20, x=44704, y=27940), state, dispatcher, config)
+    stub_send_input.clear()
+    process(OOR_REPORT, state, dispatcher, config)
+    assert stub_send_input == [("mouse", ABS_FLAGS, 0, 65535, 53247)]
+    assert state.pen_position is None
+    assert dispatcher.pending_move is None
 
 
 # -- DoD pin 4: cap math on the fake monotonic clock, no stranded tail -------

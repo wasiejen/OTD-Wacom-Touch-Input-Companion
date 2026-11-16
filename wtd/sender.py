@@ -123,14 +123,20 @@ class ActionDispatcher():
         # finger in contact; the modifier is released on the full release.
         self.touch_held = {}
         # Move coalescing (WTD-BATCH): depth-1 latest-wins slot for the
-        # absolute pen lane. The owning reader thread queues and flushes it
-        # only; the shutdown sweep (release_held_inputs, another thread)
-        # just drops the slot, so no move injection ever runs off a reader
-        # thread (inject guard + single-writer doctrine).
+        # absolute pen lane. The dispatcher is shared by the connection's
+        # reader threads (Pen/Touch/optional Buttons): only the Pen thread
+        # queues the slot, but a flush may run on any reader thread of this
+        # connection (stateful emissions happen on all of them, and
+        # SendInput injection is OS-serialized). The slot operations are
+        # atomic under self._move_lock so two reader threads cannot emit
+        # the same or an inverted pair; the shutdown sweep
+        # (release_held_inputs, a foreign thread) only drops the slot, so
+        # no flush runs off any of the connection's reader threads.
         self.pending_move = None
+        self._move_lock = threading.Lock()
         # Monotonic clock of the last move emission or gate arming; the
         # reader-loop time gate emits a pending move at most once per flush
-        # interval (config pen_move_flush_hz).
+        # interval (config pen_move_flush_hz). Written under _move_lock.
         self._move_gate_at = None
 
         # The Dispatch Table
@@ -232,7 +238,14 @@ class ActionDispatcher():
             self.send_key(code, release=True) 
             
     def send_real_mouse_move(self, dx: int, dy: int):
-        """Sends a hardware-level mouse move event to Windows, forcing hover states."""
+        """Sends a hardware-level mouse move event to Windows, forcing hover states.
+
+        Relative-lane emitter: deliberately never flushes the absolute slot
+        (in relative mode the slot stays empty - the lanes are mutually
+        exclusive per report; one live absolute->relative mode switch can
+        let the last parked absolute move emit on the next gate/stateful
+        flush behind the first relative deltas - self-correcting).
+        """
         extra = ctypes.c_ulong(0)
         ii = INPUT()
         ii.type = 0  # INPUT_MOUSE
@@ -273,9 +286,12 @@ class ActionDispatcher():
         overwrites the slot, so only the newest position can ever be
         emitted. Report decoding, the grow-only autoscale tracking, and the
         pressure state machine keep running per report - only the move
-        EMISSION is collapsed.
+        EMISSION is collapsed. Atomic against a concurrent flush, so a
+        queued position can never be lost in a read-clear interleaving.
         """
-        self.pending_move = (int(nx), int(ny))
+        move = (int(nx), int(ny))
+        with self._move_lock:
+            self.pending_move = move
 
     def flush_pending_move(self):
         """Inject the parked move NOW: flush-before-stateful + OOR path.
@@ -300,13 +316,14 @@ class ActionDispatcher():
         spin-flush on the non-blocking binding) and a superseded slot never
         emits the older position.
         """
-        if self.pending_move is None:
-            return
-        if self._move_gate_at is None:
-            self._move_gate_at = now
-            return
-        if now - self._move_gate_at < self._move_flush_interval():
-            return
+        with self._move_lock:
+            if self.pending_move is None:
+                return
+            if self._move_gate_at is None:
+                self._move_gate_at = now
+                return
+            if now - self._move_gate_at < self._move_flush_interval():
+                return
         self._emit_pending_move(now)
 
     def _move_flush_interval(self):
@@ -323,12 +340,19 @@ class ActionDispatcher():
         return 1.0 / float(hz)
 
     def _emit_pending_move(self, at):
-        """Single emission choke for the slot; `at` refreshes the gate clock."""
-        move = self.pending_move
-        if move is None:
-            return
-        self.pending_move = None
-        self._move_gate_at = at
+        """Single emission choke for the slot; `at` refreshes the gate clock.
+
+        Read-and-clear is atomic under _move_lock (two reader threads of a
+        shared dispatcher can flush concurrently); the injection itself
+        happens OUTSIDE the lock (the held-input lock doctrine: locks never
+        wrap an injection).
+        """
+        with self._move_lock:
+            move = self.pending_move
+            if move is None:
+                return
+            self.pending_move = None
+            self._move_gate_at = at
         self.send_pen_absolute_move(move[0], move[1])
 
     def press_pen_pressure(self):
@@ -458,10 +482,17 @@ class ActionDispatcher():
         with self._held_lock:
             # WTD-BATCH: DROP the parked absolute move, never flush it: this
             # drain also runs on the shutdown sweep thread, where a flush
-            # would inject off the reader thread, and a held release must
-            # never wait on a positional event. A lost positional sample
-            # strands no state (unlike a dropped button).
-            self.pending_move = None
+            # would inject off the connection's reader threads, and a held
+            # release must never wait on a positional event. A lost
+            # positional sample strands no state (unlike a dropped button).
+            # Known residual (reviewer P2, accepted): a straggler reader
+            # outside the join budget can re-queue a slot after this drop,
+            # and the sweep's own flush hook then injects that one move
+            # between release pairs - worst case one stray cursor step at
+            # shutdown; blocking it needs a drained flag that would survive
+            # a pause/resume of the same dispatcher.
+            with self._move_lock:
+                self.pending_move = None
             touch_held = dict(self.touch_held)
             self.touch_held.clear()
             # The touch pass below releases these modifiers, so the generic pass
