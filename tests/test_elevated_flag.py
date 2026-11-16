@@ -11,9 +11,12 @@ flag and the lane symbols did not exist yet; verified before the
 implementation landed).
 """
 
+import ctypes
+import logging
 import os
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -22,9 +25,12 @@ from wtd.cli import (ELEVATE_DEV_MESSAGE, handle_elevated_flag, parse_start_args
 
 RUN_ELEVATED_LINE = "[Elevation] running elevated"
 RELAUNCH_LINE = "[Elevation] relaunching elevated via runas"
-FAILURE_LINE = ("[Elevation] runas relaunch returned 5 - no elevated "
-                "instance started; launch the exe as administrator manually "
-                "if none appeared")
+# The polish unit (2026-11-16) names the SE_ERR_* code inside the shipped
+# sentence, so the log says WHICH failure happened; the numeric phrase stays
+# because the shipped lane pins it. Byte literal (FST mirror).
+FAILURE_LINE = ("[Elevation] runas relaunch returned 5 "
+                "(SE_ERR_ACCESSDENIED) - no elevated instance started; "
+                "launch the exe as administrator manually if none appeared")
 
 
 def tripwire(*args):
@@ -85,14 +91,30 @@ def test_already_elevated_logs_one_line_and_continues(monkeypatch, capsys):
     assert capsys.readouterr().out.count(RUN_ELEVATED_LINE) == 1
 
 
-def test_not_elevated_dev_run_prints_hint_and_continues(monkeypatch, capsys):
-    # The REAL dev-mode detection runs here: this suite lives under
-    # python.exe, so the lane must print the hint and never relaunch.
+def test_not_elevated_dev_run_prints_hint_and_continues(monkeypatch, capsys,
+                                                        caplog):
+    """The REAL dev-mode detection runs here: this suite lives under
+    python.exe, so the lane must surface the hint and never relaunch.
+
+    Polish unit P2 (2026-11-16, FST mirror): the hint routes through the
+    shared 'wtd' logger at INFO. The _log.py contract keeps an INFO line on
+    the console stream sink exactly where print wrote it (so the capsys
+    assertion below IS the console-visibility pin) and mirrors the same line
+    to wtd.log (that mirroring leg is pinned by tests/test_log_file_sink.py;
+    conftest redirects the file away from the maintainer's live log)."""
     assert cli._is_dev_python() is True
     monkeypatch.setattr(cli, "_shell32_is_user_an_admin", lambda: False)
     monkeypatch.setattr(cli, "_shell32_runas_relaunch", tripwire)
-    assert handle_elevated_flag(["-elevated", "--wireless"]) is None
+    with caplog.at_level(logging.INFO, logger="wtd"):
+        assert handle_elevated_flag(["-elevated", "--wireless"]) is None
     assert ELEVATE_DEV_MESSAGE in capsys.readouterr().out
+    hints = [record for record in caplog.records
+             if record.getMessage() == ELEVATE_DEV_MESSAGE]
+    assert len(hints) == 1
+    # INFO is the level the wtd_stream sink passes (logger level INFO): the
+    # route that keeps the line console-visible AND lands it in wtd.log.
+    assert hints[0].levelno == logging.INFO
+    assert hints[0].name == "wtd"
 
 
 def test_not_elevated_frozen_relaunches_once_with_stripped_args(monkeypatch,
@@ -145,7 +167,60 @@ def test_relaunch_failure_warns_and_still_exits_zero(monkeypatch, capsys):
 
     assert excinfo.value.code == 0
     assert len(calls) == 1
-    assert FAILURE_LINE in capsys.readouterr().out
+    out = capsys.readouterr().out
+    assert FAILURE_LINE in out
+    # failure-mapping pin (polish 2026-11-16): the diagnostic names the
+    # SE_ERR_* code, and the run exits 0 (no crash, the product is unharmed)
+    assert "(SE_ERR_ACCESSDENIED)" in out
+
+
+# ---------------------------------------------------------------------------
+# the raw ctypes seam (cross-product polish 2026-11-16, FST mirror): the
+# lane pins patch the seam away, so these drive it against a fake windll -
+# no real shell32 call happens here.
+# ---------------------------------------------------------------------------
+
+def test_runas_seam_sets_void_pointer_restype_before_the_call(monkeypatch):
+    """ShellExecuteW returns an HINSTANCE-cast INT_PTR (shellapi.h: "can be
+    cast only to an INT_PTR and compared to either 32 or the error codes"),
+    so ctypes' default c_int truncates the high dword on x64 and a healthy
+    relaunch could read <= 32 = a false 'no elevated instance started'
+    warning. The seam pins restype = c_void_p BEFORE the call and maps a
+    NULL (None) return to 0 = the failure band.
+
+    Discriminator: the shipped seam never touches restype, so the fake
+    records 'ctypes-default' there = RED before the fix."""
+    recorded = {}
+
+    class FakeShellExecute:
+        restype = "ctypes-default"
+
+        def __call__(self, *args):
+            recorded["restype_at_call"] = self.restype
+            recorded["args"] = args
+            return None  # NULL HINSTANCE -> the seam maps it to 0
+
+    fake_shell32 = SimpleNamespace(ShellExecuteW=FakeShellExecute())
+    monkeypatch.setattr(ctypes, "windll",
+                        SimpleNamespace(shell32=fake_shell32), raising=False)
+
+    assert cli._shell32_runas_relaunch("P:/build/x.exe", "--wireless",
+                                       "P:/wd") == 0
+    assert recorded["restype_at_call"] is ctypes.c_void_p
+    assert recorded["args"] == (None, "runas", "P:/build/x.exe", "--wireless",
+                                "P:/wd", 1)
+
+
+def test_se_err_name_labels_the_sdk_table_and_falls_back_honestly():
+    """The failure diagnostic reads the SDK table (SE_ERR_* from shellapi.h,
+    ERROR_BAD_FORMAT from winerror.h); a code outside it keeps its number
+    instead of inventing a symbol."""
+    assert cli._se_err_name(5) == "SE_ERR_ACCESSDENIED"
+    assert cli._se_err_name(2) == "SE_ERR_FNF"
+    assert cli._se_err_name(11) == "ERROR_BAD_FORMAT"
+    assert cli._se_err_name(32) == "SE_ERR_DLLNOTFOUND"
+    assert cli._se_err_name(0) == "code 0"
+    assert cli._se_err_name(17) == "code 17"
 
 
 def test_admin_check_failure_is_named_and_treated_as_not_elevated(monkeypatch,
