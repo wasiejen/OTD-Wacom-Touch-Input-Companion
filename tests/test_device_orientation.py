@@ -186,6 +186,7 @@ def test_pen_absolute_point_rotates_around_digitizer_center(config, state,
     config.orientation_degrees = 90
     process_pen_report(build_pen_report(0x20, x=29322, y=13970),
                        state, dispatcher, config, SPECS)
+    dispatcher.flush_pending_move()
     # An east point rotates clockwise onto the tablet's south half:
     # (22352, 20940) device units -> the aspect-aware virtual desktop mapping.
     # The rotated box (x 8382..36322, y -8382..36322) spans the full desktop.
@@ -205,16 +206,19 @@ def test_pen_absolute_rotated_extents_reach_full_desktop(config, state,
     # NW tablet corner turns clockwise onto the desktop east edge.
     process_pen_report(build_pen_report(0x20, x=0, y=0),
                        state, dispatcher, config, SPECS)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 0)
     # SE corner lands on the desktop south-west corner.
     process_pen_report(build_pen_report(0x20, x=44704, y=27940),
                        state, dispatcher, config, SPECS)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 0, 65535)
 
     config.orientation_degrees = 270
     # NE corner turns counter-clockwise onto the desktop north-west corner.
     process_pen_report(build_pen_report(0x20, x=44704, y=0),
                        state, dispatcher, config, SPECS)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 0, 0)
 
 
@@ -226,9 +230,11 @@ def test_pen_absolute_rotated_box_1to1_default(config, state,
     config.orientation_degrees = 90
     process_pen_report(build_pen_report(0x20, x=0, y=0),
                        state, dispatcher, config, SPECS)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 53247, 0)
     process_pen_report(build_pen_report(0x20, x=44704, y=27940),
                        state, dispatcher, config, SPECS)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 12287, 65535)
 
 
@@ -237,6 +243,7 @@ def test_pen_absolute_zero_orientation_mapping_is_unchanged(config, state,
     """0° absolute mapping stays byte-identical to the fixed max_x/max_y scale."""
     process_pen_report(build_pen_report(0x20, x=22352, y=13970),
                        state, dispatcher, config, SPECS)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 32767, 32767)
 
 

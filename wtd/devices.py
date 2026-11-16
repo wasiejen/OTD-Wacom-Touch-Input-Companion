@@ -130,6 +130,13 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
                 idle_backoff = min(idle_backoff * 2, idle_poll)
                 stop_event.wait(idle_backoff)
 
+            # WTD-BATCH: time-gated flush of the absolute lane's latest-wins
+            # move slot (rate cap, config pen_move_flush_hz). Ticks every
+            # loop pass, so the last position lands shortly after the stream
+            # stops; with an empty slot the gate stays untouched (the
+            # non-blocking spin leg emits nothing).
+            action_dispatch.time_gated_flush(time.monotonic())
+
     except OSError as e:
         _log.info(f"{header} Read Error (Disconnected/OSError): {e}")
     except Exception as e:

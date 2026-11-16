@@ -27,6 +27,16 @@ Configuration and command line:
   (visible across all sessions, session-0 included); a mutex API failure
   fails OPEN - a warning names it and the start continues.
 
+Pen cursor responsiveness:
+
+- Smoother cursor under load: when a burst of pen positions arrives at once
+  (for example after the app was busy), WTD now sends the newest position
+  instead of queueing every intermediate point to Windows, so the cursor
+  catches up at a bounded rate and no backlog of stale positions is left to
+  drain. Clicks, presses, and scrolling are unaffected and always land in
+  order at the pen's current position. Advanced users can tune the flush
+  rate with the config key `pen_move_flush_hz` (default 250).
+
 ## v0.5.0 - 2026-11-15 (pending release tag)
 
 Reliability:

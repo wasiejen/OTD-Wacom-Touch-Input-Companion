@@ -56,6 +56,10 @@ def _map_corner(state, config, specs, x, y, metrics, events, stretch=False):
     dispatcher = ActionDispatcher(state, config)
     update_pen_cursor(state, dispatcher, config, specs, x, y,
                       screen_metrics=metrics)
+    # WTD-BATCH: the absolute lane parks the move; flush so the mapping
+    # value lands in the log (emission collapse itself is pinned in
+    # tests/test_move_coalescing.py).
+    dispatcher.flush_pending_move()
     assert events and events[-1][0] == "mouse" and events[-1][1] == ABS_FLAGS
     return events[-1][3], events[-1][4]
 

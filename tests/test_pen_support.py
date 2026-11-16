@@ -112,8 +112,10 @@ def test_absolute_mode_default_maps_full_range_1to1(state, dispatcher, config, s
     # parity is no longer px/mm parity -- see tests/test_pen_absolute_isotropy.py
     # for the ultrawide isotropy and centering pins.
     process(build_pen_report(0x20, x=0, y=0), state, dispatcher, config)
+    dispatcher.flush_pending_move()  # WTD-BATCH: land the parked move
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 0, 12287)
     process(build_pen_report(0x20, x=44704, y=27940), state, dispatcher, config)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 53247)
     y_range = 53247 - 12287
     assert abs(y_range / 139.7 - 65535 / 223.52) < 0.05
@@ -126,6 +128,7 @@ def test_absolute_mode_stretch_opt_in_stretches_full_area(state, dispatcher,
     # scales, the pre-U344 default behavior.
     config.feature_toggles["pen_stretch_full_desktop"] = True
     process(build_pen_report(0x20, x=44704, y=27940), state, dispatcher, config)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 65535)
 
 
@@ -135,11 +138,13 @@ def test_absolute_mode_clamps_above_max(state, dispatcher, config, stub_send_inp
     # into the centered band, the stretch opt-in clamps both axes.
     update_pen_cursor(state, dispatcher, config, SPECS, 50000, 30000,
                       screen_metrics=SQUARE_1440)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 56267)
     config.feature_toggles["pen_stretch_full_desktop"] = True
     stub_send_input.clear()
     update_pen_cursor(state, dispatcher, config, SPECS, 50000, 30000,
                       screen_metrics=SQUARE_1440)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 65535)
 
 
@@ -302,6 +307,7 @@ def test_authoritative_models_clamp_absolute_and_scale_relative(state, dispatche
     specs = pen_specs_for_product(788)
     update_pen_cursor(state, dispatcher, config, specs, 40000, 40000,
                       screen_metrics=SQUARE_1440)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 65535)
     config.feature_toggles["pen_absolute_mode"] = False
     config.pen_speed = 8.0
@@ -319,6 +325,7 @@ def test_autoscale_grows_the_box_and_prints_one_named_line(state, dispatcher, co
     # mapping box per axis and ONE byte-stable named line fires; later
     # reports stay quiet. The grown box maps through the isotropic lane.
     process_791(build_pen_report(0x20, x=70000, y=50000), state, dispatcher, config)
+    dispatcher.flush_pending_move()
     assert capsys.readouterr().out == (
         "pen_extents_autoscale declared_x=65024 declared_y=40640 "
         "observed_x=70000 observed_y=50000 using=observed\n")
@@ -332,6 +339,7 @@ def test_autoscale_grows_the_box_and_prints_one_named_line(state, dispatcher, co
     assert state.pen_obs_max_y == 50000
     stub_send_input.clear()
     process_791(build_pen_report(0x20, x=2500, y=2500), state, dispatcher, config)
+    dispatcher.flush_pending_move()
     assert capsys.readouterr().out == ""
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 2340, 14335)
     assert state.pen_obs_max_x == 70000
@@ -401,14 +409,17 @@ def test_791_default_lane_maps_aspect_correct_1to1(state, dispatcher, config, st
     specs = pen_specs_for_product(791)
     update_pen_cursor(state, dispatcher, config, specs, 0, 0,
                       screen_metrics=SQUARE_1440)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 0, 12287)
     stub_send_input.clear()
     update_pen_cursor(state, dispatcher, config, specs, 65024, 40640,
                       screen_metrics=SQUARE_1440)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 53247)
     stub_send_input.clear()
     update_pen_cursor(state, dispatcher, config, specs, 32512, 20320,
                       screen_metrics=SQUARE_1440)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 32767, 32767)
 
 
@@ -419,9 +430,11 @@ def test_791_stretch_optin_still_fills_the_desktop(state, dispatcher, config, st
     config.feature_toggles["pen_stretch_full_desktop"] = True
     specs = pen_specs_for_product(791)
     update_pen_cursor(state, dispatcher, config, specs, 0, 0)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 0, 0)
     stub_send_input.clear()
     update_pen_cursor(state, dispatcher, config, specs, 65024, 40640)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1] == ("mouse", ABS_FLAGS, 0, 65535, 65535)
 
 
@@ -456,11 +469,13 @@ def test_wireless_size_selects_only_the_model_extents_preset(config, state, disp
     assert routed is protocol.PEN_SPECS_BY_PRODUCT[791]
     update_pen_cursor(state, dispatcher, config, routed, 65024, 40640,
                       screen_metrics=SQUARE_1440)
+    dispatcher.flush_pending_move()
     wireless_event = stub_send_input[-1]
     stub_send_input.clear()
     update_pen_cursor(state, dispatcher, config,
                       protocol.PEN_SPECS_BY_PRODUCT[791], 65024, 40640,
                       screen_metrics=SQUARE_1440)
+    dispatcher.flush_pending_move()
     assert wireless_event == stub_send_input[-1]
 
 

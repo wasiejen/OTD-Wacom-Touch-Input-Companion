@@ -51,6 +51,8 @@ def _map(state, config, specs, x, y, metrics, events, rect=None, stretch=False):
     dispatcher = ActionDispatcher(state, config)
     update_pen_cursor(state, dispatcher, config, specs, x, y,
                       screen_metrics=metrics, pen_area_rect=rect)
+    # WTD-BATCH: flush the parked absolute move (see test_pen_absolute_isotropy).
+    dispatcher.flush_pending_move()
     assert events and events[-1][0] == "mouse" and events[-1][1] == ABS_FLAGS
     return events[-1][3], events[-1][4]
 
