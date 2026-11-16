@@ -53,6 +53,12 @@ GUI:
   (10 deg shows 10 deg, not the nearest 90) and now locked by tests; the
   exact-angle drawing itself landed 2026-11-11 in this same (untagged)
   wave - builds installed before that date still show the stepped preview.
+- The pen-area rectangle can hang partly off the screens now: drag it, grow
+  the handle, or type values past a monitor edge and it keeps going - it
+  stops only where your rule says no ("at least one corner of the pen-area
+  rectangle must remain inside the display area"). The preview shows the
+  part outside the monitors; pen travel in that part parks the cursor at the
+  screen edge, which makes the outside usable as a dead zone.
 
 ## v0.5.0 - 2026-11-15 (pending release tag)
 
