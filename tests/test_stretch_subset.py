@@ -51,6 +51,8 @@ def _map(state, config, x, y, events, screens=None):
     dispatcher = ActionDispatcher(state, config)
     update_pen_cursor(state, dispatcher, config, SPEC_791, x, y,
                       screen_metrics=SCREEN)
+    # WTD-BATCH: flush the parked absolute move (see test_pen_absolute_isotropy).
+    dispatcher.flush_pending_move()
     assert events and events[-1][0] == "mouse" and events[-1][1] == ABS_FLAGS
     return events[-1][3], events[-1][4]
 
@@ -102,9 +104,11 @@ def test_junk_metrics_keep_the_degraded_full_fill(state, cfg, stub_send_input):
     dispatcher = ActionDispatcher(state, cfg)
     cfg.set_pen_mode("stretched")
     update_pen_cursor(state, dispatcher, cfg, SPEC_791, 0, 0, screen_metrics=None)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1][3:] == (0, 0)
     update_pen_cursor(state, dispatcher, cfg, SPEC_791, SPEC_791["max_x"],
                       SPEC_791["max_y"], screen_metrics=None)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1][3:] == (VIRT, VIRT)
 
 

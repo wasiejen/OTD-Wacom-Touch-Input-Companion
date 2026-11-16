@@ -651,7 +651,10 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
             _log_pen_mapping_diagnostic(state, config, pen_specs, metrics, mode,
                                         extent_w, extent_h, px_mm, bands)
         state.pen_position = (x, y)
-        ad.send_pen_absolute_move(nx, ny)
+        # WTD-BATCH: park the position in the dispatcher's latest-wins slot
+        # instead of injecting per report; the reader-loop time gate, every
+        # stateful emission, and the OOR path flush it (see sender.py).
+        ad.queue_pen_absolute_move(nx, ny)
         return
 
     if state.pen_position is None:
@@ -701,6 +704,10 @@ def process_pen_report(report, state, action_dispatch, config, pen_specs,
 
     if status == PEN_STATUS_OUT_OF_RANGE:
         # Upstream resets the pointer origin and drops the follow-up report.
+        # WTD-BATCH: flush the parked absolute move FIRST so the final
+        # position lands on every pen lift/leave - no held-input release
+        # may leapfrog it, and nothing emits after the release pair.
+        ad.flush_pending_move()
         release_pen_inputs(state, ad)
         return
 

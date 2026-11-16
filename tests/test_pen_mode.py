@@ -105,6 +105,7 @@ def test_mode_switch_applies_live_no_restart(cfg, stub_send_input):
     cfg.pen_mode = None
     update_pen_cursor(state, dispatcher, cfg, specs, 100, 100,
                       screen_metrics=(0, 0, 3440, 1440))
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1][1] == ABS_FLAGS
     cfg.set_pen_mode("relative")
     stub_send_input.clear()

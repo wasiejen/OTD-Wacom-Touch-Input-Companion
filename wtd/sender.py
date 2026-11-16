@@ -2,6 +2,7 @@
 emits them, moved from touch_controller."""
 
 import threading
+import time
 import ctypes
 from vk_codes import vk_codes_dict  # Import vk_code dictionary
 from wtd import config as wtd_config
@@ -121,6 +122,16 @@ class ActionDispatcher():
         # Touch-part holds (U381 / #381): slots 1..8 while byte 5 keeps a
         # finger in contact; the modifier is released on the full release.
         self.touch_held = {}
+        # Move coalescing (WTD-BATCH): depth-1 latest-wins slot for the
+        # absolute pen lane. The owning reader thread queues and flushes it
+        # only; the shutdown sweep (release_held_inputs, another thread)
+        # just drops the slot, so no move injection ever runs off a reader
+        # thread (inject guard + single-writer doctrine).
+        self.pending_move = None
+        # Monotonic clock of the last move emission or gate arming; the
+        # reader-loop time gate emits a pending move at most once per flush
+        # interval (config pen_move_flush_hz).
+        self._move_gate_at = None
 
         # The Dispatch Table
         self.ACTION_DISPATCH = {
@@ -169,6 +180,9 @@ class ActionDispatcher():
     # ==============================================================================
     
     def send_mouse_click(self, dw_flags, data=0):
+        # WTD-BATCH flush-before-stateful: a parked positional move must
+        # never leapfrog this button/wheel/edge event, so it goes out first.
+        self.flush_pending_move()
         extra = ctypes.c_ulong(0)
         ii = INPUT()
         ii.type = self.INPUT_MOUSE
@@ -198,6 +212,9 @@ class ActionDispatcher():
             
     def send_key(self, vk_code, release=False):
         """Sends a key down or key up event using a VK code from vk_codes.py."""
+        # WTD-BATCH flush-before-stateful: keyboard events are commands;
+        # a parked move is injected before them, never after.
+        self.flush_pending_move()
         extra = ctypes.c_ulong(0)
         flags = self.KEYEVENTF_KEYUP if release else self.KEYEVENTF_KEYDOWN
         ii = INPUT()
@@ -232,7 +249,11 @@ class ActionDispatcher():
     # ==============================================================================
 
     def send_pen_absolute_move(self, nx, ny):
-        """Absolute pointer move in the 0..65535 virtual-desktop space."""
+        """Absolute pointer move in the 0..65535 virtual-desktop space.
+
+        Raw emitter: the coalescer (queue/flush below) and direct callers
+        use it; it never touches the slot.
+        """
         extra = ctypes.c_ulong(0)
         ii = INPUT()
         ii.type = self.INPUT_MOUSE
@@ -240,6 +261,75 @@ class ActionDispatcher():
                            self.MOUSEEVENTF_MOVE | self.MOUSEEVENTF_ABSOLUTE | self.MOUSEEVENTF_VIRTUALDESK,
                            0, ctypes.pointer(extra))
         ctypes.windll.user32.SendInput(1, ctypes.pointer(ii), ctypes.sizeof(ii))
+
+    # ==============================================================================
+    # MOVE COALESCING (WTD-BATCH)
+    # ==============================================================================
+
+    def queue_pen_absolute_move(self, nx, ny):
+        """Park the latest absolute position in the slot (latest wins).
+
+        The absolute lane queues instead of injecting: a drain burst
+        overwrites the slot, so only the newest position can ever be
+        emitted. Report decoding, the grow-only autoscale tracking, and the
+        pressure state machine keep running per report - only the move
+        EMISSION is collapsed.
+        """
+        self.pending_move = (int(nx), int(ny))
+
+    def flush_pending_move(self):
+        """Inject the parked move NOW: flush-before-stateful + OOR path.
+
+        Every stateful choke (send_mouse_click, send_key) and the pen
+        out-of-range release path call this first, so a positional move
+        never leapfrogs a button/wheel/key event and the final position
+        lands on every pen lift/leave. Not rate-capped: ordering
+        correctness outranks the emission cap.
+        """
+        if self.pending_move is None:
+            return
+        self._emit_pending_move(time.monotonic())
+
+    def time_gated_flush(self, now):
+        """Reader-loop rate cap: at most one move emission per flush interval.
+
+        `now` is the caller's monotonic time (the test seam: a scripted
+        clock, no sleeps). A slot sighting arms the gate; emission then
+        requires a whole flush interval since the arm or the last emission,
+        so an idle reader with an empty slot emits nothing extra (no
+        spin-flush on the non-blocking binding) and a superseded slot never
+        emits the older position.
+        """
+        if self.pending_move is None:
+            return
+        if self._move_gate_at is None:
+            self._move_gate_at = now
+            return
+        if now - self._move_gate_at < self._move_flush_interval():
+            return
+        self._emit_pending_move(now)
+
+    def _move_flush_interval(self):
+        """Seconds between time-gated move emissions, from the config knob.
+
+        Falls back to the shipped default when the fork carries no value or
+        a junk one, so a stale live-mutation cannot divide by zero on the
+        reader thread.
+        """
+        cfg = self.config if self.config is not None else wtd_config.config
+        hz = getattr(cfg, "pen_move_flush_hz", None)
+        if not isinstance(hz, (int, float)) or isinstance(hz, bool) or hz <= 0:
+            hz = wtd_config.PEN_MOVE_FLUSH_HZ_DEFAULT
+        return 1.0 / float(hz)
+
+    def _emit_pending_move(self, at):
+        """Single emission choke for the slot; `at` refreshes the gate clock."""
+        move = self.pending_move
+        if move is None:
+            return
+        self.pending_move = None
+        self._move_gate_at = at
+        self.send_pen_absolute_move(move[0], move[1])
 
     def press_pen_pressure(self):
         """Pressure above threshold holds the left button like a mouse click."""
@@ -366,6 +456,12 @@ class ActionDispatcher():
         left-release can each send one (benign, filed to the estate todo_inbox).
         """
         with self._held_lock:
+            # WTD-BATCH: DROP the parked absolute move, never flush it: this
+            # drain also runs on the shutdown sweep thread, where a flush
+            # would inject off the reader thread, and a held release must
+            # never wait on a positional event. A lost positional sample
+            # strands no state (unlike a dropped button).
+            self.pending_move = None
             touch_held = dict(self.touch_held)
             self.touch_held.clear()
             # The touch pass below releases these modifiers, so the generic pass

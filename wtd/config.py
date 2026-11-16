@@ -123,6 +123,12 @@ WIRELESS_TABLET_SIZE_LEGACY_KEY = "wireless_pen_size"  # read-only deprecation a
 # contain default - prior effective behavior preserved).
 PEN_MODES = ("relative", "stretched", "rect_1to1")
 PEN_MODE_KEY = "pen_mode"
+# WTD-BATCH: rate cap of the reader-loop flush of the absolute lane's
+# latest-wins move slot, in Hz. 250 Hz sits above any credible pad report
+# rate (health traffic passes essentially uncollapsed) and far below any
+# drain-burst rate.
+PEN_MOVE_FLUSH_HZ_KEY = "pen_move_flush_hz"
+PEN_MOVE_FLUSH_HZ_DEFAULT = 250.0
 
 
 def resolved_pen_mode(config):
@@ -175,7 +181,7 @@ class DriverConfig:
         "scroll_speed_low", "scroll_speed_high",
         "pen_speed", "pen_pressure_threshold",
         "dial_step_threshold", "orientation_degrees", "wireless_tablet_size",
-        "pen_mode", "pen_stretch_screens",
+        "pen_mode", "pen_stretch_screens", PEN_MOVE_FLUSH_HZ_KEY,
     )
 
     # Sections the saved file may hold. "devices" is the reserved slot (c):
@@ -325,6 +331,9 @@ class DriverConfig:
         # The pressure threshold avoids light-contact flapping (units 0..2047).
         self.pen_speed = 8.0
         self.pen_pressure_threshold = 40.0
+        # WTD-BATCH: positional-move flush rate cap (Hz) of the absolute
+        # lane's latest-wins slot; see PEN_MOVE_FLUSH_HZ_DEFAULT above.
+        self.pen_move_flush_hz = PEN_MOVE_FLUSH_HZ_DEFAULT
 
         # Rotary dial (U71): dial angle units traversed before one CW/CCW step
         # action fires. Recorded sweeps step 1..5 units per packet.
@@ -717,6 +726,17 @@ class DriverConfig:
                                       f"got {self._describe(val)} ({ref})")
                     else:
                         validated["motion"][key] = int(number)
+                elif key == PEN_MOVE_FLUSH_HZ_KEY:
+                    # WTD-BATCH: the positional-move flush cap in Hz. Must
+                    # be above 0: 0 or a negative value would park the slot
+                    # forever on the time gate (the per-report queue itself
+                    # would keep running), so it is rejected, not clamped.
+                    if number <= 0:
+                        errors.append(f"'motion_and_thresholds.{key}' needs a "
+                                      f"number above 0, got "
+                                      f"{self._describe(val)} ({ref})")
+                    else:
+                        validated["motion"][key] = number
                 else:
                     validated["motion"][key] = number
 
