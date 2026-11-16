@@ -18,6 +18,14 @@ Configuration and command line:
   starts normally; under python.exe (dev mode) no relaunch is attempted - a
   hint prints and the run continues. The prompt-free route stays the
   scheduled task with `/RL HIGHEST` (README, Command line options).
+- Single-instance guard: one WTD instance at a time (maintainer decision
+  2026-11-16 - a double start doubled the input streams). A second start
+  logs one `[SingleInstance] another WTD is already running - exiting`
+  line and exits with code 1 (no traceback). The guard runs after the
+  `--elevated` lane and before the config read, the CLI maintenance
+  lanes, and any device or window init, on a `Global\` named mutex
+  (visible across all sessions, session-0 included); a mutex API failure
+  fails OPEN - a warning names it and the start continues.
 
 ## v0.5.0 - 2026-11-15 (pending release tag)
 

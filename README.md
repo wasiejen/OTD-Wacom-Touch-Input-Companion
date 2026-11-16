@@ -156,6 +156,10 @@ normally. Running from python.exe (dev mode) never attempts a relaunch - it
 prints `[Elevation] dev mode - relaunch the exe manually or use scheduled
 task` and starts normally.
 
+The driver runs one instance at a time - starting a second one exits with a
+notice (it logs `[SingleInstance] another WTD is already running - exiting`
+and exits with code 1).
+
 **Prompt-free elevated autostart (scheduled task):** run this ONCE from an
 elevated shell: `schtasks /Create /TN "WacomTouchDriver" /TR "C:\path\OTD_Wacom_Touch_Driver.exe" /SC ONLOGON /RL HIGHEST`
 (or in Task Scheduler UI check "Run with highest privileges"). The task starts

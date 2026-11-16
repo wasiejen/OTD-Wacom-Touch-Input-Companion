@@ -30,6 +30,12 @@ os.environ.setdefault(
     os.path.join(os.environ.get("TEMP", os.sep + "tmp"), "wtd-test-hunt.log"),
 )
 
+# X-SINGLE 2026-11-16: the suite drives cli.main() from several files; the
+# single-instance guard would refuse every run after the first. This is the
+# guard's own test seam (see wtd/single_instance.py docstring - test-only,
+# deliberately not in user docs).
+os.environ.setdefault("WTD_ALLOW_MULTI_INSTANCE", "1")
+
 from wtd import devices
 
 # ==============================================================================
