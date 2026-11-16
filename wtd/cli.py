@@ -4,7 +4,9 @@ moved from touch_controller."""
 import time
 import threading
 import argparse
+import ctypes
 import os
+import subprocess
 import sys
 from wtd import config as wtd_config
 from wtd.config import (CONFIG_FILE_PATH, DEVICE_SECTION_KEYS, DriverConfig, appdata_config_path, config, snapshot_device_sections)
@@ -90,6 +92,7 @@ START_FLAG_FOLD = {
     "--config": "--config",
     "--wireless": "--wireless",
     "--debug": "--debug",
+    "--elevated": "--elevated",
     "-list": "--list",
     "-restore-with": "--restore-with",
     "-save-device": "--save-device",
@@ -97,6 +100,7 @@ START_FLAG_FOLD = {
     "-config": "--config",
     "-wireless": "--wireless",
     "-debug": "--debug",
+    "-elevated": "--elevated",
 }
 
 # Value-taking options and the word each legacy note used for the value.
@@ -136,6 +140,7 @@ def build_start_parser():
     parser.add_argument("--list", action="store_true")
     parser.add_argument("--wireless", action="store_true")
     parser.add_argument("--debug", action="store_true")
+    parser.add_argument("--elevated", action="store_true")
     return parser
 
 
@@ -269,6 +274,105 @@ def resolve_config_ladder(explicit_config, explicit_save_as,
     return config_path, save_path, notes
 
 
+# ---------------------------------------------------------------------------
+# --elevated startup lane (maintainer decision 2026-11-16, WTD mirror of the
+# shipped FST --elevate; route = research estate 2026-11-13_elevated-input.md
+# section 5 lane 1): a frozen exe given --elevated self-elevates through ONE
+# runas relaunch of itself, strips the flag from the child's args (loop
+# guard) and exits 0. main() calls handle_elevated_flag right after the
+# strict start parse and BEFORE any config read, device, or window init, so
+# a bad command line never raises a UAC prompt and the flag never reaches
+# the config or the device lanes (tests/test_elevated_flag.py).
+# ---------------------------------------------------------------------------
+
+# Both accepted spellings, lowercased for matching; the START_FLAG_FOLD
+# table canonicalizes the same pair for the parser.
+ELEVATED_SPELLINGS = ("--elevated", "-elevated")
+
+ELEVATE_DEV_MESSAGE = ('[Elevation] dev mode - relaunch the exe manually '
+                       'or use scheduled task')
+
+
+def _shell32_is_user_an_admin():
+    """The bare ctypes seam for IsUserAnAdmin (tests patch this)."""
+    return bool(ctypes.windll.shell32.IsUserAnAdmin())
+
+
+def _shell32_runas_relaunch(exe_path, parameters, work_dir):
+    """The bare ctypes seam for ShellExecuteW(None, "runas", ...) (tests
+    patch this); returns the HINSTANCE int (<= 32 = SE_ERR_* failure).
+    work_dir pins the child's CWD to the parent's so relative --config /
+    --save-as values resolve on the same footing as without the relaunch
+    (the leg the FST unit's reviewer P2 2026-11-16 required)."""
+    return int(ctypes.windll.shell32.ShellExecuteW(None, 'runas', exe_path,
+                                                   parameters, work_dir, 1))
+
+
+def _is_process_elevated():
+    """Wrapped admin-state check: True = high IL already. A win32 failure
+    is named in a warning and treated as NOT elevated - the honest runas
+    prompt beats a false '[Elevation] running elevated' claim."""
+    try:
+        return _shell32_is_user_an_admin()
+    except Exception as error:
+        _log.warning(f"[Elevation] IsUserAnAdmin failed: {error!r} - "
+                     "treating the process as not elevated")
+        return False
+
+
+def _is_dev_python():
+    """Dev-mode detection via sys.executable NAME: a source/pytest run
+    lives under python.exe; the frozen build runs its own exe, so its
+    basename never starts with 'python'."""
+    return os.path.basename(sys.executable).lower().startswith('python')
+
+
+def _strip_elevated_flag(argv):
+    """The argv without either elevated spelling, inline values included
+    (the same partition rule normalize_start_args uses); order preserved -
+    the remaining tokens are the child's start line."""
+    return [arg for arg in argv
+            if arg.partition("=")[0].lower() not in ELEVATED_SPELLINGS]
+
+
+def handle_elevated_flag(argv):
+    """The --elevated startup lane - called by main() only when the parsed
+    start line carries the flag; self-contained on purpose (a no-flag
+    caller leaves every seam untouched).
+
+    not flagged (self-check): argv is left alone, no win32 call at all.
+    already elevated: ONE '[Elevation] running elevated' log line, the
+    run continues.
+    not elevated + dev run (python.exe): print ELEVATE_DEV_MESSAGE and
+    continue - no ShellExecute attempt, so no prompt and no loop.
+    not elevated + frozen exe: ONE runas relaunch of sys.executable with
+    the original args WITHOUT the flag (the child never sees it = loop
+    guard), then exit 0 via SystemExit."""
+    rest = _strip_elevated_flag(argv)
+    if len(rest) == len(argv):
+        return
+    if _is_process_elevated():
+        _log.info('[Elevation] running elevated')
+        return
+    if _is_dev_python():
+        print(ELEVATE_DEV_MESSAGE)
+        return
+    _log.info('[Elevation] relaunching elevated via runas')
+    # list2cmdline applies the exact MSVC argv-quoting rules the child's C
+    # runtime reverses (FST reviewer P1 2026-11-16: hand-rolled space-
+    # quoting corrupts spaced args with trailing backslashes or embedded
+    # quotes); order preserved.
+    se_result = _shell32_runas_relaunch(sys.executable,
+                                        subprocess.list2cmdline(rest),
+                                        os.getcwd())
+    if se_result <= 32:
+        # SE_ERR_* (5 = the declined UAC prompt): the exit code stays 0 per
+        # spec, but the failure gets a named warning line - a silent exit
+        # would leave the log indistinguishable from a successful relaunch
+        _log.warning(f'[Elevation] runas relaunch returned {se_result} - '
+                     'no elevated instance started; launch the exe as '
+                     'administrator manually if none appeared')
+    sys.exit(0)
 
 
 # CLI device lanes (U88 Part C): config-file maintenance without the driver.
@@ -421,6 +525,15 @@ def main():
         # let '-wirelessize' quietly turn on wireless mode.
         _log.info(f"[Start Parameter] {exc}")
         return 1
+
+    # --elevated startup lane (maintainer decision 2026-11-16): runs right
+    # after the strict parse - so a bad command line never raises a UAC
+    # prompt - and before any config read, device, or window init. A
+    # not-elevated frozen run relaunches the exe elevated via runas and
+    # exits 0 inside the lane; an elevated or dev run continues here (the
+    # flag parsed into the namespace, so nothing downstream re-reads argv).
+    if start.elevated:
+        handle_elevated_flag(sys.argv[1:])
 
     list_devices, restore_with, save_as_alias, save_as_path = \
         resolve_start_lanes(start, start_notes)

@@ -6,6 +6,19 @@ first). The development log below keeps the work-log entries verbatim
 states: `v0.3.0` is the latest tag, `v0.4.0` is synced on `main`, and
 `v0.5.0` ships with the next tag.
 
+## [Unreleased]
+
+Configuration and command line:
+
+- New start flag `--elevated` (`-elevated`, WTD mirror of the shipped FST
+  `--elevate`; maintainer decision 2026-11-16): a not-elevated run relaunches
+  the same exe through one UAC `runas` prompt, passing every other start
+  argument with the flag stripped (loop guard), and exits 0; an
+  already-elevated run logs one `[Elevation] running elevated` line and
+  starts normally; under python.exe (dev mode) no relaunch is attempted - a
+  hint prints and the run continues. The prompt-free route stays the
+  scheduled task with `/RL HIGHEST` (README, Command line options).
+
 ## v0.5.0 - 2026-11-15 (pending release tag)
 
 Reliability:
