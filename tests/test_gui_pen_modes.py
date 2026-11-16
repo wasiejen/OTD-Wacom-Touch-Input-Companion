@@ -557,3 +557,27 @@ def test_virtual_desktop_dpi_helper_returns_positive_pair(modes_cfg):
     dpi = gui.virtual_desktop_dpi()
     assert isinstance(dpi, tuple) and len(dpi) == 2
     assert all(isinstance(v, float) and v > 0 for v in dpi)
+
+
+# --- F1 (2026-11-16): the rotation entry DISPLAYS the normalized angle -----
+
+
+def test_orientation_field_displays_the_wrapped_angle(modes_cfg, tk_root,
+                                                      monkeypatch, tmp_path):
+    # No silent ignore: focus-out rewrites 370 -> 10, -10 -> 350, 360 -> 0
+    # and keeps fractions; invalid text stays for Apply to refuse.
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    entry = win.entries["orientation_degrees"]
+    for typed, shown in (("370", "10"), ("-10", "350"), ("360", "0"),
+                         ("90.5", "90.5"), ("725", "5")):
+        entry.delete(0, tk.END)
+        entry.insert(0, typed)
+        win._normalize_orientation_entry()
+        assert entry.get() == shown, typed
+    entry.delete(0, tk.END)
+    entry.insert(0, "abc")
+    win._normalize_orientation_entry()
+    assert entry.get() == "abc"
+    # The handler must stay wired to focus-out (reviewer P2: the behavior
+    # pin above calls the method directly).
+    assert entry.bind("<FocusOut>")

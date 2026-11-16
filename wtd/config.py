@@ -16,8 +16,6 @@ APPDATA_DIR_NAME = "wtd"
 
 DEBUG = False 
 # DEBUG = True  
-ORIENTATION_MIN_DEGREES = 0
-ORIENTATION_MAX_DEGREES = 359
 
 # Touch-part config (U381 / #381): byte 5 of the 0x03 report marks a finger in
 # contact with express key n; the configured modifier is held for the duration
@@ -339,7 +337,8 @@ class DriverConfig:
         # action fires. Recorded sweeps step 1..5 units per packet.
         self.dial_step_threshold = 4.0
 
-        # Device orientation (U74): whole degrees 0..359. Rotates touch and
+        # Device orientation (U74; fractions accepted since the 2026-11-16
+        # GUI wrap fix): degrees 0 <= d < 360. Rotates touch and
         # pen coordinates around the tablet center before the gesture/cursor
         # path; positive degrees turn the input clockwise on screen.
         self.orientation_degrees = 0
@@ -717,15 +716,18 @@ class DriverConfig:
                     errors.append(f"'motion_and_thresholds.{key}' needs a number, "
                                   f"got {self._describe(val)} ({ref})")
                 elif key == "orientation_degrees":
-                    # U74: the transform rotates in 1° steps; fractions and
-                    # angles above the range are rejected, the whole number
-                    # is stored as an int.
-                    if not number.is_integer() or not 0 <= number <= ORIENTATION_MAX_DEGREES:
-                        errors.append(f"'motion_and_thresholds.{key}' needs a whole "
-                                      f"degree 0..{ORIENTATION_MAX_DEGREES}, "
+                    # U74 + F1 (2026-11-16 GUI wrap fix): the rotation matrix
+                    # accepts fractions, so file validation keeps the range
+                    # refuse (0 <= d < 360) but accepts fractions; the file
+                    # lane still never rewrites (the GUI entry wraps by 360).
+                    if not 0 <= number < 360:
+                        errors.append(f"'motion_and_thresholds.{key}' needs a "
+                                      f"degree value 0<=d<360, "
                                       f"got {self._describe(val)} ({ref})")
                     else:
-                        validated["motion"][key] = int(number)
+                        validated["motion"][key] = (int(number)
+                                                    if number.is_integer()
+                                                    else number)
                 elif key == PEN_MOVE_FLUSH_HZ_KEY:
                     # WTD-BATCH: the positional-move flush cap in Hz. Must
                     # be above 0: 0 or a negative value would park the slot

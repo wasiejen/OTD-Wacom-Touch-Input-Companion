@@ -1,3 +1,6 @@
+import ctypes
+import ctypes.wintypes
+import math
 import sys
 import threading
 import tkinter as tk
@@ -6,8 +9,8 @@ from PIL import Image, ImageDraw, ImageFont
 import pystray
 from pystray import MenuItem as item
 
-from wtd.config import (DEVICE_SECTION_KEYS, ORIENTATION_MAX_DEGREES, TOUCH_ACTION_CHOICES, WIRELESS_RECEIVER_PRODUCT_ID, WIRELESS_TABLET_SIZES, resolved_pen_mode, snapshot_device_sections, union_rect_from_records, PEN_MODES)
-from wtd.mapping import (display_key_for_records, monitor_records, pen_area_rect_aspect_lock, pen_mm_per_px, reset_pen_area_key_cache, rotate_point, rotated_pen_box_mm, select_pen_area_entry, virtual_desktop_dpi, virtual_desktop_metrics)
+from wtd.config import (DEVICE_SECTION_KEYS, TOUCH_ACTION_CHOICES, WIRELESS_RECEIVER_PRODUCT_ID, WIRELESS_TABLET_SIZES, resolved_pen_mode, snapshot_device_sections, union_rect_from_records, PEN_MODES)
+from wtd.mapping import (display_key_for_records, monitor_records, pen_area_rect_aspect_lock, pen_mm_per_px, reset_pen_area_key_cache, rotate_point, rotated_pen_box_mm, select_pen_area_entry, virtual_desktop_dpi, virtual_desktop_metrics)
 from wtd.protocol import (pen_specs_for_product, PEN_SPECS_BY_PRODUCT)
 from wtd._log import logger as _log
 from wtd import config
@@ -214,7 +217,8 @@ def parse_numeric_values(values):
     return parsed
 
 
-# Device orientation (U74 c): direct numeric entry in 1° steps plus presets.
+# Device orientation (U74 c): direct numeric entry (any angle - the entry
+# wraps by 360 and accepts fractions) plus preset shortcuts.
 ORIENTATION_PRESETS = (0, 90, 180, 270)
 # Generalized tablet aspect for the pictogram (PTH-651 digitizer, mm).
 PICTOGRAM_WIDTH = 223.52
@@ -243,14 +247,21 @@ TABLET_DRAWINGS = {
 
 
 def parse_orientation_degrees(raw):
-    """Whole degrees 0..359 from an entry string; None when invalid."""
+    """Entry string to an angle in [0, 360), fractions kept (F1 2026-11-16).
+
+    Anything numeric wraps by modulo 360 (-10 -> 350, 370 -> 10, 360 -> 0),
+    so the field can never hold an angle the rotation matrix would ignore.
+    Whole numbers stay ints, fractions stay floats; non-numeric or
+    non-finite input returns None (the existing refuse style).
+    """
     try:
         degrees = float(raw)
     except (TypeError, ValueError):
         return None
-    if degrees != int(degrees) or not 0 <= degrees <= ORIENTATION_MAX_DEGREES:
+    if not math.isfinite(degrees):
         return None
-    return int(degrees)
+    degrees %= 360.0
+    return int(degrees) if degrees.is_integer() else degrees
 
 
 # Pen move flush cap (the existing config knob `pen_move_flush_hz`, default
@@ -854,11 +865,12 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
     parsed = parse_numeric_values(numeric_values)
 
     if "orientation_degrees" in parsed:
-        # U74: the entry feeds the 1° rotation matrix; whole degrees only.
+        # F1 2026-11-16: the entry wraps by 360 (fractions kept), so only a
+        # non-numeric or non-finite value can refuse here.
         degrees = parse_orientation_degrees(numeric_values["orientation_degrees"])
         if degrees is None:
-            raise ValueError(f"Field 'orientation_degrees' needs a whole degree "
-                             f"0..{ORIENTATION_MAX_DEGREES}: "
+            raise ValueError(f"Field 'orientation_degrees' needs a number "
+                             f"(angles wrap by 360): "
                              f"{numeric_values['orientation_degrees']!r}")
         parsed["orientation_degrees"] = degrees
 
@@ -906,6 +918,51 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
         config.action_mapping[key] = action
 
 
+# Initial window geometry (F3 2026-11-16, maintainer 150%-scaling report):
+# the window opens at the size the content wants (his manual resize measured
+# ~870x1600) shrunk to fit the PRIMARY MONITOR WORK AREA (taskbar excluded)
+# and never larger than it. SPI_GETWORKAREA reports the work area in THIS
+# process's DPI space - the same coordinate space tkinter window geometry
+# uses - so the fit honors display scaling without manual DPI math.
+SPI_GETWORKAREA = 0x0030
+WINDOW_NEEDED_W = 870
+WINDOW_NEEDED_H = 1600
+WINDOW_WORKAREA_FILL = 0.9
+
+
+def initial_window_geometry(work_area, needed_w=WINDOW_NEEDED_W,
+                            needed_h=WINDOW_NEEDED_H,
+                            fill=WINDOW_WORKAREA_FILL):
+    """Pure geometry math: work area (left, top, width, height) in, initial
+    (width, height, x, y) out - all ints, deterministic, no tkinter. The
+    wanted size is capped to `fill` of the work area (never larger than
+    it) and CENTERED in it (integer floor division)."""
+    left, top, area_w, area_h = work_area
+    width = int(min(float(needed_w), area_w * fill) + 0.5)
+    height = int(min(float(needed_h), area_h * fill) + 0.5)
+    x = left + (area_w - width) // 2
+    y = top + (area_h - height) // 2
+    return (width, height, x, y)
+
+
+def primary_work_area():
+    """Primary monitor work area (left, top, w, h) via SPI_GETWORKAREA.
+    None when the API is missing or reports junk (the caller falls back to
+    the tkinter screen metrics)."""
+    try:
+        rect = ctypes.wintypes.RECT()
+        if not ctypes.windll.user32.SystemParametersInfoW(
+                SPI_GETWORKAREA, 0, ctypes.byref(rect), 0):
+            return None
+        width = rect.right - rect.left
+        height = rect.bottom - rect.top
+        if width <= 0 or height <= 0:
+            return None
+        return (rect.left, rect.top, width, height)
+    except Exception:
+        return None
+
+
 class SettingsWindow(tk.Toplevel):
     def __init__(self, parent, state_ref, config_ref, device_info=None):
         super().__init__(parent)
@@ -918,8 +975,17 @@ class SettingsWindow(tk.Toplevel):
         # settings.
         self.device_info = device_info
         self.title("Wacom Touch Driver Settings")
-        self.geometry("460x650")
-        self.minsize(460, 480)
+        # F3 2026-11-16 (maintainer 150%-scaling report): the fixed 460x650
+        # hid most tab content - open at the needed size fit into the
+        # PRIMARY MONITOR WORK AREA (junk or missing read falls back to the
+        # tkinter primary-screen metrics; never larger than the work area).
+        area = primary_work_area() or (0, 0, self.winfo_screenwidth(),
+                                       self.winfo_screenheight())
+        win_w, win_h, win_x, win_y = initial_window_geometry(area)
+        self.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+        # The usability floor follows the computed size on degenerate hosts
+        # so the never-larger-than-the-work-area promise holds there too.
+        self.minsize(min(460, win_w), min(480, win_h))
 
         # Shared numeric-entry registry: Motion, Pen and Advanced tabs fill this dict.
         self.entries = {}
@@ -1381,15 +1447,20 @@ class SettingsWindow(tk.Toplevel):
         orient_frame = ttk.LabelFrame(scroll_frame, text=" Device Orientation ", padding=10)
         orient_frame.pack(fill="x", padx=10, pady=8, expand=True)
 
-        orient_lbl = ttk.Label(orient_frame, text="Rotation (degrees, 1° steps):")
+        orient_lbl = ttk.Label(orient_frame, text="Rotation (degrees):")
         orient_lbl.grid(row=0, column=0, sticky="w", pady=4)
         orient_ent = ttk.Entry(orient_frame, width=8)
         orient_ent.insert(0, str(self.config.orientation_degrees))
         orient_ent.grid(row=0, column=1, sticky="w", padx=(4, 0))
         self.entries["orientation_degrees"] = orient_ent
         orient_ent.bind("<KeyRelease>", self._on_orientation_entry)
+        # F1 2026-11-16: leaving the field rewrites the normalized angle
+        # into it (no silent ignore - the displayed value is the stored one).
+        orient_ent.bind("<FocusOut>", self._normalize_orientation_entry)
         orient_tip = ("Rotates the interpretation of touch and pen input clockwise "
-                      "by this angle around the tablet center. 0 leaves input unchanged.")
+                      "by this angle around the tablet center. 0 leaves input unchanged. "
+                      "Values wrap by 360 (370 becomes 10, -10 becomes 350); "
+                      "fractions are allowed.")
         ToolTip(orient_lbl, orient_tip)
         ToolTip(orient_ent, orient_tip)
 
@@ -1506,6 +1577,20 @@ class SettingsWindow(tk.Toplevel):
         degrees = parse_orientation_degrees(self.entries["orientation_degrees"].get())
         if degrees is not None:
             self.orientation_widget.draw_degrees(degrees)
+
+    def _normalize_orientation_entry(self, event=None):
+        """F1 2026-11-16: after editing, the field DISPLAYS the normalized
+        angle (370 -> 10, -10 -> 350, 360 -> 0; fractions kept). Invalid
+        text stays untouched - Apply refuses it in the validation style."""
+        entry = self.entries["orientation_degrees"]
+        degrees = parse_orientation_degrees(entry.get())
+        if degrees is None:
+            return
+        text = str(degrees)
+        if entry.get() != text:
+            entry.delete(0, "end")
+            entry.insert(0, text)
+        self.orientation_widget.draw_degrees(degrees)
 
     def _set_orientation(self, degrees):
         """Preset button: write the angle into the entry and redraw the widget."""
@@ -2426,4 +2511,4 @@ def launch_gui(state_ref, config_ref, pause_event_ref, stop_event_ref, device_in
     tray_thread = threading.Thread(target=app.run_tray, daemon=True)
     tray_thread.start()
 
-    root.mainloop()
+    root.mainloop()
