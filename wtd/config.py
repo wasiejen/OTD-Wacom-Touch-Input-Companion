@@ -90,6 +90,13 @@ DEVICE_IDENTITY_HASH_LENGTH = 12
 # list of user rectangles, one entry per display configuration, keyed by a
 # sha1 display key. {"entries": [{"display_key", "monitors", "rect_px"}]}
 PEN_AREA_MAP_PREFIX = "pen_area_map_"
+# PENAREA (2026-11-16): the fractions are no longer bounded to 0..1 (the
+# rect may extend outside the display union), so the schema keeps a
+# magnitude bound instead: the normalized 0..65535 pen math must stay far
+# from the float limit (a hand-edited 1e305 reaches `int(inf)` in
+# update_pen_cursor). The editor's own cap is 10x the desktop, i.e.
+# fractions around 10, so 100 is far above anything it can produce.
+PEN_AREA_FRACTION_LIMIT = 100.0
 
 # Wireless tablet size lane (U344 goal 2; renamed U386 / TODO #385): the
 # wireless add-on is the same receiver (product id 132) on ALL tablet sizes,
@@ -282,6 +289,9 @@ class DriverConfig:
             return "rect_frac must be finite numbers"
         if rw <= 0 or rh <= 0:
             return "rect_frac needs positive width and height"
+        if any(abs(v) > PEN_AREA_FRACTION_LIMIT for v in (rx, ry, rw, rh)):
+            return ("rect_frac must stay within +/-"
+                    f"{PEN_AREA_FRACTION_LIMIT:g} of the union bounds")
         return {"display_key": display_key, "monitors": list(monitors),
                 "rect_frac": [rx, ry, rw, rh]}
 

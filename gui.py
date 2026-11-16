@@ -496,6 +496,13 @@ def _screen_label(record):
 # quoted: "at least one corner of the pen-area rectangle must remain inside
 # the display area". The old clamp (rect inside the display bbox) is retired.
 VIEW_MARGIN = 0.15  # fraction of the desktop dims added per viewport side
+# PENAREA: the corner rule binds the PLACEMENT, not the size, so the editor
+# keeps an arithmetic bound of its own - a wanted size beyond
+# MAX_SIZE_FACTOR x the larger desktop dim (or non-finite) floors/caps
+# instead of propagating: the retired inside-union cap used to hide these
+# inputs, and an unbounded size reaches the normalized 0..65535 pen math and
+# overflows it. 10x the desktop is far above any real pen area.
+MAX_SIZE_FACTOR = 10.0
 
 
 def rect_corners(rect):
@@ -579,11 +586,18 @@ class PenAreaCanvasModel:
         # snaps back to the nearest rule-valid placement at build.
         self.rect = clamp_rect_to_display(rect, self.display_bbox())
         # U424r4 R4-A (#424 item A) generalized by PENAREA: the CANVAS
-        # VIEWPORT is the display bbox plus a margin (plus the initial rect
-        # when it hangs outside), centered in the canvas with equal margins.
-        # An off-screen rect part stays visible and grabbable. The transform
-        # still derives ONCE at build - never from the rect during a drag -
-        # so the U424 L3 jitter guarantee holds.
+        # VIEWPORT is the display bbox plus a margin (extended to the rect
+        # when it hangs outside), centered in the canvas with equal margins,
+        # so an off-screen rect part stays visible and grabbable.
+        self._set_view()
+
+    def _set_view(self):
+        """Derive the viewport (and the scale/offsets) from the CURRENT rect.
+
+        Called at build and by `retarget_view` only - NEVER while a drag is
+        in progress, so the scale cannot fight the pointer (the U424 L3
+        jitter rule: no transform change between press and release).
+        """
         pad_x = self.desktop_w * VIEW_MARGIN
         pad_y = self.desktop_h * VIEW_MARGIN
         self.view_x0 = min(0.0, self.rect[0]) - pad_x
@@ -595,6 +609,19 @@ class PenAreaCanvasModel:
         self.scale = min(self.canvas_w / self.view_w, self.canvas_h / self.view_h)
         self.offset_x = (self.canvas_w - self.view_w * self.scale) / 2.0
         self.offset_y = (self.canvas_h - self.view_h * self.scale) / 2.0
+
+    def retarget_view(self):
+        """Refit the viewport to the current rect (PENAREA, reviewer P1).
+
+        The corner rule legally parks the rect far enough out that its
+        lower-right handle leaves the fixed-size canvas, which would strand
+        the resize lane. The editor therefore calls this at the END of each
+        interaction (drag release, field apply, reorient): the view refits
+        so the whole rect and its handle are visible again. The rect datum
+        (desktop px from the virtual-desktop origin) is untouched, so the
+        persisted fractions cannot move.
+        """
+        self._set_view()
 
     def display_bbox(self):
         """The combined display area in the model datum (desktop px)."""
@@ -609,6 +636,27 @@ class PenAreaCanvasModel:
         """Canvas px -> desktop-px (origin-relative); the inverse of canvas_xy."""
         return ((canvas_x - self.offset_x) / self.scale + self.view_x0,
                 (canvas_y - self.offset_y) / self.scale + self.view_y0)
+
+    def _bounded_size(self, value):
+        """Floor/cap a wanted rect size into the editor's arithmetic bound.
+
+        PENAREA (reviewer P2): with the inside-union size cap retired, a
+        non-finite or absurd field entry would propagate an infinite height
+        into `persist_entry` (Apply Live raised) and into the normalized pen
+        mapping (OverflowError). Non-finite floors to MIN_RECT_PX, a huge
+        size caps at MAX_SIZE_FACTOR x the larger desktop dim; both echo
+        back through the field sync, so the control agrees with the model.
+        """
+        try:
+            wanted = float(value)
+        except (TypeError, ValueError):
+            return self.MIN_RECT_PX
+        if wanted != wanted:  # NaN floors (+inf caps via min, -inf floors)
+            return self.MIN_RECT_PX
+        if wanted < self.MIN_RECT_PX:
+            return self.MIN_RECT_PX
+        return min(wanted, MAX_SIZE_FACTOR * max(self.desktop_w,
+                                                 self.desktop_h))
 
     @staticmethod
     def parse_record(record):
@@ -630,7 +678,7 @@ class PenAreaCanvasModel:
         rx, ry, rw, rh = self.rect
         bbox = self.display_bbox()
         if w is not None:
-            wanted_w = max(float(w), self.MIN_RECT_PX)
+            wanted_w = self._bounded_size(w)
             candidate = [rx, ry, wanted_w,
                          wanted_w * self.box_mm[1] / self.box_mm[0]]
             if rect_any_corner_inside(candidate, bbox):
@@ -654,7 +702,7 @@ class PenAreaCanvasModel:
         """
         cx = self.rect[0] + self.rect[2] / 2
         cy = self.rect[1] + self.rect[3] / 2
-        w = max(float(px_mm) * self.box_mm[0], self.MIN_RECT_PX)
+        w = self._bounded_size(float(px_mm) * self.box_mm[0])
         h = w * self.box_mm[1] / self.box_mm[0]
         self.rect = clamp_rect_to_display([cx - w / 2.0, cy - h / 2.0, w, h],
                                           self.display_bbox())
@@ -758,7 +806,7 @@ class PenAreaCanvasModel:
                                                   handle_canvas_y)
         wanted = handle_x - rx
         locked = pen_area_rect_aspect_lock(
-            [rx, ry, int(max(wanted, self.MIN_RECT_PX)), 0],
+            [rx, ry, int(self._bounded_size(wanted)), 0],
             self.box_mm[0], self.box_mm[1])
         if rect_any_corner_inside(locked, self.display_bbox()):
             self.rect = [float(v) for v in locked]
@@ -855,6 +903,10 @@ class PenAreaEditor(ttk.Frame):
         self._drag_mode = "rect"
         self.canvas.bind("<ButtonPress-1>", self._press)
         self.canvas.bind("<B1-Motion>", self._motion)
+        # PENAREA (reviewer P1): the viewport refits when the button lets go
+        # (never mid-drag), so a rect parked at the corner-rule limit keeps
+        # its handle inside the canvas and the resize lane reachable.
+        self.canvas.bind("<ButtonRelease-1>", self._release)
         self._redraw()
 
     def _stored_rect(self, records, bounds_w, bounds_h):
@@ -891,6 +943,7 @@ class PenAreaEditor(ttk.Frame):
         s = self.model.rect[2] / old_bw if old_bw > 0 else None
         self.model.box_mm = (float(box[0]), float(box[1]))
         self.model.match_box_aspect(s)
+        self.model.retarget_view()  # PENAREA: the refit shape may need room
         self._redraw()
 
     def persist_entry(self):
@@ -930,6 +983,18 @@ class PenAreaEditor(ttk.Frame):
         self._redraw()
         if self.on_change is not None:
             self.on_change()
+
+    def _release(self, event):
+        """Refit the viewport once the pointer lets go (PENAREA, P1 cure).
+
+        Mid-drag the transform stays fixed (the jitter rule); at release the
+        view refits to the rect, so the whole rect and its handle are inside
+        the canvas again before the next interaction.
+        """
+        if self.model is None:
+            return
+        self.model.retarget_view()
+        self._redraw()
 
     def _redraw(self):
         self.canvas.delete("all")
@@ -1784,6 +1849,7 @@ class SettingsWindow(tk.Toplevel):
             return
         if field == "s":  # sensitivity handle (U424r3 R3-L3)
             model.apply_scale(raw)
+            model.retarget_view()  # PENAREA: keep the handle in reach
             editor._redraw()
             self._sync_rect_entries()
             return
@@ -1794,6 +1860,7 @@ class SettingsWindow(tk.Toplevel):
             value_px = value_px * model.box_mm[0] / model.box_mm[1]
             field = "w"
         model.apply_fields(**{field: value_px})
+        model.retarget_view()  # PENAREA: keep the handle in reach
         editor._redraw()
         self._sync_rect_entries()
 

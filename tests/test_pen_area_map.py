@@ -117,6 +117,12 @@ def test_set_pen_area_entry_rejects_bad_shape(cfg):
         cfg.set_pen_area_entry(IDENTITY, KEY_A, MONITORS_A,
                                [0.0, 0.0, float("inf"), 0.5])
     with pytest.raises(ValueError):
+        # PENAREA: the magnitude bound replaces the retired 0..1 containment
+        # (a 1e305-scale fraction would overflow the normalized 0..65535 pen
+        # math; the editor cannot even produce a fraction past ~10).
+        cfg.set_pen_area_entry(IDENTITY, KEY_A, MONITORS_A,
+                               [0.0, 0.0, 101.0, 0.5])
+    with pytest.raises(ValueError):
         cfg.set_pen_area_entry(IDENTITY, "", MONITORS_A, RECT_FRAC_A)
     assert cfg.pen_area_maps == {}
 

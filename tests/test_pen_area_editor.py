@@ -20,6 +20,8 @@ viewport margin, and the rotation revalidation; the pins that pinned the
 retired clamp carry a PENAREA re-pin note.
 """
 
+import math
+
 import pytest
 
 import gui
@@ -58,17 +60,19 @@ def test_apply_scale_resizes_footprint_at_fixed_center():
 
 def test_apply_scale_overshoot_slides_the_rect_to_keep_a_corner_on_screen():
     # PENAREA re-pin of test_apply_scale_clamps_inside_the_desktop: the
-    # absurd-px/mm case no longer caps the size at the desktop width. The
-    # wanted sensitivity stands; only the placement obeys the maintainer
-    # rule "at least one corner of the pen-area rectangle must remain
-    # inside the display area", so the over-sized rect slides to the
-    # nearest legal placement (center (500, 350) is asymmetric -> the
-    # unique nearest placement lands the rect's lower-right corner on the
-    # display's lower-right corner).
+    # absurd-px/mm case no longer caps the size at the DESKTOP WIDTH - a
+    # sensitivity beyond it is accepted (only the MAX_SIZE_FACTOR arithmetic
+    # bound, tested separately, caps). The wanted size stands; only the
+    # placement obeys the maintainer rule "at least one corner of the
+    # pen-area rectangle must remain inside the display area", so the
+    # over-sized rect slides to the nearest legal placement (the center
+    # (500, 350) is asymmetric -> the unique nearest placement lands the
+    # rect's lower-right corner on the display's lower-right corner).
     m = _model(rect=[100.0, 100.0, 800.0, 500.0])
-    m.apply_scale(1000.0)
-    assert m.rect[2] == pytest.approx(1000.0 * BOX_MM[0])
-    assert m.rect[3] == pytest.approx(1000.0 * BOX_MM[1])
+    m.apply_scale(50.0)  # 16256 px wide: past the 3440 px desktop, in bound
+    assert m.rect[2] == pytest.approx(50.0 * BOX_MM[0])
+    assert m.rect[3] == pytest.approx(50.0 * BOX_MM[1])
+    assert m.rect[2] > SCREEN[2]  # the retired desktop-width cap
     assert gui.rect_any_corner_inside(m.rect, m.display_bbox())
     assert [m.rect[0] + m.rect[2], m.rect[1] + m.rect[3]] == pytest.approx(
         [SCREEN[2], SCREEN[3]])
@@ -349,6 +353,55 @@ def test_viewport_shows_the_offscreen_rect_part_with_margin():
     assert inside.scale < min(320.0 / SCREEN[2], 120.0 / SCREEN[3])
 
 
+def test_viewport_refits_after_a_drag_so_the_handle_stays_reachable():
+    # PENAREA (reviewer P1): the corner rule parks the rect with rx up to
+    # the desktop width, which pushes its lower-right handle OUT of the
+    # fixed-size canvas (the resize lane would strand). The model refits the
+    # viewport at build and at the END of each interaction, so after the
+    # refit the whole rect and the handle sit inside the canvas - and the
+    # rect datum (what gets persisted) does not move.
+    model = _model()
+    model.move_by(100000, 0)  # parked at the rule limit, handle off-canvas
+    assert model.handle_canvas()[0] > model.canvas_w
+    model.retarget_view()
+    x0, y0, x1, y1 = model.rect_canvas()
+    hx, hy = model.handle_canvas()
+    assert 0.0 <= x0 and x1 <= model.canvas_w
+    assert 0.0 <= y0 and y1 <= model.canvas_h
+    assert 0.0 <= hx <= model.canvas_w and 0.0 <= hy <= model.canvas_h
+    assert model.rect == pytest.approx([3440.0, 120.0, 1920.0, 1200.0])
+    # Every rule-limit direction refits into the canvas (reviewer P2-7: the
+    # reachability must hold across the legal range, not one fixture spot).
+    for delta in ((100000, 0), (-100000, 0), (0, 100000), (0, -100000)):
+        m = _model()
+        m.move_by(*delta)
+        m.retarget_view()
+        x0, y0, x1, y1 = m.rect_canvas()
+        hx, hy = m.handle_canvas()
+        assert 0.0 <= x0 and x1 <= m.canvas_w, delta
+        assert 0.0 <= y0 and y1 <= m.canvas_h, delta
+        assert 0.0 <= hx <= m.canvas_w and 0.0 <= hy <= m.canvas_h, delta
+
+
+def test_size_bound_keeps_the_geometry_and_the_save_finite():
+    # PENAREA (reviewer P2): with the inside-union size cap retired, an
+    # absurd width must not propagate an infinite height into persist or
+    # the normalized pen math - the wanted size floors non-finite to
+    # MIN_RECT_PX and caps at MAX_SIZE_FACTOR x the larger desktop dim.
+    m = _model()
+    out = m.apply_fields(w=float("1.798e308"))
+    assert out[2] == pytest.approx(gui.MAX_SIZE_FACTOR * 3440.0)
+    assert math.isfinite(out[3]) and out[3] > 0.0
+    assert gui.rect_any_corner_inside(out, m.display_bbox())
+    out = m.apply_fields(w=float("nan"))
+    assert out[2] == pytest.approx(m.MIN_RECT_PX)
+    assert math.isfinite(out[3])
+    m2 = _model()
+    m2.apply_scale(1e12)
+    assert m2.rect[2] == pytest.approx(gui.MAX_SIZE_FACTOR * 3440.0)
+    assert math.isfinite(m2.rect[3])
+
+
 def test_match_box_aspect_after_rotation_reevaluates_the_corner_rule():
     # Rotation interaction: a rect placed at 0 deg partly off-screen is
     # rule-valid; after an orientation flip (the mm box swaps, the rect
@@ -403,9 +456,14 @@ def test_widget_save_writes_fractional_entry_for_current_display_key(root, widge
     # PENAREA: the 0..1 containment contract is retired - the schema keeps
     # finite values with positive size; an off-screen rect part stores as
     # negative fractions or fractions past 1 (round-trip pinned in
-    # tests/test_pen_area_map.py). The default rect still lands inside.
-    assert all(f == f for f in rect_frac)  # finite
+    # tests/test_pen_area_map.py). The DEFAULT rect (no edit) stays a
+    # sub-union footprint, though the R5-E aspect re-derivation can let it
+    # ride a fraction of a pixel off an edge - legal under the corner rule.
+    assert all(math.isfinite(f) for f in rect_frac)
     assert rect_frac[2] > 0.0 and rect_frac[3] > 0.0
+    assert rect_frac[2] < 1.0 and rect_frac[3] < 1.0
+    assert gui.rect_any_corner_inside(widget.model.rect,
+                                      widget.model.display_bbox())
     assert calls == [1]
 
 
@@ -491,3 +549,32 @@ def test_widget_loads_stored_fraction_back_into_model_px(root, widget_config, mo
     assert reopened.model.rect[1] == pytest.approx(-33.5, abs=1e-6)
     assert gui.rect_any_corner_inside(reopened.model.rect,
                                       reopened.model.display_bbox())
+
+
+def test_widget_drag_release_refits_the_viewport(root, widget_config, monkeypatch):
+    # PENAREA (reviewer P1 cure, widget leg): the release handler calls the
+    # refit, so the handle of a rect parked at the rule limit is back inside
+    # the canvas for the next grab (mid-drag nothing refits).
+    widget = _build_widget(root, widget_config, monkeypatch)
+    widget.model.move_by(100000, 0)
+    assert widget.model.handle_canvas()[0] > widget.CANVAS_W
+    widget._release(None)
+    assert 0.0 <= widget.model.handle_canvas()[0] <= widget.CANVAS_W
+
+
+def test_widget_offscreen_rect_persists_and_reopens_at_the_same_px(
+        root, widget_config, monkeypatch):
+    # PENAREA spec item 4 at the EDITOR level: park the rect off-screen,
+    # persist it (the Apply Live path), reopen the editor -> the SAME px
+    # come back. The stored fractions are negative here; the aspect-equal
+    # rect skips the R5-E re-derivation, so the round trip is exact.
+    widget = _build_widget(root, widget_config, monkeypatch)
+    bw, bh = widget.model.box_mm
+    rect = [-500.0, -300.0, 1500.0, 1500.0 * bh / bw]
+    widget.model.rect = list(rect)
+    assert widget.persist_entry() is True
+    frac = widget_config.pen_area_maps["0123456789ab"]["entries"][0]["rect_frac"]
+    assert frac[0] < 0.0 and frac[1] < 0.0
+    reopened = _build_widget(root, widget_config, monkeypatch)
+    assert reopened.model.rect == pytest.approx(rect)
+    assert reopened.model.rect[0] < 0.0 and reopened.model.rect[1] < 0.0
