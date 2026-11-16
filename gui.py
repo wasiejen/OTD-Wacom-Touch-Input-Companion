@@ -266,12 +266,15 @@ def parse_orientation_degrees(raw):
 
 # Pen move flush cap (the existing config knob `pen_move_flush_hz`, default
 # PEN_MOVE_FLUSH_HZ_DEFAULT = 250 Hz): GUI bounds for the Pen-tab spinbox.
-# The config validator only refuses values <= 0 (wtd/config.py); the GUI
-# keeps the field inside a credible range so an Apply Live can neither park
-# the move slot (the 30 Hz floor) nor remove the cap (the 1000 Hz ceiling,
-# above any credible pad report rate). Fractional Hz stay legal.
-MOVE_FLUSH_HZ_MIN = 30
-MOVE_FLUSH_HZ_MAX = 1000
+# GUI-B B4 / decision 8=a (maintainer 2026-11-16): widened from 30..1000 to
+# 1..2000 in the validator's direction, so extreme test values (e.g. a
+# sub-30 Hz congestion experiment) stay reachable in the GUI too; the
+# config-file validator keeps its own refuse-only-above-0 rule
+# (wtd/config.py). Out-of-range, zero, and negative entries are still
+# rejected consistently (the spinbox arrow range mirrors
+# parse_move_flush_hz, the Apply Live check). Fractional Hz stay legal.
+MOVE_FLUSH_HZ_MIN = 1
+MOVE_FLUSH_HZ_MAX = 2000
 
 
 def parse_move_flush_hz(raw):
