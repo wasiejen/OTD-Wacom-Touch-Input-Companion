@@ -138,12 +138,31 @@ entry point; `python touch_controller.py` is gone):
 | `--list` | print every stored device entry (alias + identity key) and exit |
 | `--restore-with <name>` | apply one device's saved values, then re-save the live values |
 | `--save-device <alias>` | write the current settings under a new device alias and exit |
+| `--elevated` (`-elevated`) | self-elevate at start through one UAC prompt (details below) |
 
 A start argument the driver does not know is a fatal error: it prints one
 `[Start Parameter]` line and the driver does not start (previously such an
 argument was skipped quietly, and a misspelling such as `-wirelessize` could
 switch an option on by matching part of its name). `-h` / `--help` prints the
 available start options and exits.
+
+`--elevated` (`-elevated`): self-elevation at startup: if the run is not
+elevated yet, the driver relaunches itself through one Windows "run as
+administrator" prompt, passing along all other start arguments (the
+`--elevated` flag itself is stripped in the relaunched child, so no relaunch
+loop can happen), and the first process exits 0. If the run is already
+elevated, the driver logs one `[Elevation] running elevated` line and starts
+normally. Running from python.exe (dev mode) never attempts a relaunch - it
+prints `[Elevation] dev mode - relaunch the exe manually or use scheduled
+task` and starts normally.
+
+**Prompt-free elevated autostart (scheduled task):** run this ONCE from an
+elevated shell: `schtasks /Create /TN "WacomTouchDriver" /TR "C:\path\OTD_Wacom_Touch_Driver.exe" /SC ONLOGON /RL HIGHEST`
+(or in Task Scheduler UI check "Run with highest privileges"). The task starts
+the driver elevated at every logon with no UAC prompt - registration is the
+only elevation moment, and the exe needs no `--elevated` flag there
+(`/RL HIGHEST` alone carries the elevation; the flag is for manual/relaunch
+use).
 
 Every console line is mirrored to `%APPDATA%\wtd\wtd.log` (UTF-8,
 rotating at 2 MB with 2 backups), so a tray start without a console
