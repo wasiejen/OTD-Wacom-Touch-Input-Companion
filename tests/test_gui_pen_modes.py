@@ -130,11 +130,17 @@ def test_numeric_fields_bidirectional_aspect_locked(modes_cfg, tk_root, monkeypa
     win.rect_entries["x_mm"].insert(0, "254")  # 10 inches
     win._apply_rect_field("x_mm")
     assert model.rect[0] == pytest.approx(254.0 * 96.0 / 25.4)
-    # clamp to the union: past the right edge lands ON the edge
+    # PENAREA re-pin (the retired "clamp to the union" leg): an X entry past
+    # the right edge no longer lands the rect's RIGHT edge on the union edge
+    # - the corner rule clamps the placement to the nearest legal one, so
+    # the rect's LEFT edge rides the union's right edge and the body hangs
+    # off-screen (the field echoes back the clamped value).
     win.rect_entries["x_px"].delete(0, tk.END)
     win.rect_entries["x_px"].insert(0, "99999")
     win._apply_rect_field("x_px")
-    assert model.rect[0] + model.rect[2] == pytest.approx(3440.0)
+    assert model.rect[0] == pytest.approx(3440.0)
+    assert float(win.rect_entries["x_px"].get()) == pytest.approx(3440.0)
+    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
 
 
 def test_numeric_fields_echo_the_stored_rect_on_open(modes_cfg, tk_root, monkeypatch, tmp_path):
@@ -384,13 +390,17 @@ def test_orientation_apply_reorients_editor_box_not_the_footprint(
     box90 = rotated_pen_box_mm(specs, 90)
     assert model.rect[2] / model.rect[3] == pytest.approx(
         box90[0] / box90[1], rel=1e-6)
-    # (center-keep-with-fit-clamp is pinned exactly in the no-pointer
-    # test at a sensitivity that FITS; here the 0-deg default does not
-    # fit rotated at its s, so the fit-clamp may ride an edge - assert
-    # union-validity instead.)
-    assert model.rect[0] >= 0 and model.rect[1] >= 0
-    assert model.rect[0] + model.rect[2] <= model.desktop_w + 1e-6
-    assert model.rect[1] + model.rect[3] <= model.desktop_h + 1e-6
+    # PENAREA: the retired fit-to-union cap means the sensitivity now rides
+    # the rotation EXACTLY even when the rotated box exceeds the union; the
+    # re-derived placement is validated by the SAME corner-rule clamp every
+    # move lane uses ("at least one corner of the pen-area rectangle must
+    # remain inside the display area"), so rotation can never silently
+    # invalidate the rule. The rect may now hang outside the union instead
+    # of being squeezed onto it.
+    box0 = rotated_pen_box_mm(specs, 0)
+    s0 = footprint_px[2] / box0[0]
+    assert model.rect[2] == pytest.approx(s0 * box90[0], rel=1e-9)
+    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
     # Sensitivity echo follows the new box (w axis).
     assert float(win.rect_entries["s_px"].get()) == pytest.approx(
         model.rect[2] / model.box_mm[0], rel=1e-3)
