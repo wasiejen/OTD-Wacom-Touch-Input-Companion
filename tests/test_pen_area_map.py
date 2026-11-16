@@ -6,9 +6,12 @@ section warning), save/reload round-trip, per-display-key entry selection
 entry-shape validation, and the display-key digest over sorted monitor
 records.
 
-U416: the stored rect is now FRACTIONAL (rect_frac = rx/ry/rw/rh in 0..1 of
-the union bounds of the entry's own monitors) so metrics-less hosts can
-edit and consume it; legacy rect_px entries are MIGRATED AT LOAD using the
+U416: the stored rect is now FRACTIONAL (rect_frac = rx/ry/rw/rh as
+fractions of the union bounds of the entry's own monitors) so metrics-less
+hosts can edit and consume it. PENAREA (2026-11-16): those fractions are no
+longer bounded to 0..1 - an off-screen rect part stores negative values or
+values past 1 (the editor enforces "at least one corner ... inside the
+display area"). Legacy rect_px entries are MIGRATED AT LOAD using the
 entry's own monitor-record union (documented choice: no heuristic unit
 guessing - the records give the exact bounds the px datum came from).
 RED-before 03c0a40: rect_frac fails the old rect_px validator.
@@ -95,18 +98,45 @@ def test_bad_entry_shape_is_named_and_valid_entries_survive(cfg):
 
 
 def test_set_pen_area_entry_rejects_bad_shape(cfg):
-    # U414 STEP-1 P2-3 (write path validates; U416: fraction bounds too).
+    # U414 STEP-1 P2-3 (write path validates). PENAREA (2026-11-16) retires
+    # the 0..1 containment rejects (rx+rw > 1, rw > 1): the rect may extend
+    # outside the display union. The schema keeps the integrity rejects:
+    # shape, positive size, finite values, non-empty key.
     with pytest.raises(ValueError):
         cfg.set_pen_area_entry(IDENTITY, KEY_A, MONITORS_A, [0.1, 0.2])
     with pytest.raises(ValueError):
         cfg.set_pen_area_entry(IDENTITY, KEY_A, MONITORS_A, [0.0, 0.0, 0.0, 0.5])
     with pytest.raises(ValueError):
-        cfg.set_pen_area_entry(IDENTITY, KEY_A, MONITORS_A, [0.6, 0.0, 0.5, 0.5])  # rx+rw > 1
+        cfg.set_pen_area_entry(IDENTITY, KEY_A, MONITORS_A, [0.6, 0.0, -0.5, 0.5])  # rw < 0
     with pytest.raises(ValueError):
-        cfg.set_pen_area_entry(IDENTITY, KEY_A, MONITORS_A, [0.0, 0.0, 1.5, 0.5])  # rw > 1
+        cfg.set_pen_area_entry(IDENTITY, KEY_A, MONITORS_A, [0.6, 0.0, 0.5, 0.0])  # rh = 0
+    with pytest.raises(ValueError):
+        cfg.set_pen_area_entry(IDENTITY, KEY_A, MONITORS_A,
+                               [float("nan"), 0.0, 0.5, 0.5])
+    with pytest.raises(ValueError):
+        cfg.set_pen_area_entry(IDENTITY, KEY_A, MONITORS_A,
+                               [0.0, 0.0, float("inf"), 0.5])
     with pytest.raises(ValueError):
         cfg.set_pen_area_entry(IDENTITY, "", MONITORS_A, RECT_FRAC_A)
     assert cfg.pen_area_maps == {}
+
+
+def test_offscreen_rect_fraction_round_trips(cfg):
+    # PENAREA (2026-11-16, maintainer rule quoted in the editor pins): the
+    # pen-area rect may extend partly outside the display area, so the
+    # stored fractions may be negative or exceed 1. Save + reload keeps them
+    # exactly; the loader admits the entry without an error or warning.
+    off = [-0.25, -0.1, 1.5, 0.8]
+    cfg.set_pen_area_entry(IDENTITY, KEY_A, MONITORS_A, off)
+    cfg.save_to_file()
+    reloaded = DriverConfig(cfg.config_path)
+    assert select_pen_area_entry(reloaded.pen_area_maps[IDENTITY], KEY_A) == \
+        _entry(KEY_A, MONITORS_A, off)
+    data = {f"{PEN_AREA_MAP_PREFIX}{IDENTITY}": _lane([_entry(KEY_A, MONITORS_A, off)])}
+    validated, warnings, errors = cfg.validate_config_data(data, json.dumps(data))
+    assert errors == []
+    assert not any("rect_frac" in w for w in warnings)
+    assert validated["pen_area_maps"][IDENTITY]["entries"][0]["rect_frac"] == off
 
 
 def test_rect_out_of_fraction_range_is_named(cfg):

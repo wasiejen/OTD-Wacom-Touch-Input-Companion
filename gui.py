@@ -491,6 +491,62 @@ def _screen_label(record):
         return record
 
 
+# PENAREA (maintainer-requested 2026-11-16): the editor rect may extend
+# PARTLY outside the combined display area. Standing maintainer safety rule,
+# quoted: "at least one corner of the pen-area rectangle must remain inside
+# the display area". The old clamp (rect inside the display bbox) is retired.
+VIEW_MARGIN = 0.15  # fraction of the desktop dims added per viewport side
+
+
+def rect_corners(rect):
+    """The 4 corners (x, y) of an [x, y, w, h] rect, top-left first."""
+    rx, ry, rw, rh = rect
+    return [(rx, ry), (rx + rw, ry), (rx, ry + rh), (rx + rw, ry + rh)]
+
+
+def rect_any_corner_inside(rect, bbox):
+    """True when at least one rect corner lies inside the bbox (closed edges).
+
+    The bbox is [x, y, w, h]. Edges count as inside, so a rect flush against
+    a display edge with exactly one corner on it obeys the maintainer rule
+    (the boundary case the PENAREA pins lock).
+    """
+    bx, by, bw, bh = bbox
+    x1, y1 = bx + bw, by + bh
+    return any(bx <= x <= x1 and by <= y <= y1 for x, y in rect_corners(rect))
+
+
+def clamp_rect_to_display(rect, bbox):
+    """Translate a whole rect to the nearest placement that obeys the rule.
+
+    Pure (rect + bbox -> allowed rect), no tkinter. Maintainer rule, quoted:
+    "at least one corner of the pen-area rectangle must remain inside the
+    display area". The size is untouched, so the function is total: with
+    closed edges a placement always exists (a corner sits exactly on a bbox
+    corner). Nearest = smallest whole-rect displacement (squared Euclidean);
+    ties resolve to the top-left-first corner order below. The move lanes run
+    every candidate through here: an overshooting drag stops with exactly one
+    corner left on the display area instead of escaping it (no popup).
+    """
+    rx, ry, rw, rh = rect
+    bx, by, bw, bh = bbox
+    if bw <= 0 or bh <= 0:
+        return [float(rx), float(ry), float(rw), float(rh)]
+    if rect_any_corner_inside(rect, bbox):
+        return [rx, ry, rw, rh]
+    best, best_d2 = None, None
+    for i, j in ((0, 0), (1, 0), (0, 1), (1, 1)):
+        # Origin region for which corner (i, j) lands inside the bbox.
+        lo_x, hi_x = bx - i * rw, bx + bw - i * rw
+        lo_y, hi_y = by - j * rh, by + bh - j * rh
+        px = min(max(rx, lo_x), hi_x)
+        py = min(max(ry, lo_y), hi_y)
+        d2 = (px - rx) ** 2 + (py - ry) ** 2
+        if best_d2 is None or d2 < best_d2:
+            best, best_d2 = (px, py), d2
+    return [best[0], best[1], rw, rh]
+
+
 class PenAreaCanvasModel:
     """Pure model behind the pen-area rect editor (U414 / #406 option A).
 
@@ -511,21 +567,48 @@ class PenAreaCanvasModel:
         self.records = [str(rec) for rec in records]
         self.box_mm = (float(box_mm_w), float(box_mm_h))
         self.canvas_w, self.canvas_h = float(canvas_w), float(canvas_h)
-        self.scale = min(canvas_w / self.desktop_w, canvas_h / self.desktop_h)
-        # U424r4 R4-A (#424 item A): the drawn screen union is CENTERED
-        # in the canvas - slack lives as equal margins, not as dead area
-        # on one side. Every canvas-space conversion adds the offsets;
-        # drag deltas are offset-free, so the datum stays the desktop
-        # origin.
-        self.offset_x = (self.canvas_w - self.desktop_w * self.scale) / 2.0
-        self.offset_y = (self.canvas_h - self.desktop_h * self.scale) / 2.0
         if rect_px is None:
             start_w = min(self.desktop_w * 2.0 / 3.0,
                           self.desktop_h * self.box_mm[0] / self.box_mm[1])
-            self.rect = [float(v) for v in pen_area_rect_aspect_lock(
+            rect = [float(v) for v in pen_area_rect_aspect_lock(
                 [0, 0, start_w, 0], self.box_mm[0], self.box_mm[1])]
         else:
-            self.rect = [float(v) for v in rect_px]
+            rect = [float(v) for v in rect_px]
+        # PENAREA: a stored or hand-edited entry that leaves NO corner in
+        # the display area (the rule has no size cap, only a placement rule)
+        # snaps back to the nearest rule-valid placement at build.
+        self.rect = clamp_rect_to_display(rect, self.display_bbox())
+        # U424r4 R4-A (#424 item A) generalized by PENAREA: the CANVAS
+        # VIEWPORT is the display bbox plus a margin (plus the initial rect
+        # when it hangs outside), centered in the canvas with equal margins.
+        # An off-screen rect part stays visible and grabbable. The transform
+        # still derives ONCE at build - never from the rect during a drag -
+        # so the U424 L3 jitter guarantee holds.
+        pad_x = self.desktop_w * VIEW_MARGIN
+        pad_y = self.desktop_h * VIEW_MARGIN
+        self.view_x0 = min(0.0, self.rect[0]) - pad_x
+        self.view_y0 = min(0.0, self.rect[1]) - pad_y
+        self.view_w = (max(self.desktop_w, self.rect[0] + self.rect[2])
+                       + pad_x - self.view_x0)
+        self.view_h = (max(self.desktop_h, self.rect[1] + self.rect[3])
+                       + pad_y - self.view_y0)
+        self.scale = min(self.canvas_w / self.view_w, self.canvas_h / self.view_h)
+        self.offset_x = (self.canvas_w - self.view_w * self.scale) / 2.0
+        self.offset_y = (self.canvas_h - self.view_h * self.scale) / 2.0
+
+    def display_bbox(self):
+        """The combined display area in the model datum (desktop px)."""
+        return (0.0, 0.0, self.desktop_w, self.desktop_h)
+
+    def canvas_xy(self, x, y):
+        """Desktop-px (origin-relative) -> canvas px (viewport, centered)."""
+        return ((x - self.view_x0) * self.scale + self.offset_x,
+                (y - self.view_y0) * self.scale + self.offset_y)
+
+    def desktop_xy_from_canvas(self, canvas_x, canvas_y):
+        """Canvas px -> desktop-px (origin-relative); the inverse of canvas_xy."""
+        return ((canvas_x - self.offset_x) / self.scale + self.view_x0,
+                (canvas_y - self.offset_y) / self.scale + self.view_y0)
 
     @staticmethod
     def parse_record(record):
@@ -537,42 +620,53 @@ class PenAreaCanvasModel:
     def apply_fields(self, x=None, y=None, w=None):
         """Set the rect from the numeric fields (U424 / #424 ruling 2).
 
-        Width aspect-locks the height to the rotated digitizer box; every
-        value is clamped INSIDE the display union (the model bounds).
-        Returns the new rect [rx, ry, rw, rh] in px.
+        Width aspect-locks the height to the rotated digitizer box (PENAREA:
+        no display-bbox size cap - the rect may extend beyond the screens).
+        A size whose placement would leave NO corner inside the display area
+        is rejected (the previous size stands, so the field echoes it back);
+        a position that breaks the maintainer corner rule clamps to the
+        nearest rule-valid placement. Returns the new rect [rx, ry, rw, rh].
         """
         rx, ry, rw, rh = self.rect
+        bbox = self.display_bbox()
         if w is not None:
-            rw = min(max(float(w), self.MIN_RECT_PX), self.desktop_w)
-            rh = min(rw * self.box_mm[1] / self.box_mm[0], self.desktop_h)
+            wanted_w = max(float(w), self.MIN_RECT_PX)
+            candidate = [rx, ry, wanted_w,
+                         wanted_w * self.box_mm[1] / self.box_mm[0]]
+            if rect_any_corner_inside(candidate, bbox):
+                rx, ry, rw, rh = candidate
         if x is not None:
-            rx = min(max(float(x), 0.0), self.desktop_w - rw)
+            rx = float(x)
         if y is not None:
-            ry = min(max(float(y), 0.0), self.desktop_h - rh)
-        self.rect = [rx, ry, rw, rh]
+            ry = float(y)
+        self.rect = clamp_rect_to_display([rx, ry, rw, rh], bbox)
         return list(self.rect)
 
     def apply_scale(self, px_mm):
         """Resize the footprint to the wanted sensitivity px/mm, keeping its
         CENTER (U424r3 R3-L3, #424 item 3b; protocol DECISION: s is the
         derived handle s = rw_px / box_mm_w - aspect-lock makes one scalar
-        suffice; footprint semantics and the pen math are unchanged)."""
+        suffice; footprint semantics and the pen math are unchanged).
+
+        PENAREA: no display-bbox size cap; when a huge sensitivity would put
+        every corner off the display area the corner-rule clamp slides the
+        rect (center moves) to the nearest rule-valid placement.
+        """
         cx = self.rect[0] + self.rect[2] / 2
         cy = self.rect[1] + self.rect[3] / 2
-        w = min(max(float(px_mm) * self.box_mm[0], self.MIN_RECT_PX),
-                self.desktop_w)
-        h = min(w * self.box_mm[1] / self.box_mm[0], self.desktop_h)
-        rx = min(max(cx - w / 2.0, 0.0), self.desktop_w - w)
-        ry = min(max(cy - h / 2.0, 0.0), self.desktop_h - h)
-        self.rect = [rx, ry, w, h]
+        w = max(float(px_mm) * self.box_mm[0], self.MIN_RECT_PX)
+        h = w * self.box_mm[1] / self.box_mm[0]
+        self.rect = clamp_rect_to_display([cx - w / 2.0, cy - h / 2.0, w, h],
+                                          self.display_bbox())
         return list(self.rect)
 
     def match_box_aspect(self, s=None):
         """Re-derive the rect shape to the current box aspect (U424r5
         R5-E / #424 item E, watch resolved: the SHAPE follows
-        orientation). Rule: keep the CENTER and the SENSITIVITY s
-        (new w = s x new box_w, height follows the new aspect), clamp
-        inside the union. No-op (tolerance 1e-6 rel) when the rect
+        orientation). Rule: keep the CENTER and the SENSITIVITY s (new w = s
+        x new box_w, height follows the new aspect), then validate the
+        placement with the corner-rule clamp (PENAREA). No-op (tolerance
+        1e-6 rel) when the rect
         already matches, so normal loads never move the stored rect.
         `s` = the sensitivity of the PREVIOUS box (callers that swap
         box_mm first pass it explicitly; None = derive from the model's
@@ -590,16 +684,15 @@ class PenAreaCanvasModel:
         cy = self.rect[1] + self.rect[3] / 2.0
         w = s * bw
         h = w * bh / bw
-        # U424r5 R5-E: when the sensitivity-exact box does not FIT the
-        # union (a 90-deg tall box on a wide desktop), fit it back down
-        # with the ASPECT kept (s lowers) - the shape must always agree
-        # with the box, never clamp into a wrong aspect.
-        fit = min(1.0, self.desktop_w / w, self.desktop_h / h)
-        w *= fit
-        h *= fit
-        rx = min(max(cx - w / 2.0, 0.0), self.desktop_w - w)
-        ry = min(max(cy - h / 2.0, 0.0), self.desktop_h - h)
-        self.rect = [rx, ry, w, h]
+        # U424r5 R5-E stays: the shape must always agree with the box,
+        # never clamp into a wrong aspect. PENAREA retires the fit-to-union
+        # size cap (the rect may extend beyond the screens now), so the
+        # sensitivity rides across the rotation EXACTLY even when the rotated
+        # box exceeds the display bbox; the maintainer corner rule then
+        # validates the placement with the same clamp every move lane uses
+        # (rotation can therefore never silently invalidate the rule).
+        self.rect = clamp_rect_to_display([cx - w / 2.0, cy - h / 2.0, w, h],
+                                          self.display_bbox())
         return list(self.rect)
 
     def monitor_canvas_rects(self):
@@ -610,55 +703,65 @@ class PenAreaCanvasModel:
         desktop rectangle instead of staying black.
         """
         if not self.records:
-            return [(self.offset_x, self.offset_y,
-                     self.offset_x + self.desktop_w * self.scale,
-                     self.offset_y + self.desktop_h * self.scale)]
+            x0, y0 = self.canvas_xy(0.0, 0.0)
+            x1, y1 = self.canvas_xy(self.desktop_w, self.desktop_h)
+            return [(x0, y0, x1, y1)]
         boxes = []
         for record in self.records:
             left, top, width, height = self.parse_record(record)
-            x0 = (left - self.origin_x) * self.scale + self.offset_x
-            y0 = (top - self.origin_y) * self.scale + self.offset_y
-            boxes.append((x0, y0, x0 + width * self.scale, y0 + height * self.scale))
+            x0, y0 = self.canvas_xy(left - self.origin_x, top - self.origin_y)
+            x1, y1 = self.canvas_xy(left - self.origin_x + width,
+                                    top - self.origin_y + height)
+            boxes.append((x0, y0, x1, y1))
         return boxes
 
     def rect_canvas(self):
-        """The rect in canvas px (origin-relative datum times the view
-        scale, plus the centering offset - U424r4 R4-A)."""
+        """The rect in canvas px (origin-relative datum through the view
+        transform - U424r4 R4-A, PENAREA viewport)."""
         rx, ry, rw, rh = self.rect
-        s = self.scale
-        ox, oy = self.offset_x, self.offset_y
-        return (rx * s + ox, ry * s + oy,
-                (rx + rw) * s + ox, (ry + rh) * s + oy)
+        x0, y0 = self.canvas_xy(rx, ry)
+        x1, y1 = self.canvas_xy(rx + rw, ry + rh)
+        return (x0, y0, x1, y1)
 
     def handle_canvas(self):
         """Lower-right corner handle position in canvas px."""
         rx, ry, rw, rh = self.rect
-        return ((rx + rw) * self.scale + self.offset_x,
-                (ry + rh) * self.scale + self.offset_y)
+        return self.canvas_xy(rx + rw, ry + rh)
 
     def move_by(self, delta_canvas_x, delta_canvas_y):
-        """Drag the whole rect by a canvas-px delta; clamp inside the desktop."""
+        """Drag the whole rect by a canvas-px delta (PENAREA).
+
+        The old clamp kept the whole rect inside the desktop bbox - that
+        "ok for now" expired. Now only the maintainer corner rule applies
+        ("at least one corner of the pen-area rectangle must remain inside
+        the display area"), so a drag may take the rect partly off-screen;
+        an update that would leave NO corner inside clamps to the nearest
+        rule-valid placement (the rect simply stops, no popup).
+        """
         rx, ry, rw, rh = self.rect
-        self.rect[0] = min(max(rx + delta_canvas_x / self.scale, 0.0),
-                           self.desktop_w - rw)
-        self.rect[1] = min(max(ry + delta_canvas_y / self.scale, 0.0),
-                           self.desktop_h - rh)
+        self.rect = clamp_rect_to_display(
+            [rx + delta_canvas_x / self.scale,
+             ry + delta_canvas_y / self.scale, rw, rh], self.display_bbox())
 
     def resize_handle_to(self, handle_canvas_x, handle_canvas_y):
         """Move the lower-right handle to a canvas point; aspect stays locked.
 
-        Width follows the drag; rh is re-derived from the rotated mm box
-        (`pen_area_rect_aspect_lock`), and the width shrinks first when the
-        clamped axis would leave the desktop, so the aspect never breaks.
+        Width follows the drag (PENAREA: no display-bbox cap, so the rect may
+        grow past the screens); rh is re-derived from the rotated mm box
+        (`pen_area_rect_aspect_lock`), so the aspect never breaks. The
+        maintainer corner rule still decides: a wanted size that would leave
+        NO corner inside the display area is rejected - the handle simply
+        stops at the last valid size (no popup).
         """
         rx, ry = self.rect[0], self.rect[1]
-        wanted = (handle_canvas_x - self.offset_x) / self.scale - rx
-        max_w = min(self.desktop_w - rx,
-                    (self.desktop_h - ry) * self.box_mm[0] / self.box_mm[1])
+        handle_x, _ = self.desktop_xy_from_canvas(handle_canvas_x,
+                                                  handle_canvas_y)
+        wanted = handle_x - rx
         locked = pen_area_rect_aspect_lock(
-            [rx, ry, int(max(min(wanted, max_w), self.MIN_RECT_PX)), 0],
+            [rx, ry, int(max(wanted, self.MIN_RECT_PX)), 0],
             self.box_mm[0], self.box_mm[1])
-        self.rect = [float(v) for v in locked]
+        if rect_any_corner_inside(locked, self.display_bbox()):
+            self.rect = [float(v) for v in locked]
 
     def readout(self):
         """Live mm/px readout line for the editor label."""
@@ -1658,8 +1761,10 @@ class SettingsWindow(tk.Toplevel):
 
     def _apply_rect_field(self, source_key):
         # Ruling 2: px and mm entries are bidirectional, aspect-locked
-        # (height edits re-derive width), clamped inside the display
-        # union by the model.
+        # (height edits re-derive width). PENAREA: the model enforces the
+        # maintainer corner rule (at least one rect corner stays inside the
+        # display area), NOT the old inside-the-union clamp - negative and
+        # beyond-union entries are accepted and echoed back when clamped.
         editor = getattr(self, "pen_area_editor", None)
         model = editor.model if editor is not None else None
         if model is None:

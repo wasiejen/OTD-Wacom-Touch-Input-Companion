@@ -72,6 +72,38 @@ def test_rect_corners_land_at_the_rect_bounds(state, config, stub_send_input):
                                                 RECT[1] + RECT[3])
 
 
+# PENAREA (2026-11-16): the editor may place the rect PARTLY outside the
+# display union, so rect fractions leave 0..1. Documented v1 semantics of
+# the mapper for the off-screen part (see update_pen_cursor docstring).
+OFFSCREEN_FRAC = [-0.5, 0.0, 1.0, 0.5]
+
+
+def test_offscreen_rect_part_maps_to_the_desktop_edge_dead_zone(state, config,
+                                                                stub_send_input):
+    # The off-screen rect half aims at virtual-desktop coords OUTSIDE the
+    # monitors; the mapper's existing nx/ny clamp pins the result to 0 or
+    # 65535, so the cursor stands at the virtual-desktop edge while the pen
+    # travels the off-screen part - a usable dead zone, no per-monitor
+    # clipping (accepted v1 semantics, maintainer-requested PENAREA unit).
+    # rx = -0.5: the pen's box-left corner aims 1720 px left of the desktop.
+    nx, ny = _map(state, config, SPEC_791, 0, 0, SCREEN, stub_send_input,
+                  OFFSCREEN_FRAC)
+    assert (nx, ny) == (0, 0)
+    # The on-screen corner still maps through normally (rx+rw = 0.5 of the
+    # width, ry+rh = 0.5 of the height -> 1720, 720).
+    stub_send_input.clear()
+    nx, ny = _map(state, config, SPEC_791, SPEC_791["max_x"],
+                  SPEC_791["max_y"], SCREEN, stub_send_input, OFFSCREEN_FRAC)
+    assert (_px(nx, 3440), _px(ny, 1440)) == (1720, 720)
+    # With ry+rh = 1.25 the pen's box-bottom corner aims below the
+    # desktop's bottom edge -> pinned to 65535 (the far edge), never wrapped
+    # around to the top.
+    stub_send_input.clear()
+    nx, ny = _map(state, config, SPEC_791, 0, SPEC_791["max_y"], SCREEN,
+                  stub_send_input, [-0.5, 0.75, 1.0, 0.5])
+    assert (nx, ny) == (0, VIRT)
+
+
 def test_rect_lane_px_per_mm_equal_both_axes(state, config, stub_send_input):
     nx0, ny0 = _map(state, config, SPEC_791, 0, 0, SCREEN, stub_send_input, RECT_FRAC)
     stub_send_input.clear()

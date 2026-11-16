@@ -3,6 +3,7 @@ constants, and the device alias/identity helpers moved from
 touch_controller."""
 
 import json
+import math
 import os
 import copy
 import hashlib
@@ -232,8 +233,10 @@ class DriverConfig:
 
         Schema (U416 / #406 defect round 1): display_key non-empty str,
         monitors list of str, rect_frac [rx, ry, rw, rh] FRACTIONS of the
-        union bounds of the entry's own monitors (0 <= rx,ry; 0 < rw,rh;
-        the rect inside 0..1). Fractions survive hosts that answer junk
+        union bounds of the entry's own monitors (finite; 0 < rw,rh).
+        PENAREA (2026-11-16): rx/ry may be negative and the rect may reach
+        past 1 - the pen-area rect may extend outside the display union.
+        Fractions survive hosts that answer junk
         for the virtual-screen metrics. Legacy U414 rect_px entries are
         MIGRATED at load by dividing through the union bounds of the
         entry's own monitor records - the exact source of the px datum
@@ -269,9 +272,16 @@ class DriverConfig:
                            for v in values)):
             return "rect_frac must be [rx, ry, rw, rh] numbers"
         rx, ry, rw, rh = (float(v) for v in values)
-        if rw <= 0 or rh <= 0 or rx < 0.0 or ry < 0.0 or rw > 1.0 or rh > 1.0 \
-                or rx + rw > 1.000001 or ry + rh > 1.000001:
-            return "rect_frac must stay inside 0..1 with positive width and height"
+        # PENAREA (2026-11-16): the old "stay inside 0..1" containment rule
+        # is retired. The rect may extend beyond the display union, so the
+        # fractions may be negative or exceed 1; the schema keeps only the
+        # integrity checks (finite values, positive size). The placement
+        # policy is the editor's: "at least one corner of the pen-area
+        # rectangle must remain inside the display area" (maintainer rule).
+        if not all(math.isfinite(v) for v in (rx, ry, rw, rh)):
+            return "rect_frac must be finite numbers"
+        if rw <= 0 or rh <= 0:
+            return "rect_frac needs positive width and height"
         return {"display_key": display_key, "monitors": list(monitors),
                 "rect_frac": [rx, ry, rw, rh]}
 
@@ -1031,9 +1041,11 @@ class DriverConfig:
     def set_pen_area_entry(self, identity, display_key, monitors, rect_frac):
         """Store the pen-area FRACTIONAL rectangle for one display config.
 
-        U414 / #406; U416: `rect_frac` is [rx, ry, rw, rh] in 0..1 of the
+        U414 / #406; U416: `rect_frac` is [rx, ry, rw, rh] FRACTIONS of the
         union bounds of `monitors` (fractional so metrics-less hosts can
-        store and consume the rect). The entry for the current
+        store and consume the rect). PENAREA: the fractions are NOT limited
+        to 0..1 - an off-screen rect part stores as negative fractions or
+        fractions past 1. The entry for the current
         `display_key` is replaced; entries of other configurations stay
         (proposal §2: the GUI saves the current configuration's entry
         only). Does not save the file. Raises ValueError when the entry

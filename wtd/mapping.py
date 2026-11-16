@@ -520,11 +520,18 @@ def update_pen_cursor(state, action_dispatch, config, pen_specs, x, y,
     screen_metrics (U376): synthetic (left, top, width_px, height_px) desktop
     extents for the tests; None resolves them from the system metrics.
     pen_area_rect (U414 / #406, U416 fractional): [rx, ry, rw, rh] FRACTIONS
-    (0..1) of the virtual-desktop union bounds, from the per-configuration
+    of the virtual-desktop union bounds, from the per-configuration
     lane (resolved by the caller only on an exact display-key match). The
     branch maps them straight through the normalized 0..65535 space, which
     IS the MOUSEEVENTF_VIRTUALDESK space, so NO display metrics are read;
     None runs the pre-U414 lanes byte-unchanged.
+
+    PENAREA (2026-11-16): the fractions are NOT limited to 0..1 (the editor
+    lets the rect extend past the display union). An off-screen rect part
+    projects outside 0..65535 and the existing nx/ny clamp pins it to 0 or
+    65535, i.e. the cursor stands at the virtual-desktop edge: the
+    off-screen part works as a dead zone (v1 semantics, pinned in
+    tests/test_pen_area_projection.py; no per-monitor clipping).
     """
     ad = action_dispatch
     # U424 / #424: ONE mode decides the lane (stored `pen_mode`, else the
