@@ -112,7 +112,7 @@ def test_interface_thread_survives_an_over_cap_report(fake_hid, stub_send_input)
 
     thread = threading.Thread(
         target=run_interface,
-        args=("Touch", {"interface_number": 1, "path": b"fake-path"}, state, ad, enabled, stop),
+        args=("Touch", {"interface_number": 1, "path": b"fake-path"}, state, ad, stop),
         # cfg is required since unit B2 (no module-global fallback).
         kwargs={"idle_poll": 0.02, "cfg": DriverConfig()},
         daemon=True,
@@ -127,7 +127,7 @@ def test_interface_thread_survives_an_over_cap_report(fake_hid, stub_send_input)
     assert thread.is_alive(), "the interface thread died on the over-cap report"
     assert state.peak_contact_count == 11
 
-    enabled.clear()
+    stop.set()
     thread.join(timeout=0.5)
     assert not thread.is_alive()
     assert dev.closed is True

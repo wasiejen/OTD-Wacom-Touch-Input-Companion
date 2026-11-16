@@ -494,6 +494,10 @@ class DriverConfig:
             "undo",
             "redo",
             "ctrl_alt_tab_initiate",
+            # TRAY unit (#448): assignable touch on/off toggle (flips the
+            # shared tray touch-output flag; see ActionDispatcher.
+            # handle_touch_toggle).
+            "touch_toggle",
             # "ctrl_alt_tab_next",
             # "ctrl_alt_tab_prev",
             # "ctrl_alt_tab_commit"

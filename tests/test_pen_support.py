@@ -565,7 +565,7 @@ def test_wireless_thread_resolves_the_size_from_config(fake_hid, stub_send_input
     thread = threading.Thread(
         target=devices.run_interface,
         args=("Pen", {"interface_number": 1, "path": b"fake-path", "product_id": 132},
-              state, dispatcher, enabled, stop),
+              state, dispatcher, stop),
         kwargs={"idle_poll": 0.02, "cfg": config},
         daemon=True,
     )
@@ -573,7 +573,7 @@ def test_wireless_thread_resolves_the_size_from_config(fake_hid, stub_send_input
     deadline = time.monotonic() + 1.0
     while not state.pen_in_proximity and time.monotonic() < deadline:
         time.sleep(0.002)
-    enabled.clear()
+    stop.set()
     thread.join(timeout=0.5)
 
     out = capsys.readouterr().out
@@ -614,7 +614,7 @@ def test_pen_thread_processes_full_report_and_logs_init_note(fake_hid, stub_send
     thread = threading.Thread(
         target=devices.run_interface,
         args=("Pen", {"interface_number": 1, "path": b"fake-path", "product_id": 789},
-              state, dispatcher, enabled, stop),
+              state, dispatcher, stop),
         # cfg is required since unit B2 (no module-global fallback).
         kwargs={"idle_poll": 0.02, "cfg": DriverConfig()},
         daemon=True,
@@ -624,7 +624,7 @@ def test_pen_thread_processes_full_report_and_logs_init_note(fake_hid, stub_send
     deadline = time.monotonic() + 1.0
     while not state.pen_in_proximity and time.monotonic() < deadline:
         time.sleep(0.002)
-    enabled.clear()
+    stop.set()
     thread.join(timeout=0.5)
 
     assert not thread.is_alive()

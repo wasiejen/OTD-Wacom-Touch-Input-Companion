@@ -101,10 +101,18 @@ class ActionDispatcher():
         "middle_click": (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
     }
 
-    def __init__(self, state, cfg):
+    def __init__(self, state, cfg, touch_enabled_event=None):
         self.state = state
         # Per-connection config instance (U73); None keeps the module config.
         self.config = cfg
+        # TRAY unit (#448): the ONE touch-output flag, shared (never forked)
+        # with the tray menu and the DeviceManagerThread. A set event = touch
+        # output on; cleared = touch gestures/cursor/scroll/hold output off
+        # while pen coordinate output and tablet button/dial emissions stay
+        # live. None (no tray/manager, e.g. probe and tests) = always on.
+        # Reading the event per emission is the single source of truth - the
+        # tray icon and the touch_toggle action flip THE SAME object.
+        self.touch_enabled_event = touch_enabled_event
         # Inputs this dispatcher currently holds; released on thread exit.
         # A4 (review Item 7): one lock per dispatcher over this held-input
         # registry (held_keys, left_held, pen_pressure_held, and the drain in
@@ -149,6 +157,11 @@ class ActionDispatcher():
             # State-based holds (delegated to custom handlers if needed)
             "left_hold": self.handle_left_hold, 
             "left_hold_release": self.handle_left_hold_release,
+
+            # TRAY unit (#448): assignable touch on/off toggle; stateful,
+            # single-flip (like the hold pair it sits by, it drives state,
+            # not a key tap). Control lane: never itself gated.
+            "touch_toggle": self.handle_touch_toggle,
             
             # Windows Shortcuts
             "task_view": self.key_tap("lwin", "tab"),
@@ -201,7 +214,13 @@ class ActionDispatcher():
 
         Sub-notch deltas accumulate in state.scroll_acc_x/y instead of being
         truncated to zero, mirroring the cursor accumulator.
+
+        TRAY unit (#448) choke point: touch scroll/pinch is this method's
+        ONLY caller (verified by grep: the dial drives mapped actions, not
+        this), so the gate here is touch-scoped by construction.
         """
+        if self.touch_stopped():
+            return
         self.state.scroll_acc_x += dx
         self.state.scroll_acc_y += dy
 
@@ -420,7 +439,13 @@ class ActionDispatcher():
         any other unknown name is ignored instead of raising, because the
         value comes from a user-editable config file and one bad entry must
         not take the reader thread down.
+
+        TRAY unit (#448) choke point: the PRESS edge is touch output and
+        gates here; release_touch_modifier deliberately never gates, so a
+        hold that outlives a stop still gets its key back (no stuck input).
         """
+        if self.touch_stopped():
+            return
         if modifier is None or modifier == TOUCH_NO_ACTION:
             return
         if modifier not in TOUCH_MODIFIER_KEYS:
@@ -564,6 +589,34 @@ class ActionDispatcher():
         self.state.is_left_held = False
         self.state.active_gesture = None
 
+    def touch_stopped(self):
+        """TRAY unit (#448): True when the shared touch-output flag is
+        cleared. None flag (no tray/manager caller) = never stopped."""
+        return (self.touch_enabled_event is not None
+                and not self.touch_enabled_event.is_set())
+
+    def handle_touch_toggle(self):
+        """Assignable touch on/off toggle (TRAY unit / TODO #448).
+
+        Flips the SHARED threading.Event - the same object the tray menu
+        item and the icon read - so a mapped tablet button and the tray
+        never disagree. Mirrors the hold-pair convention: state flip here,
+        status surfaces (icon, log) react off the flag itself. Control
+        lane: works in every touch state, and the dispatch choke points
+        gate only touch OUTPUT, never this action.
+        """
+        if self.touch_enabled_event is None:
+            _log.info("[Toggle] touch_toggle mapped but no touch state "
+                      "exists in this run (no tray/manager) - ignored")
+            return
+        if self.touch_enabled_event.is_set():
+            self.touch_enabled_event.clear()
+            _log.info("[Toggle] Touch output OFF (pen and tablet buttons "
+                      "stay live)")
+        else:
+            self.touch_enabled_event.set()
+            _log.info("[Toggle] Touch output ON")
+
     def execute_mapped_action(self, action_name):
         if wtd_config.DEBUG:
             _log.info(f"[Gesture] Action triggered: {action_name}")
@@ -575,6 +628,13 @@ class ActionDispatcher():
             _log.info(f"[Warning] Unknown action name: {action_name}")
 
     def dispatch_gesture_event(self, event_type):
+        # TRAY unit (#448) choke point: every touch tap/press/gesture runs
+        # through here (grep: touch gestures only - pen buttons and the
+        # tablet buttons/dial drive press_*_button/execute_mapped_action
+        # directly), so one gate covers the whole gesture-output lane and
+        # nothing outside it.
+        if self.touch_stopped():
+            return
         cfg = self.config  # C1: cfg is required - no global fallback
         if cfg.feature_toggles.get(event_type, False):
             mapping = cfg.action_mapping.get(event_type, None)

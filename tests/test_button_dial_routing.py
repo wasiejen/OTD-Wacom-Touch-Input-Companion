@@ -113,7 +113,7 @@ def interface_stream(fake_hid, interface_type, reports, state, dispatcher, cfg,
         target=run_interface,
         args=(interface_type,
               {"interface_number": interface_number, "path": b"fake-path", "product_id": 789},
-              state, dispatcher, enabled, stop),
+              state, dispatcher, stop),
         kwargs={"idle_poll": 0.01, "cfg": cfg},
         daemon=True,
     )
@@ -121,7 +121,7 @@ def interface_stream(fake_hid, interface_type, reports, state, dispatcher, cfg,
     try:
         yield device
     finally:
-        enabled.clear()
+        stop.set()
         thread.join(timeout=2.0)
         assert not thread.is_alive()
 

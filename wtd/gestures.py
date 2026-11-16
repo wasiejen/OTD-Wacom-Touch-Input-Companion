@@ -370,7 +370,14 @@ def process_touch_report(report, state, action_dispatch, cfg):
                             move_y = int(state.cursor_acc_y)
                             
                             if move_x != 0 or move_y != 0:
-                                ad.send_real_mouse_move(move_x, move_y)
+                                # TRAY unit (#448): the touch cursor is
+                                # gated here, NOT inside
+                                # send_real_mouse_move - the PEN relative
+                                # lane shares that emitter (mapping.py
+                                # update_pen_cursor) and must stay live
+                                # while touch is stopped.
+                                if not ad.touch_stopped():
+                                    ad.send_real_mouse_move(move_x, move_y)
                                 state.cursor_acc_x -= move_x
                                 state.cursor_acc_y -= move_y
 

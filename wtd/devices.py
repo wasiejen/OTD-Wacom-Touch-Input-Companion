@@ -34,10 +34,15 @@ def handle_report_by_id(report, state, action_dispatch, cfg):
 # SIMPLIFIED INTERFACE WORKER THREAD
 # ==============================================================================
 
-def run_interface(interface_type, device_info, state, action_dispatch, touch_enabled_event, stop_event, cfg, idle_poll=IDLE_POLL_SECONDS):
+def run_interface(interface_type, device_info, state, action_dispatch, stop_event, cfg, idle_poll=IDLE_POLL_SECONDS):
     """
     Simplified worker thread for 'Pen', 'Touch' or the optional 'Buttons' input.
-    Exits as soon as an OSError/Exception is thrown or stop_event is set or touch_enabled_event not set.
+    Exits as soon as an OSError/Exception is thrown or stop_event is set.
+    TRAY unit (#448): the retired touch-pause thread-kill is gone - the
+    shared touch flag gates OUTPUT inside ActionDispatcher's choke points,
+    so every reader thread stays alive in every touch state (pen, the
+    0x03 button/dial reports routed on this interface, and the touch
+    STATE machine all keep running; only touch emissions are skipped).
     Reads wait for reports at device cadence: a timed read is used when the HID
     binding offers read_timeout, otherwise non-blocking reads with an idle
     backoff that never sleeps between reports. Pause/stop still take effect
@@ -84,11 +89,10 @@ def run_interface(interface_type, device_info, state, action_dispatch, touch_ena
         idle_backoff = IDLE_BACKOFF_MIN_SECONDS
 
         while not stop_event.is_set():
-            # Check pause state requirement
-            if not touch_enabled_event.is_set():
-                _log.info(f"{header} Interrupted by touch disabled. Exiting interface thread.")
-                break
-
+            # TRAY unit (#448): NO touch-pause check here (blast-radius
+            # cut): the old `break` killed the Pen and Buttons readers
+            # too. Touch output gating lives in the dispatcher choke
+            # points; this loop reads and state-processes in every state.
             # Read and process packets according to input type
             if interface_type == "Touch":
                 read_size = 66
@@ -212,15 +216,13 @@ class DeviceManagerThread(threading.Thread):
         _log.info("[Manager Thread] Started Master Management Thread.")
         
         while not self.stop_event.is_set():
-            # Wait until touch is ENABLED. If already enabled, wait(timeout) acts as a normal sleep delay.
-            # If disabled (clear), it blocks indefinitely until touch_enabled_event.set() is called from GUI.                
-            
+            # TRAY unit (#448): the retired touch-pause block - the old
+            # wait froze enumeration/spawn/reconnect for EVERY interface
+            # (pen and tablet buttons included) while touch was stopped.
+            # The manager now always polls; the flag only gates emissions.
             self.manage_connections()
-                
-            if self.touch_enabled_event.is_set():
-                self.stop_event.wait(timeout=self.poll_interval)
-            else:
-                self.touch_enabled_event.wait()
+
+            self.stop_event.wait(timeout=self.poll_interval)
 
         _log.info("[Manager Thread] Master Management Thread stopped.")
 
@@ -343,7 +345,11 @@ class DeviceManagerThread(threading.Thread):
                     
                     # Create unique state & dispatcher context per device
                     t_state = TabletState()
-                    a_dispatch = ActionDispatcher(t_state, conn_config)
+                    # TRAY unit (#448): the dispatcher shares the ONE touch
+                    # flag (never forked) so the tray, the touch_toggle
+                    # action, and the emission gates read one source.
+                    a_dispatch = ActionDispatcher(t_state, conn_config,
+                                                  touch_enabled_event=self.touch_enabled_event)
 
                     pen_dev = dev_pair['pen_device']
                     touch_dev = dev_pair['touch_device']
@@ -351,13 +357,13 @@ class DeviceManagerThread(threading.Thread):
 
                     t_pen = threading.Thread(
                         target=run_interface,
-                        args=("Pen", pen_dev, t_state, a_dispatch, self.touch_enabled_event, self.stop_event),
+                        args=("Pen", pen_dev, t_state, a_dispatch, self.stop_event),
                         kwargs={"cfg": conn_config},
                         daemon=True
                     )
                     t_touch = threading.Thread(
                         target=run_interface,
-                        args=("Touch", touch_dev, t_state, a_dispatch, self.touch_enabled_event, self.stop_event),
+                        args=("Touch", touch_dev, t_state, a_dispatch, self.stop_event),
                         kwargs={"cfg": conn_config},
                         daemon=True
                     )
@@ -390,7 +396,7 @@ class DeviceManagerThread(threading.Thread):
                         t_buttons = threading.Thread(
                             target=run_interface,
                             args=("Buttons", buttons_dev, t_state, a_dispatch,
-                                  self.touch_enabled_event, self.stop_event),
+                                  self.stop_event),
                             kwargs={"cfg": conn_config},
                             daemon=True
                         )

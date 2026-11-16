@@ -262,7 +262,7 @@ def test_reader_loop_burst_collapses_no_spin_flush(state, config,
     thread = threading.Thread(
         target=devices.run_interface,
         args=("Pen", {"path": b"x", "interface_number": 0, "product_id": 789},
-              state, dispatcher, touch_enabled, stop_event, config))
+              state, dispatcher, stop_event, config))
     thread.start()
     assert dev.drained.wait(timeout=5.0)
     stop_event.set()
