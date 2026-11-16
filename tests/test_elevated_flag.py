@@ -91,8 +91,8 @@ def test_already_elevated_logs_one_line_and_continues(monkeypatch, capsys):
     assert capsys.readouterr().out.count(RUN_ELEVATED_LINE) == 1
 
 
-def test_not_elevated_dev_run_prints_hint_and_continues(monkeypatch, capsys,
-                                                        caplog):
+def test_not_elevated_dev_run_logs_hint_and_continues(monkeypatch,
+                                                      capsys, caplog):
     """The REAL dev-mode detection runs here: this suite lives under
     python.exe, so the lane must surface the hint and never relaunch.
 
