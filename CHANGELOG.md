@@ -40,6 +40,19 @@ Pen cursor responsiveness:
   Hz** spinbox (30..1000 Hz) for `pen_move_flush_hz`. It applies live like
   the other pen fields and saves with the rest of the settings.
 
+GUI:
+
+- Rotation box: type anything - 370 becomes 10, -10 becomes 350, 360
+  becomes 0 (the box shows the corrected angle when you leave it), and
+  fractions like 10.5 are accepted. No more silent ignore.
+- Settings window opens big: it sizes to the content you showed me
+  (~870x1600) shrunk into your screen's usable work area at your display
+  scaling - at 150% it no longer starts too small to work in, and it is
+  never larger than the work area.
+- Rotation preview and pen mapping verified one-to-one at exact angles
+  (10 deg shows 10 deg, not the nearest 90) and locked with new tests;
+  the preview fix itself shipped with v0.5.0.
+
 ## v0.5.0 - 2026-11-15 (pending release tag)
 
 Reliability:

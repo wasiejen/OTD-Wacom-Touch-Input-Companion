@@ -9,7 +9,7 @@ import json
 
 import pytest
 
-from wtd.config import (DriverConfig, ORIENTATION_MAX_DEGREES)
+from wtd.config import (DriverConfig)
 from wtd.gestures import (TabletState, process_touch_report)
 from wtd.mapping import (TOUCH_ROTATION_CENTER, apply_orientation, pen_rotation_center, process_pen_report, rotate_point)
 from wtd.sender import ActionDispatcher
@@ -124,12 +124,24 @@ def test_validate_accepts_whole_degrees_and_numeric_strings(config):
     assert isinstance(validated["motion"]["orientation_degrees"], int)
 
 
-@pytest.mark.parametrize("bad", [360, -1, 90.5, "abc", True])
-def test_validate_rejects_out_of_range_or_fraction(config, bad):
+@pytest.mark.parametrize("bad", [360, 360.0, -1, "abc", True])
+def test_validate_rejects_out_of_range(config, bad):
+    # The file lane still REFUSES (never rewrites); the GUI entry wraps.
     _, _, errors = config.validate_config_data(
         {"motion_and_thresholds": {"orientation_degrees": bad}})
     assert errors, f"{bad!r} must be rejected"
     assert "orientation_degrees" in errors[0]
+
+
+@pytest.mark.parametrize("good", [90.5, "90.5", 0.0, 359.5])
+def test_validate_accepts_fractional_degrees(config, good):
+    # F1 2026-11-16: the rotation matrix accepts fractions, so file
+    # validation keeps only the range refuse, not the whole-degree refuse.
+    validated, _, errors = config.validate_config_data(
+        {"motion_and_thresholds": {"orientation_degrees": good}})
+    assert errors == []
+    expected = float(good) if isinstance(good, str) else good
+    assert validated["motion"]["orientation_degrees"] == pytest.approx(expected)
 
 
 # --- touch path --------------------------------------------------------------
@@ -282,10 +294,21 @@ def test_orientation_presets_are_the_quadrants():
 
 @pytest.mark.parametrize("raw,expected", [
     ("0", 0), ("90", 90), ("359", 359), ("137", 137),
-    ("90.5", None), ("360", None), ("-1", None), ("", None), ("abc", None),
+    # F1 2026-11-16: values wrap by modulo 360 and fractions stay legal -
+    # the field can no longer carry an angle the matrix would ignore.
+    ("360", 0), ("370", 10), ("-1", 359), ("-10", 350), ("720.5", 0.5),
+    ("90.5", 90.5), ("-0.5", 359.5), ("123456.75", 336.75), ("1e3", 280),
+    ("", None), ("abc", None), ("nan", None), ("inf", None),
 ])
 def test_parse_orientation_degrees(raw, expected):
     assert parse_orientation_degrees(raw) == expected
+
+
+def test_parse_orientation_keeps_whole_numbers_ints():
+    # The wrap keeps the int-ness of whole inputs (config stores stay int).
+    assert isinstance(parse_orientation_degrees("370"), int)
+    assert isinstance(parse_orientation_degrees("360"), int)
+    assert isinstance(parse_orientation_degrees("90.5"), float)
 
 
 def test_pictogram_numbering_top_to_bottom_at_zero():
@@ -328,11 +351,24 @@ def test_apply_settings_stores_whole_degrees(config):
 
 
 def test_apply_settings_rejects_bad_orientation(config):
+    # F1 2026-11-16: only a non-numeric entry can refuse now - numeric
+    # angles normalize instead of being silently ignored.
     accel = {"cursor_acceleration": False, "scroll_acceleration": False}
     with pytest.raises(ValueError):
         gui.apply_settings_to_config(
-            config, {"orientation_degrees": "360"}, accel, {}, {})
+            config, {"orientation_degrees": "abc"}, accel, {}, {})
     with pytest.raises(ValueError):
         gui.apply_settings_to_config(
-            config, {"orientation_degrees": "90.5"}, accel, {}, {})
+            config, {"orientation_degrees": ""}, accel, {}, {})
     assert config.orientation_degrees == 0
+
+
+def test_apply_settings_stores_the_wrapped_angle(config):
+    # F1 2026-11-16 normalization table through the apply lane:
+    # negatives, full turns, and fractions all store wrapped/kept.
+    accel = {"cursor_acceleration": False, "scroll_acceleration": False}
+    for typed, stored in (("370", 10), ("-10", 350), ("360", 0),
+                          ("90.5", 90.5), ("725", 5)):
+        gui.apply_settings_to_config(
+            config, {"orientation_degrees": typed}, accel, {}, {})
+        assert config.orientation_degrees == stored, typed
