@@ -37,8 +37,10 @@ Pen cursor responsiveness:
   order at the pen's current position. Advanced users can tune the flush
   rate with the config key `pen_move_flush_hz` (default 250).
 - The flush rate is now also a GUI field: the Pen tab gained a **Move flush
-  Hz** spinbox (30..1000 Hz) for `pen_move_flush_hz`. It applies live like
-  the other pen fields and saves with the rest of the settings.
+  Hz** spinbox (1..2000 Hz - widened from 30..1000 on 2026-11-16 so extreme
+  config values like a slow congestion test stay visible and settable) for
+  `pen_move_flush_hz`. It applies live like the other pen fields and saves
+  with the rest of the settings.
 
 GUI:
 
@@ -59,6 +61,16 @@ GUI:
   rectangle must remain inside the display area"). The preview shows the
   part outside the monitors; pen travel in that part parks the cursor at the
   screen edge, which makes the outside usable as a dead zone.
+- The pen-area editor now also shows the real slanted angle: a lighter
+  dashed outline inside the blue frame marks the actual projected shape of
+  the rotated pen box, while the blue frame stays its bounding box. Turn
+  the rotation and the dashed shape turns with it.
+- The pen-area rectangle's bottom edge behaves exactly like its left,
+  right, and top edges: it hangs past the screens too - only the "at least
+  one corner stays on the display" rule decides, on all four sides alike.
+- The settings window opens a little smaller: it now fills at most 70 % of
+  the screen's work area (was 90 %), so it no longer dwarfs the desktop on
+  big monitors.
 
 ## v0.5.0 - 2026-11-15 (pending release tag)
 
