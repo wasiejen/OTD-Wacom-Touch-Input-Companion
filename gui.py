@@ -1131,7 +1131,8 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
 SPI_GETWORKAREA = 0x0030
 WINDOW_NEEDED_W = 870
 WINDOW_NEEDED_H = 1600
-WINDOW_WORKAREA_FILL = 0.9
+WINDOW_WORKAREA_FILL = 0.7  # GUI-B B3 (maintainer 2026-11-16): 0.9 opened
+# the window too big; settled at 70% of the work area (he asked ~66%).
 
 
 def initial_window_geometry(work_area, needed_w=WINDOW_NEEDED_W,
