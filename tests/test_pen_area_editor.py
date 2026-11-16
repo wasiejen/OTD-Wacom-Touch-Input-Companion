@@ -578,3 +578,94 @@ def test_widget_offscreen_rect_persists_and_reopens_at_the_same_px(
     reopened = _build_widget(root, widget_config, monkeypatch)
     assert reopened.model.rect == pytest.approx(rect)
     assert reopened.model.rect[0] < 0.0 and reopened.model.rect[1] < 0.0
+
+
+# --- GUI-B (2026-11-16, from the maintainer's PENAREA/GUI-A live test):
+# B1 rotated-projection overlay. The blue rect stays the axis-aligned
+# BOUNDING BOX of the pen projection (its size follows the rotated mm
+# box); the lighter dashed outline drawn over it is the ACTUAL rotated
+# footprint (gui.projection_overlay_corners). The pins below run the
+# expected values through wtd.mapping itself - the transform authority -
+# never through a copied matrix.
+
+
+def test_gui_b_overlay_corners_equal_the_mapping_rotation_of_the_blue_corners():
+    # GUI-B B1 pin: overlay corners == blue corners projected through the
+    # mapping rotation at 0/45/90/270 (rotate_point is the authority).
+    rect = [500.0, 120.0, 1920.0, 1200.0]
+    cx = rect[0] + rect[2] / 2.0
+    cy = rect[1] + rect[3] / 2.0
+    for degrees in (0, 45, 90, 270):
+        expected = [mapping.rotate_point(x, y, degrees, cx, cy)
+                    for x, y in gui.rect_corners(rect)]
+        for got, want in zip(gui.projection_overlay_corners(rect, degrees),
+                             expected):
+            assert got == pytest.approx(want)
+
+
+def test_gui_b_rotation_anchor_maps_to_the_rect_center():
+    # GUI-B B1 anchor fidelity: the pen path rotates about
+    # pen_rotation_center (the device center). Running that center through
+    # the projection's OWN math (rotated_pen_extents +
+    # pen_area_norm_projection) lands on EXACTLY the rect center at every
+    # angle, so the rect center is the projection's rotation anchor in the
+    # editor datum and the overlay is literally the footprint.
+    specs = {"max_x": 43500, "max_y": 27480,
+             "width_mm": 217.5, "height_mm": 137.4}
+    for degrees in (0, 45, 90, 270):
+        left, top, ext_w, ext_h = mapping.rotated_pen_extents(specs, degrees)
+        rect = [0.11, 0.23, 0.61, 0.37]  # fractions, screen 1.0 (U416 form)
+        off_x, scale_x, off_y, scale_y = mapping.pen_area_norm_projection(
+            rect, ext_w, ext_h, 1.0, 1.0)
+        center = mapping.pen_rotation_center(specs)
+        nx = ((off_x + (center[0] - left) * scale_x)
+              / mapping.PEN_VIRTUAL_RESOLUTION)
+        ny = ((off_y + (center[1] - top) * scale_y)
+              / mapping.PEN_VIRTUAL_RESOLUTION)
+        assert nx == pytest.approx(rect[0] + rect[2] / 2.0)
+        assert ny == pytest.approx(rect[1] + rect[3] / 2.0)
+
+
+def test_gui_b_widget_draws_the_rotated_overlay(root, widget_config,
+                                                monkeypatch):
+    # GUI-B B1 at the canvas level: after a 45 deg angle the dashed overlay
+    # polygon is the ROTATED footprint (it spills past the axis-aligned
+    # blue bbox at 45 deg, so this leg is discriminating on an
+    # axis-aligned draw), its points equal the model corners through the
+    # same rotation, and its style differs from the blue bbox (lighter
+    # outline vs solid #00c8ff).
+    widget = _build_widget(root, widget_config, monkeypatch)
+    widget.orientation_degrees = 45
+    widget._redraw()
+    overlay_items = widget.canvas.find_withtag("penarea_projection")
+    assert overlay_items
+    coords = widget.canvas.coords(overlay_items[0])
+    expected = [widget.model.canvas_xy(*corner)
+                for corner in gui.projection_overlay_corners(
+                    widget.model.rect, 45)]
+    assert coords == pytest.approx(
+        [p for corner in expected for p in corner])
+    rc = widget.model.rect_canvas()
+    assert max(coords[0::2]) > rc[2] + 1e-6  # rotated: spills past the bbox
+    assert (widget.canvas.itemconfig(overlay_items[0], "outline")[-1]
+            == "#aee4ff")
+    rect_items = widget.canvas.find_withtag("penarea_rect")
+    assert (widget.canvas.itemconfig(rect_items[0], "outline")[-1]
+            == "#00c8ff")
+
+
+def test_gui_b_widget_reorient_updates_the_overlay(root, widget_config,
+                                                   monkeypatch):
+    # GUI-B B1: reorient() carries the new angle to the overlay (the pen
+    # path follows the same config value), so after a 90 deg reorient the
+    # drawn polygon equals the corners rotated by 90.
+    widget = _build_widget(root, widget_config, monkeypatch)
+    widget.reorient(protocol.PEN_SPECS_BY_PRODUCT[791], 90)
+    overlay_items = widget.canvas.find_withtag("penarea_projection")
+    coords = widget.canvas.coords(overlay_items[0])
+    expected = [widget.model.canvas_xy(*corner)
+                for corner in gui.projection_overlay_corners(
+                    widget.model.rect, 90)]
+    assert coords == pytest.approx(
+        [p for corner in expected for p in corner])
+    assert widget.orientation_degrees == 90

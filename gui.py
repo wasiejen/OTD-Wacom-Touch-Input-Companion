@@ -554,6 +554,28 @@ def clamp_rect_to_display(rect, bbox):
     return [best[0], best[1], rw, rh]
 
 
+def projection_overlay_corners(rect, degrees):
+    """GUI-B B1: the rotated projection footprint inside the blue bbox.
+
+    The editor's blue rect is the AXIS-ALIGNED BOUNDING BOX of the pen
+    projection (its size follows the rotated mm box; it is never drawn
+    rotated). This returns the ACTUAL rotated footprint: the blue rect's 4
+    corners run through the SAME transform the pen mapping applies -
+    `wtd.mapping.rotate_point` (imported above; one sin/cos matrix, y down,
+    positive angle clockwise on screen). Anchor: the pen path rotates about
+    `pen_rotation_center` (the device center); `rotated_pen_extents` is
+    centered on that device center and `pen_area_norm_projection` maps the
+    extents box onto the rect by a uniform affine, so the device center
+    lands on EXACTLY the rect center - the rect center is the projection's
+    rotation anchor in this datum (pinned by
+    test_gui_b_rotation_anchor_maps_to_the_rect_center). Returns the 4
+    corners (x, y) in `rect_corners` order (top-left first).
+    """
+    rx, ry, rw, rh = rect
+    cx, cy = rx + rw / 2.0, ry + rh / 2.0
+    return [rotate_point(x, y, degrees, cx, cy) for x, y in rect_corners(rect)]
+
+
 class PenAreaCanvasModel:
     """Pure model behind the pen-area rect editor (U414 / #406 option A).
 
@@ -863,6 +885,9 @@ class PenAreaEditor(ttk.Frame):
         product_id = conn.get("product_id")
         specs = pen_specs_for_product(product_id, config)
         box_mm = rotated_pen_box_mm(specs, config.orientation_degrees)
+        # GUI-B B1: the rotated projection overlay follows the SAME angle
+        # the pen path rotates by (reorient keeps it current).
+        self.orientation_degrees = config.orientation_degrees
         bounds = None
         usable_records = []
         if metrics is not None and metrics[2] > 0 and metrics[3] > 0:
@@ -939,6 +964,7 @@ class PenAreaEditor(ttk.Frame):
         # pointer interaction required. Apply persists it (the window
         # reorients BEFORE persisting); the pen then follows the entry.
         box = rotated_pen_box_mm(pen_specs, orientation_degrees)
+        self.orientation_degrees = orientation_degrees  # GUI-B B1 overlay
         old_bw = self.model.box_mm[0]
         s = self.model.rect[2] / old_bw if old_bw > 0 else None
         self.model.box_mm = (float(box[0]), float(box[1]))
@@ -1005,6 +1031,16 @@ class PenAreaEditor(ttk.Frame):
         rx0, ry0, rx1, ry1 = self.model.rect_canvas()
         self.canvas.create_rectangle(rx0, ry0, rx1, ry1, outline="#00c8ff",
                                      width=2, tags="penarea_rect")
+        # GUI-B B1 (maintainer-accepted design): the blue rect stays the
+        # axis-aligned bounding box; the ACTUAL rotated projection
+        # footprint is drawn over it as a lighter DASHED outline (clear
+        # style difference from the solid blue, no fill).
+        overlay = [self.model.canvas_xy(*corner) for corner in
+                   projection_overlay_corners(self.model.rect,
+                                              self.orientation_degrees)]
+        self.canvas.create_polygon(*[p for corner in overlay for p in corner],
+                                   outline="#aee4ff", fill="",
+                                   dash=(4, 3), tags="penarea_projection")
         hx, hy = self.model.handle_canvas()
         half = self.HANDLE / 2.0
         self.canvas.create_rectangle(hx - half, hy - half, hx + half, hy + half,
