@@ -292,6 +292,34 @@ ELEVATED_SPELLINGS = ("--elevated", "-elevated")
 ELEVATE_DEV_MESSAGE = ('[Elevation] dev mode - relaunch the exe manually '
                        'or use scheduled task')
 
+# ShellExecuteW failure band labels (cross-product polish 2026-11-16, FST
+# mirror): the documented <= 32 return values are error codes, and the
+# shipped failure line carried only the number, so a declined UAC prompt (5)
+# and a missing exe (2) looked identical in wtd.log. Values verified against
+# the installed Windows SDK: SE_ERR_* in um/shellapi.h, ERROR_BAD_FORMAT in
+# shared/winerror.h (2026-11-16).
+SE_ERR_NAMES = {
+    2: 'SE_ERR_FNF',
+    3: 'SE_ERR_PNF',
+    5: 'SE_ERR_ACCESSDENIED',
+    8: 'SE_ERR_OOM',
+    11: 'ERROR_BAD_FORMAT',
+    26: 'SE_ERR_SHARE',
+    27: 'SE_ERR_ASSOCINCOMPLETE',
+    28: 'SE_ERR_DDETIMEOUT',
+    29: 'SE_ERR_DDEFAIL',
+    30: 'SE_ERR_DDEBUSY',
+    31: 'SE_ERR_NOASSOC',
+    32: 'SE_ERR_DLLNOTFOUND',
+}
+
+
+def _se_err_name(code):
+    """Readable label for a ShellExecuteW failure code; a code the SDK table
+    above does not name keeps its number (never an invented symbol)."""
+    name = SE_ERR_NAMES.get(code)
+    return name if name is not None else f'code {code}'
+
 
 def _shell32_is_user_an_admin():
     """The bare ctypes seam for IsUserAnAdmin (tests patch this)."""
@@ -301,11 +329,18 @@ def _shell32_is_user_an_admin():
 def _shell32_runas_relaunch(exe_path, parameters, work_dir):
     """The bare ctypes seam for ShellExecuteW(None, "runas", ...) (tests
     patch this); returns the HINSTANCE int (<= 32 = SE_ERR_* failure).
-    work_dir pins the child's CWD to the parent's so relative --config /
-    --save-as values resolve on the same footing as without the relaunch
-    (the leg the FST unit's reviewer P2 2026-11-16 required)."""
-    return int(ctypes.windll.shell32.ShellExecuteW(None, 'runas', exe_path,
-                                                   parameters, work_dir, 1))
+    restype is pinned to c_void_p (cross-product polish 2026-11-16): the
+    documented return is an HINSTANCE-cast INT_PTR, so ctypes' default c_int
+    truncates the high dword on x64 and a healthy relaunch could read as a
+    failure; c_void_p hands the whole value back as an int (NULL arrives as
+    None -> 0 = the failure band). work_dir pins the child's CWD to the
+    parent's so relative --config / --save-as values resolve on the same
+    footing as without the relaunch (the leg the FST unit's reviewer P2
+    2026-11-16 required)."""
+    shell32 = ctypes.windll.shell32
+    shell32.ShellExecuteW.restype = ctypes.c_void_p
+    return int(shell32.ShellExecuteW(None, 'runas', exe_path, parameters,
+                                     work_dir, 1) or 0)
 
 
 def _is_process_elevated():
@@ -343,8 +378,9 @@ def handle_elevated_flag(argv):
     not flagged (self-check): argv is left alone, no win32 call at all.
     already elevated: ONE '[Elevation] running elevated' log line, the
     run continues.
-    not elevated + dev run (python.exe): print ELEVATE_DEV_MESSAGE and
-    continue - no ShellExecute attempt, so no prompt and no loop.
+    not elevated + dev run (python.exe): log ELEVATE_DEV_MESSAGE at INFO
+    (console + wtd.log) and continue - no ShellExecute attempt, so no prompt
+    and no loop.
     not elevated + frozen exe: ONE runas relaunch of sys.executable with
     the original args WITHOUT the flag (the child never sees it = loop
     guard), then exit 0 via SystemExit."""
@@ -355,7 +391,13 @@ def handle_elevated_flag(argv):
         _log.info('[Elevation] running elevated')
         return
     if _is_dev_python():
-        print(ELEVATE_DEV_MESSAGE)
+        # user-facing instruction (FST F-B2 class: stays console-visible) AND
+        # mirrored to wtd.log (polish P2, FST mirror): the shared 'wtd'
+        # logger's stream sink prints the bare message to the CURRENT
+        # sys.stdout at INFO - the _log.py contract keeps an INFO line
+        # visible exactly where print was, so nothing moves on screen and the
+        # line survives a console-less start (pythonw.exe / tray).
+        _log.info(ELEVATE_DEV_MESSAGE)
         return
     _log.info('[Elevation] relaunching elevated via runas')
     # list2cmdline applies the exact MSVC argv-quoting rules the child's C
@@ -368,10 +410,14 @@ def handle_elevated_flag(argv):
     if se_result <= 32:
         # SE_ERR_* (5 = the declined UAC prompt): the exit code stays 0 per
         # spec, but the failure gets a named warning line - a silent exit
-        # would leave the log indistinguishable from a successful relaunch
-        _log.warning(f'[Elevation] runas relaunch returned {se_result} - '
-                     'no elevated instance started; launch the exe as '
-                     'administrator manually if none appeared')
+        # would leave the log indistinguishable from a successful relaunch.
+        # The polish unit adds the SE_ERR_* name so the log says WHICH
+        # failure happened; the 'runas relaunch returned N' phrase stays
+        # because the shipped lane pins it.
+        _log.warning(f'[Elevation] runas relaunch returned {se_result} '
+                     f'({_se_err_name(se_result)}) - no elevated instance '
+                     'started; launch the exe as administrator manually '
+                     'if none appeared')
     sys.exit(0)
 
 
