@@ -14,6 +14,7 @@ from wtd.mapping import (log_metrics_diagnostic)
 from wtd.gestures import (TabletState)
 from wtd.devices import (DeviceManagerThread, build_device_info, shutdown_readers)
 from wtd._log import logger as _log  # shared wtd logger (see wtd/_log.py)
+from wtd.single_instance import handle_single_instance_guard
 
 
 
@@ -580,6 +581,15 @@ def main():
     # flag parsed into the namespace, so nothing downstream re-reads argv).
     if start.elevated:
         handle_elevated_flag(sys.argv[1:])
+
+    # Single-instance guard (maintainer decision 2026-11-16, X-SINGLE): runs
+    # right AFTER the --elevated lane and BEFORE the config ladder, the CLI
+    # maintenance lanes, and any device or window init. Order is race-free:
+    # the elevation relaunch exits 0 before the mutex is ever acquired
+    # (the launcher never holds it), so the worker process is the acquire
+    # site - see wtd/single_instance.py. A second start logs one
+    # '[SingleInstance]' notice and exits 1.
+    handle_single_instance_guard()
 
     list_devices, restore_with, save_as_alias, save_as_path = \
         resolve_start_lanes(start, start_notes)
