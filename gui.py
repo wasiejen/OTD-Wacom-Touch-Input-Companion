@@ -2722,12 +2722,19 @@ class DriverTrayApp:
         return False
 
     def _tick_icon_watch(self):
+        # Reviewer P2 (wtd-tray-review): one failing update_icon (a pystray/
+        # win32 hiccup) must not silently end the watcher chain - log it and
+        # keep the tick alive; only a destroyed root ends it.
         try:
             self._poll_icon_state()
-            self.root.after(self.ICON_WATCH_MS, self._tick_icon_watch)
-        except tk.TclError:
-            # Root destroyed on quit: the watcher dies with it.
-            pass
+        except Exception as exc:
+            print(f"[Tray] icon watch tick failed: {exc}")
+        finally:
+            try:
+                self.root.after(self.ICON_WATCH_MS, self._tick_icon_watch)
+            except tk.TclError:
+                # Root destroyed on quit: the watcher dies with it.
+                pass
         
     def is_touch_enabled(self, item=None):
         return self.touch_enabled_event.is_set()
@@ -2765,7 +2772,9 @@ class DriverTrayApp:
 
     def run_tray(self):
         menu = pystray.Menu(
-            item('Enable Touch Input', self.toggle_touch, checked=self.is_touch_enabled, default=True),
+            # #448 wording: OUTPUT vocabulary (pen and tablet buttons stay
+            # live regardless), matching the tooltip, CHANGELOG, and README.
+            item('Enable Touch Output', self.toggle_touch, checked=self.is_touch_enabled, default=True),
             item('Settings...', self.open_settings),
             pystray.Menu.SEPARATOR,
             item('Exit Driver', self.quit_driver)
@@ -2778,6 +2787,9 @@ class DriverTrayApp:
             "Wacom Touch Driver",
             menu
         )
+        # Reviewer P2 (wtd-tray-review): carry the touch-scoped title and
+        # state color from the FIRST frame, not from the first change.
+        self.update_icon()
         self.icon.run()
 
 

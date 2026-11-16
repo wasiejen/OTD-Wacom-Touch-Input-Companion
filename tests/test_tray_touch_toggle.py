@@ -16,6 +16,7 @@ never gated).
 """
 
 import threading
+import time
 
 import pytest
 
@@ -194,6 +195,79 @@ def test_touch_toggle_without_a_touch_state_is_a_logged_noop(stub_send_input):
     d = ActionDispatcher(TabletState(), cfg)  # no touch state in this run
     d.execute_mapped_action("touch_toggle")   # must not raise, must emit
     assert stub_send_input == []
+
+
+# -- the direct-injection bypass lanes (reviewer P1-1/P1-2) ---------------
+
+def _seed_contacts(st, positions):
+    # ACTIVE (0x80) tracking blocks for already-tracked contacts: state
+    # fields are seeded directly so the gesture lane fires deterministically.
+    st.active_contacts.clear()
+    for i, (x, y) in enumerate(positions, start=1):
+        st.active_contacts[i] = (x, y)
+    return touch_report([touch_move_block(i, x, y)
+                         for i, (x, y) in enumerate(positions, start=1)])
+
+
+def _seed_session(st):
+    st.last_num_active = None      # forces the mf-origin re-arm branch
+    st.mf_start_centroid = None
+    st.mf_start_spread = 0.0
+    st.session_start_time = time.time()
+    st.active_gesture = None
+
+
+def test_stopped_touch_kills_the_5f_alt_tab_direct_injections(stub_send_input):
+    # Reviewer P1-1: the 5f_alt_tab family injects keyboard output via
+    # execute_mapped_action - NO choke method involved - so the gate
+    # rides the calls; live fires, stopped fires nothing.
+    def run(touch_state):
+        stub_send_input.clear()
+        d = make_dispatcher(touch_state)
+        st = d.state
+        _seed_session(st)
+        report = _seed_contacts(st, [(100, 100), (200, 100), (300, 100),
+                                     (400, 100), (500, 100)])
+        process_touch_report(report, st, d, d.config)
+        return list(stub_send_input)
+
+    live = threading.Event()
+    live.set()
+    events = run(live)
+    assert events, "precondition: 5f fires ctrl_alt_tab_initiate when live"
+
+    stopped = threading.Event()  # cleared
+    assert run(stopped) == [], "5f_alt_tab injected while touch was stopped"
+
+
+def test_stopped_touch_kills_the_pinch_ctrl_hold_press(stub_send_input):
+    # Reviewer P1-2: 2f_pinch activation presses Ctrl directly (default
+    # ON); the press gates, the release lane never does.
+    def run(touch_state):
+        stub_send_input.clear()
+        d = make_dispatcher(touch_state)
+        st = d.state
+        st.session_start_time = time.time()
+        st.active_gesture = None
+        # Keep last_num_active == contact count and a REAL mf origin: the
+        # re-arm branch would otherwise reset mf_start_spread to the live
+        # spread (delta 0, no pinch) - seed the pinch delta directly.
+        st.last_num_active = 2
+        st.mf_start_centroid = (300, 300)
+        st.mf_start_spread = 0.0
+        st.last_2finger_centroid = None
+        st.start_time[2] = st.session_start_time  # hold-duration bookkeeping
+        report = _seed_contacts(st, [(100, 100), (500, 500)])
+        process_touch_report(report, st, d, d.config)
+        assert st.active_gesture == "2f_pinch", "the pinch did not activate"
+        return [e for e in stub_send_input if e[0] == "key"]
+
+    live = threading.Event()
+    live.set()
+    assert run(live), "precondition: pinch presses Ctrl when live"
+
+    stopped = threading.Event()  # cleared
+    assert run(stopped) == [], "pinch pressed Ctrl while touch was stopped"
 
 
 # -- the tray icon reflects toggle-driven changes (single source) ----------

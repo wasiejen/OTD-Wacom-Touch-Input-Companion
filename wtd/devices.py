@@ -45,8 +45,9 @@ def run_interface(interface_type, device_info, state, action_dispatch, stop_even
     STATE machine all keep running; only touch emissions are skipped).
     Reads wait for reports at device cadence: a timed read is used when the HID
     binding offers read_timeout, otherwise non-blocking reads with an idle
-    backoff that never sleeps between reports. Pause/stop still take effect
-    within one poll tick while the device is silent.
+    backoff that never sleeps between reports. Stop still takes effect
+    within one poll tick while the device is silent (TRAY unit #448: a
+    touch stop no longer affects this thread at all).
 
     Config-fork refresh contract (U386 / TODO #386): a manager spawn passes
     the connection's own config fork as cfg. The GUI "Apply Live" mutates
