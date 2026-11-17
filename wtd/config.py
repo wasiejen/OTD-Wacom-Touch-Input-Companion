@@ -42,6 +42,11 @@ WIRELESS_DEFAULT_ALIAS = "wireless"
 # Sections a devices entry may carry. "bindings" is the manual override key
 # (GUI tags the receiver twin once; stored per alias, U72 §4 fallback layer).
 DEVICE_SECTION_KEYS = ("motion_and_thresholds", "feature_toggles", "action_mapping")
+# WTD-14: per-section overlay acceptance iterates those file sections and
+# routes each validator bucket back to its fork attribute.
+DEVICE_SECTION_TO_BUCKET = {"motion_and_thresholds": "motion",
+                            "feature_toggles": "toggles",
+                            "action_mapping": "mapping"}
 
 
 def resolve_device_alias(product_id, wireless, bindings=None):
@@ -296,14 +301,65 @@ class DriverConfig:
                 "rect_frac": [rx, ry, rw, rh]}
 
     @staticmethod
-    def _error_reference(raw_text, key, item_index):
+    def _error_reference(raw_text, key, item_index, after_line=0):
         """Point at the offending entry: its file line when it has one,
-        otherwise its item index inside the section."""
+        otherwise its item index inside the section. after_line (a lane
+        header line, WTD-14) scopes the search STRICTLY BELOW that line -
+        needed by the per-device overlay lanes, where the same key text
+        repeats across devices and a JSON one-key-per-line layout puts
+        the first section key right under the header; 0 keeps the old
+        whole-file first match."""
         needle = f'"{key}"'
-        for lineno, line in enumerate(raw_text.splitlines(), start=1):
+        for lineno, line in enumerate(raw_text.splitlines()[after_line:],
+                                      start=after_line + 1):
             if needle in line:
                 return f"line {lineno}"
         return f"item {item_index + 1}"
+
+    @staticmethod
+    def _lane_start_line(raw_text, lane, key):
+        """1-based line of one overlay lane's header in the saved file.
+
+        WTD-14: identity lanes are named 'device_settings_<id>' (unique);
+        alias entries are found by their alias key inside 'devices'.
+        Returns 0 (unscoped whole-file search) when the header is not in
+        the text - the same honesty class as the load path's references.
+        """
+        needle = (f'"{DEVICE_SETTINGS_PREFIX}{key}"' if lane == "identity"
+                  else f'"{key}"')
+        for lineno, line in enumerate(raw_text.splitlines(), start=1):
+            if needle in line:
+                return lineno
+        return 0
+
+    def _overlay_raw_text(self):
+        """Best-effort saved-file text for fork-time line references.
+
+        WTD-14: fork runs against the IN-MEMORY entry, which Apply Live
+        may have changed since the file was written - a 'line N' here is
+        FILE-relative (same class as the load path's), and an entry that
+        only exists in memory degrades to the validator's 'item N' form.
+        """
+        try:
+            with open(self.config_path, "r") as f:
+                return f.read()
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _overlay_reject_summary(key, bad_names, applied_count):
+        """One owner for the overlay reject summary line (WTD-14).
+
+        All sections bad reproduces the pre-WTD-14 whole-reject line
+        byte-for-byte (pinned). A partial reject names the rejected
+        sections and states that the valid ones stayed applied.
+        """
+        if applied_count == 0:
+            return (f"[Config Error] Overlay for '{key}' not applied; "
+                    "previous settings stay.")
+        return (f"[Config Error] Overlay for '{key}': "
+                f"{', '.join(repr(n) for n in bad_names)} not applied; "
+                f"{applied_count} valid section(s) applied.")
 
     def __init__(self, filepath=None):
         # Resolved load/save lanes; --config/--save-as overwrite these in main().
@@ -638,7 +694,7 @@ class DriverConfig:
             json.dump(data, f, indent=4)
         _log.info(f"[Config] Saved settings to '{filepath}'")
 
-    def validate_config_data(self, data, raw_text=""):
+    def validate_config_data(self, data, raw_text="", after_line=0):
         """Validate a loaded dict against the current schema.
 
         Returns (validated, warnings, errors). This method applies nothing:
@@ -655,7 +711,7 @@ class DriverConfig:
 
         for section in data:
             if section not in self.CONFIG_SECTIONS and self._device_lane_key(section) is None:
-                ref = self._error_reference(raw_text, section, 0)
+                ref = self._error_reference(raw_text, section, 0, after_line)
                 warnings.append(f"unknown section '{section}' ({ref}) ignored")
 
         motion = data.get("motion_and_thresholds", {})
@@ -670,7 +726,7 @@ class DriverConfig:
             # key, and when both keys are present the new one wins.
             has_new_wireless_key = WIRELESS_TABLET_SIZE_KEY in motion
             for index, (key, val) in enumerate(motion.items()):
-                ref = self._error_reference(raw_text, key, index)
+                ref = self._error_reference(raw_text, key, index, after_line)
                 if key == WIRELESS_TABLET_SIZE_LEGACY_KEY:
                     if val is None:
                         normalized = None
@@ -772,7 +828,7 @@ class DriverConfig:
                           f"got {self._describe(toggles)}")
         else:
             for index, (key, val) in enumerate(toggles.items()):
-                ref = self._error_reference(raw_text, key, index)
+                ref = self._error_reference(raw_text, key, index, after_line)
                 if key not in self.feature_toggles:
                     warnings.append(f"unknown feature toggle '{key}' ({ref}) ignored")
                     continue
@@ -789,7 +845,7 @@ class DriverConfig:
                           f"got {self._describe(mapping)}")
         else:
             for index, (key, val) in enumerate(mapping.items()):
-                ref = self._error_reference(raw_text, key, index)
+                ref = self._error_reference(raw_text, key, index, after_line)
                 if key not in self.action_mapping:
                     warnings.append(f"unknown gesture '{key}' ({ref}) ignored")
                     continue
@@ -808,13 +864,13 @@ class DriverConfig:
 
         if "devices" in data:
             devices = data["devices"]
-            ref = self._error_reference(raw_text, "devices", 0)
+            ref = self._error_reference(raw_text, "devices", 0, after_line)
             if not isinstance(devices, dict):
                 errors.append(f"'devices' must be a JSON object, got {self._describe(devices)} ({ref})")
             else:
                 validated_devices = {}
                 for index, (alias, entry) in enumerate(devices.items()):
-                    entry_ref = self._error_reference(raw_text, str(alias), index)
+                    entry_ref = self._error_reference(raw_text, str(alias), index, after_line)
                     if not isinstance(alias, str) or not isinstance(entry, dict):
                         errors.append(f"'devices' entry {self._describe(alias)} must be a "
                                       f"named object ({entry_ref})")
@@ -833,7 +889,7 @@ class DriverConfig:
             if lane is None:
                 continue
             lane_seen = True
-            ref = self._error_reference(raw_text, key, index)
+            ref = self._error_reference(raw_text, key, index, after_line)
             identity = key[len(lane):]
             if lane == DEVICE_ALIAS_PREFIX:
                 if not isinstance(value, str):
@@ -968,11 +1024,15 @@ class DriverConfig:
         """Build one independent config instance for a connection.
 
         The fork carries this config's values; a present devices[alias]
-        entry overlays its sections all-or-nothing. A present
-        device_settings[identity] entry (U87) overlays last, so per-device
-        values win over alias values; global values stay the fallback.
-        An invalid entry prints its errors and keeps the previous values.
-        None overlays nothing.
+        entry overlays it PER SECTION (WTD-14 / decision 14): each valid
+        section applies, each section holding a validation error stays
+        out untouched and is named in its own error lines - a bad action
+        key no longer poisons the good motion/toggle sections. Within a
+        section atomicity stays (one bad key drops the whole section).
+        All sections bad reproduces the old whole-reject behavior and
+        error line. A present device_settings[identity] entry (U87)
+        overlays last, so per-device values win over alias values; global
+        values stay the fallback. None overlays nothing.
         """
         clone = copy.copy(self)
         clone.sensitivities = {name: list(accel)
@@ -984,26 +1044,53 @@ class DriverConfig:
 
         overlays = (("devices", alias, self.devices.get(alias)),
                     ("identity", identity, self.device_settings.get(identity)))
+        raw_text = None  # lazy: only a rejected section needs the file text
         for lane, key, entry in overlays:
             if key is None or entry is None:
                 continue
             sections = {name: value for name, value in entry.items()
                         if name in DEVICE_SECTION_KEYS}
-            validated, warnings, errors = self.validate_config_data(sections, "")
-            for note in warnings:
-                _log.info(f"[Config Warning] {lane} '{key}': {note}")
-            if errors:
-                for err in errors:
-                    _log.info(f"[Config Error] Invalid {lane} entry '{key}': {err}")
-                _log.info(f"[Config Error] Overlay for '{key}' not applied; "
-                      "previous settings stay.")
-                continue
-            for attr, value in validated["motion"].items():
-                setattr(clone, attr, value)
-            for attr, value in validated["toggles"].items():
-                clone.feature_toggles[attr] = value
-            for attr, value in validated["mapping"].items():
-                clone.action_mapping[attr] = value
+            applied = {}     # section name -> validated bucket
+            rejected = []    # section names with validation errors
+            for name, value in sections.items():
+                validated, warnings, errors = self.validate_config_data(
+                    {name: value}, "")
+                for note in warnings:
+                    # First pass has no file text; the rejected sections'
+                    # second (line-ref) pass deliberately drops warnings
+                    # so nothing logs twice.
+                    _log.info(f"[Config Warning] {lane} '{key}': {note}")
+                if errors:
+                    rejected.append(name)
+                else:
+                    applied[name] = validated
+            if rejected:
+                # WTD-14: name each rejected section's errors against the
+                # saved file (cheap best-effort line refs, scoped to this
+                # lane), then apply the good sections below.
+                if raw_text is None:
+                    raw_text = self._overlay_raw_text()
+                lane_start = self._lane_start_line(raw_text, lane, key)
+                for name in rejected:
+                    _, _, errors = self.validate_config_data(
+                        {name: sections[name]}, raw_text, lane_start)
+                    for err in errors:
+                        _log.info(f"[Config Error] Invalid {lane} entry "
+                                  f"'{key}': {err}")
+                _log.info(self._overlay_reject_summary(
+                    key, rejected, len(applied)))
+            for name, validated in applied.items():
+                bucket = DEVICE_SECTION_TO_BUCKET[name]
+                values = validated[bucket]
+                if bucket == "motion":
+                    for attr, value in values.items():
+                        setattr(clone, attr, value)
+                elif bucket == "toggles":
+                    for attr, value in values.items():
+                        clone.feature_toggles[attr] = value
+                else:
+                    for attr, value in values.items():
+                        clone.action_mapping[attr] = value
 
         clone.sync_sensitivities()
         return clone
