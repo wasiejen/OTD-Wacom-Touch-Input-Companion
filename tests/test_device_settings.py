@@ -111,6 +111,9 @@ def test_fork_of_unknown_alias_is_the_global_view(monkeypatch, tmp_path):
 
 
 def test_invalid_overlay_entry_keeps_global(monkeypatch, tmp_path, capsys):
+    # WTD-14 (decision 14) re-pin of the whole-reject doctrine: the bad
+    # MOTION section stays out atomically (both its keys, valid included),
+    # the valid TOGGLES section now APPLIES instead of being poisoned.
     cfg = fresh_config(monkeypatch, tmp_path)
     cfg.devices = {"wacom-intuos5-m": {
         "motion_and_thresholds": {"cursor_speed_low": "abc", "max_tap_duration": 0.4},
@@ -122,9 +125,11 @@ def test_invalid_overlay_entry_keeps_global(monkeypatch, tmp_path, capsys):
 
     assert fork.cursor_speed_low == 5.0
     assert fork.max_tap_duration == DriverConfig().max_tap_duration
-    assert fork.feature_toggles["2f_tap"] is False
+    assert fork.feature_toggles["2f_tap"] is True
     assert "Invalid devices entry" in out
     assert "cursor_speed_low" in out
+    assert "'motion_and_thresholds' not applied" in out
+    assert "1 valid section(s) applied" in out
 
 
 # --- schema round-trip --------------------------------------------------------
