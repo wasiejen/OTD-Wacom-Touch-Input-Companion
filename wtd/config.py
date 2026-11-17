@@ -301,17 +301,19 @@ class DriverConfig:
                 "rect_frac": [rx, ry, rw, rh]}
 
     @staticmethod
-    def _error_reference(raw_text, key, item_index, after_line=0):
+    def _error_reference(raw_text, key, item_index, after_line=0, end_line=0):
         """Point at the offending entry: its file line when it has one,
         otherwise its item index inside the section. after_line (a lane
-        header line, WTD-14) scopes the search STRICTLY BELOW that line -
-        needed by the per-device overlay lanes, where the same key text
-        repeats across devices and a JSON one-key-per-line layout puts
-        the first section key right under the header; 0 keeps the old
-        whole-file first match."""
+        header line, WTD-14) scopes the search STRICTLY BELOW that line
+        and end_line bounds it to the lane's own block - needed by the
+        per-device overlay lanes, where the same key text repeats across
+        devices: a key that is NOT in the lane's saved block must not
+        borrow another lane's line (honesty rule, decision 14). 0/0 keeps
+        the old whole-file first match."""
         needle = f'"{key}"'
-        for lineno, line in enumerate(raw_text.splitlines()[after_line:],
-                                      start=after_line + 1):
+        for lineno, line in enumerate(
+                raw_text.splitlines()[after_line:end_line or None],
+                start=after_line + 1):
             if needle in line:
                 return f"line {lineno}"
         return f"item {item_index + 1}"
@@ -322,8 +324,9 @@ class DriverConfig:
 
         WTD-14: identity lanes are named 'device_settings_<id>' (unique);
         alias entries are found by their alias key inside 'devices'.
-        Returns 0 (unscoped whole-file search) when the header is not in
-        the text - the same honesty class as the load path's references.
+        Returns 0 when the header is not in the text - the caller then
+        names NO line (honest 'item N'), instead of searching the whole
+        file and risking another device's line.
         """
         needle = (f'"{DEVICE_SETTINGS_PREFIX}{key}"' if lane == "identity"
                   else f'"{key}"')
@@ -332,18 +335,38 @@ class DriverConfig:
                 return lineno
         return 0
 
+    @staticmethod
+    def _lane_block_end(raw_text, lane_start):
+        """Last line of one lane's own block (WTD-14 honesty bound).
+
+        The block ends right before the next top-level key - the first
+        following line carrying the header's own indentation and a quote.
+        A key that drifted in-memory but is absent from this saved block
+        then falls back to 'item N' instead of borrowing a LATER lane's
+        line. Returns the file's last line when no following key exists.
+        """
+        lines = raw_text.splitlines()
+        header = lines[lane_start - 1]
+        indent = header[:len(header) - len(header.lstrip())]
+        for lineno in range(lane_start + 1, len(lines) + 1):
+            if lines[lineno - 1].startswith(f'{indent}"'):
+                return lineno - 1
+        return len(lines)
+
     def _overlay_raw_text(self):
         """Best-effort saved-file text for fork-time line references.
 
         WTD-14: fork runs against the IN-MEMORY entry, which Apply Live
         may have changed since the file was written - a 'line N' here is
-        FILE-relative (same class as the load path's), and an entry that
-        only exists in memory degrades to the validator's 'item N' form.
+        FILE-relative and block-bounded; an entry that is not in the file
+        degrades to the validator's 'item N' form. Any read/decode
+        failure reads as no text (same policy as the load path's broad
+        guard), never a crash on the fork hot path.
         """
         try:
             with open(self.config_path, "r") as f:
                 return f.read()
-        except OSError:
+        except Exception:
             return ""
 
     @staticmethod
@@ -694,7 +717,7 @@ class DriverConfig:
             json.dump(data, f, indent=4)
         _log.info(f"[Config] Saved settings to '{filepath}'")
 
-    def validate_config_data(self, data, raw_text="", after_line=0):
+    def validate_config_data(self, data, raw_text="", after_line=0, end_line=0):
         """Validate a loaded dict against the current schema.
 
         Returns (validated, warnings, errors). This method applies nothing:
@@ -711,7 +734,7 @@ class DriverConfig:
 
         for section in data:
             if section not in self.CONFIG_SECTIONS and self._device_lane_key(section) is None:
-                ref = self._error_reference(raw_text, section, 0, after_line)
+                ref = self._error_reference(raw_text, section, 0, after_line, end_line)
                 warnings.append(f"unknown section '{section}' ({ref}) ignored")
 
         motion = data.get("motion_and_thresholds", {})
@@ -726,7 +749,7 @@ class DriverConfig:
             # key, and when both keys are present the new one wins.
             has_new_wireless_key = WIRELESS_TABLET_SIZE_KEY in motion
             for index, (key, val) in enumerate(motion.items()):
-                ref = self._error_reference(raw_text, key, index, after_line)
+                ref = self._error_reference(raw_text, key, index, after_line, end_line)
                 if key == WIRELESS_TABLET_SIZE_LEGACY_KEY:
                     if val is None:
                         normalized = None
@@ -828,7 +851,7 @@ class DriverConfig:
                           f"got {self._describe(toggles)}")
         else:
             for index, (key, val) in enumerate(toggles.items()):
-                ref = self._error_reference(raw_text, key, index, after_line)
+                ref = self._error_reference(raw_text, key, index, after_line, end_line)
                 if key not in self.feature_toggles:
                     warnings.append(f"unknown feature toggle '{key}' ({ref}) ignored")
                     continue
@@ -845,7 +868,7 @@ class DriverConfig:
                           f"got {self._describe(mapping)}")
         else:
             for index, (key, val) in enumerate(mapping.items()):
-                ref = self._error_reference(raw_text, key, index, after_line)
+                ref = self._error_reference(raw_text, key, index, after_line, end_line)
                 if key not in self.action_mapping:
                     warnings.append(f"unknown gesture '{key}' ({ref}) ignored")
                     continue
@@ -864,13 +887,13 @@ class DriverConfig:
 
         if "devices" in data:
             devices = data["devices"]
-            ref = self._error_reference(raw_text, "devices", 0, after_line)
+            ref = self._error_reference(raw_text, "devices", 0, after_line, end_line)
             if not isinstance(devices, dict):
                 errors.append(f"'devices' must be a JSON object, got {self._describe(devices)} ({ref})")
             else:
                 validated_devices = {}
                 for index, (alias, entry) in enumerate(devices.items()):
-                    entry_ref = self._error_reference(raw_text, str(alias), index, after_line)
+                    entry_ref = self._error_reference(raw_text, str(alias), index, after_line, end_line)
                     if not isinstance(alias, str) or not isinstance(entry, dict):
                         errors.append(f"'devices' entry {self._describe(alias)} must be a "
                                       f"named object ({entry_ref})")
@@ -889,7 +912,7 @@ class DriverConfig:
             if lane is None:
                 continue
             lane_seen = True
-            ref = self._error_reference(raw_text, key, index, after_line)
+            ref = self._error_reference(raw_text, key, index, after_line, end_line)
             identity = key[len(lane):]
             if lane == DEVICE_ALIAS_PREFIX:
                 if not isinstance(value, str):
@@ -1065,15 +1088,22 @@ class DriverConfig:
                 else:
                     applied[name] = validated
             if rejected:
-                # WTD-14: name each rejected section's errors against the
-                # saved file (cheap best-effort line refs, scoped to this
-                # lane), then apply the good sections below.
+                # WTD-14 honesty split (decision 14 "if easily possible",
+                # reviewer P1): name a file line ONLY when the lane's own
+                # block is in the saved file - the scan is then bounded to
+                # that block, so neither an unsaved in-memory entry nor a
+                # drifted key can borrow another lane's line. Without a
+                # block, the honest reference is 'item N'.
                 if raw_text is None:
                     raw_text = self._overlay_raw_text()
                 lane_start = self._lane_start_line(raw_text, lane, key)
+                lane_end = (self._lane_block_end(raw_text, lane_start)
+                            if lane_start else 0)
                 for name in rejected:
                     _, _, errors = self.validate_config_data(
-                        {name: sections[name]}, raw_text, lane_start)
+                        {name: sections[name]},
+                        raw_text if lane_start else "",
+                        lane_start, lane_end)
                     for err in errors:
                         _log.info(f"[Config Error] Invalid {lane} entry "
                                   f"'{key}': {err}")

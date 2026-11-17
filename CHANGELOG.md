@@ -13,7 +13,8 @@ Per-device settings robustness:
 - One bad value in a device's settings no longer throws away that device's
   whole override: the valid sections still apply, only the section holding
   the bad value is skipped - and the error now names the section, the key,
-  and the file line where the entry sits (when it came from the saved file).
+  and the line in the saved file - whenever that key actually sits in the
+  device's saved block (in-memory-only values honestly say 'item N').
 
 System tray and touch on/off (BEHAVIOR CHANGE - this changes a habit):
 

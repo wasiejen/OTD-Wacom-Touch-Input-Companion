@@ -15,8 +15,6 @@ line of an unsaved in-memory value, and inventing one would lie).
 import json
 import re
 
-import re  # noqa: E402  (regex-boundary line-ref asserts)
-
 from wtd.config import (DEVICE_SETTINGS_PREFIX, DriverConfig,
                         device_identity_hash)
 
@@ -143,6 +141,12 @@ def test_bad_identity_mapping_section_never_touches_the_alias_sections(
 
 def test_line_reference_names_the_bad_keys_line_in_the_saved_file(
         monkeypatch, tmp_path, capsys):
+    # Drift-identical shape (reviewer P2-4): an identity lane this bad can
+    # NOT arrive via load (identity lanes are load-validated as a whole),
+    # but the fork consumes whatever the in-memory map holds - a file that
+    # was rewritten to this content mid-session is reachable. The
+    # genuinely load-reachable saved-file class is the alias lane, pinned
+    # by test_alias_lane_line_ref_on_a_loaded_file below.
     identity = device_identity_hash(WACOM_PATH)
     cfg = DriverConfig()
     cfg.config_path = str(tmp_path / "user.cfg")
@@ -205,10 +209,9 @@ def test_lane_scoping_points_at_the_RIGHT_devices_line(monkeypatch, tmp_path,
 
 def test_in_memory_only_entry_degrades_to_item_reference(monkeypatch,
                                                          tmp_path, capsys):
-    # The NOT-cheaply-trackable class: the entry was never in the file
-    # (Apply Live in-memory write-through before any save) - there is no
-    # honest line to name, so the reference degrades to the validator's
-    # existing 'item N' form and the pin records that limitation.
+    # The NOT-cheaply-trackable class (no file at all): there is no honest
+    # line to name, so the reference degrades to the validator's existing
+    # 'item N' form and the pin records that limitation.
     identity = device_identity_hash(WACOM_PATH)
     cfg = fresh_config(monkeypatch, tmp_path)  # no user.cfg written
     cfg.device_settings = {identity: {"action_mapping":
@@ -220,3 +223,83 @@ def test_in_memory_only_entry_degrades_to_item_reference(monkeypatch,
     assert "line " not in out.split("maps to unknown action")[1][:40]
     assert "(item 1)" in out
     assert f"Overlay for '{identity}' not applied; previous settings stay." in out
+
+
+def test_unsaved_entry_never_borrows_another_devices_line(tmp_path, capsys,
+                                                          monkeypatch):
+    # Reviewer P1 class (realistic Apply-Live drift): a SAVED file exists
+    # (device A, valid) and the rejected entry (device B) was never saved.
+    # B's error must degrade to 'item N' - it must NOT print A's line just
+    # because A's block contains the same key text.
+    monkeypatch.chdir(tmp_path)
+    id_a = device_identity_hash(WACOM_PATH)
+    id_b = device_identity_hash(OTHER_PATH)
+    entry_a = {"action_mapping": {"1f_tap": "left_click"}}
+    text = json.dumps({f"{DEVICE_SETTINGS_PREFIX}{id_a}": entry_a}, indent=2)
+    path = tmp_path / "user.cfg"
+    path.write_text(text)
+    cfg = DriverConfig(str(path))
+    assert cfg.load_from_file() is True
+    cfg.device_settings[id_b] = {"action_mapping": {"1f_tap": BAD_ACTION}}
+
+    cfg.fork_for_device(None, id_b)
+    out = capsys.readouterr().out
+
+    assert "(item 1)" in out
+    assert "line " not in out.split("maps to unknown action")[1][:40]
+    assert f"Overlay for '{id_b}' not applied; previous settings stay." in out
+
+
+def test_drifted_key_absent_from_the_saved_block_stays_item_ref(
+        tmp_path, capsys, monkeypatch):
+    # Reviewer P1 second subclass: the lane header IS in the file, but the
+    # bad key only exists in the in-memory (drifted) entry - a LATER
+    # block contains that key text. The bounded block scan must yield
+    # 'item N', never the later block's line.
+    monkeypatch.chdir(tmp_path)
+    id_a = device_identity_hash(WACOM_PATH)
+    id_b = device_identity_hash(OTHER_PATH)
+    entry_a = {"action_mapping": {"1f_tap": "left_click"}}
+    entry_b_saved = {"action_mapping": {"2f_tap": "middle_click"}}
+    text = json.dumps({f"{DEVICE_SETTINGS_PREFIX}{id_a}": entry_a,
+                       f"{DEVICE_SETTINGS_PREFIX}{id_b}": entry_b_saved},
+                      indent=2)
+    path = tmp_path / "user.cfg"
+    path.write_text(text)
+    cfg = DriverConfig(str(path))
+    assert cfg.load_from_file() is True
+    # Drift: A gains a bad 2f_tap in memory only (2f_tap exists ONLY in
+    # B's saved block - the borrow candidate).
+    cfg.device_settings[id_a] = {"action_mapping": {"1f_tap": "left_click",
+                                                    "2f_tap": BAD_ACTION}}
+
+    cfg.fork_for_device(None, id_a)
+    out = capsys.readouterr().out
+
+    assert "(item 2)" in out
+    assert "line " not in out.split("maps to unknown action")[1][:40]
+    line_b_2f = next(i for i, ln in enumerate(text.splitlines(), start=1)
+                     if '"2f_tap"' in ln)
+    assert not re.search(rf"line {line_b_2f}\b", out), out
+
+
+def test_alias_lane_line_ref_on_a_loaded_file(tmp_path, capsys, monkeypatch):
+    # The load-reachable saved-file class (reviewer P2-4): alias-lane
+    # entries are NOT load-validated, so this bad value survives load and
+    # the fork error legitimately names the key's line in the saved file.
+    monkeypatch.chdir(tmp_path)
+    entry = {"action_mapping": {"1f_tap": BAD_ACTION}}
+    text = json.dumps({"devices": {"tablet-a": entry}}, indent=2)
+    path = tmp_path / "user.cfg"
+    path.write_text(text)
+    cfg = DriverConfig(str(path))
+    assert cfg.load_from_file() is True
+
+    cfg.fork_for_device("tablet-a")
+    out = capsys.readouterr().out
+
+    line_1f = next(i for i, ln in enumerate(text.splitlines(), start=1)
+                   if '"1f_tap"' in ln)
+    assert re.search(rf"line {line_1f}\b", out), out
+    assert "'action_mapping' not applied; 0 valid section(s) applied" not in out
+    assert "Overlay for 'tablet-a' not applied; previous settings stay." in out
