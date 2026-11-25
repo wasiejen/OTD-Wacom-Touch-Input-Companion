@@ -58,24 +58,28 @@ def test_apply_scale_resizes_footprint_at_fixed_center():
         pytest.approx((cx, cy))
 
 
-def test_apply_scale_overshoot_slides_the_rect_to_keep_a_corner_on_screen():
-    # PENAREA re-pin of test_apply_scale_clamps_inside_the_desktop: the
-    # absurd-px/mm case no longer caps the size at the DESKTOP WIDTH - a
-    # sensitivity beyond it is accepted (only the MAX_SIZE_FACTOR arithmetic
-    # bound, tested separately, caps). The wanted size stands; only the
-    # placement obeys the maintainer rule "at least one corner of the
-    # pen-area rectangle must remain inside the display area", so the
-    # over-sized rect slides to the nearest legal placement (the center
-    # (500, 350) is asymmetric -> the unique nearest placement lands the
-    # rect's lower-right corner on the display's lower-right corner).
+def test_apply_scale_overshoot_covers_the_display_and_keeps_the_center():
+    # PENAREA re-pin of test_apply_scale_clamps_inside_the_desktop; #467
+    # re-pin of the PENAREA corner-rule outcome: the absurd-px/mm case no
+    # longer caps the size at the DESKTOP WIDTH - a sensitivity beyond it is
+    # accepted (only the MAX_SIZE_FACTOR arithmetic bound, tested separately,
+    # caps). The wanted size stands, and under the #467 overlap rule the
+    # over-sized centered footprint COVERS the display: a legal placement,
+    # so the rect stands and apply_scale's center promise holds exactly (the
+    # old corner rule slid it until one corner touched the lower-right - the
+    # position-dependent clamp asymmetry behind the rotation report).
     m = _model(rect=[100.0, 100.0, 800.0, 500.0])
     m.apply_scale(50.0)  # 16256 px wide: past the 3440 px desktop, in bound
     assert m.rect[2] == pytest.approx(50.0 * BOX_MM[0])
     assert m.rect[3] == pytest.approx(50.0 * BOX_MM[1])
     assert m.rect[2] > SCREEN[2]  # the retired desktop-width cap
-    assert gui.rect_any_corner_inside(m.rect, m.display_bbox())
-    assert [m.rect[0] + m.rect[2], m.rect[1] + m.rect[3]] == pytest.approx(
-        [SCREEN[2], SCREEN[3]])
+    assert gui.rect_overlaps_display(m.rect, m.display_bbox())
+    # Center (500, 350) preserved exactly; the rect straddles the display.
+    assert [m.rect[0] + m.rect[2] / 2, m.rect[1] + m.rect[3] / 2] == \
+        pytest.approx([500.0, 350.0])
+    assert m.rect[0] < 0 and m.rect[1] < 0
+    assert m.rect[0] + m.rect[2] > SCREEN[2]
+    assert m.rect[1] + m.rect[3] > SCREEN[3]
 
 
 def test_aspect_lock_helper_rederives_rh():
@@ -172,7 +176,7 @@ def test_model_drag_places_rect_partly_offscreen_freely():
     assert model.rect == pytest.approx([100.0, 20.0, 1920.0, 1200.0])
     model.move_by(0, -500 * model.scale)  # hangs 480 px above the screens
     assert model.rect == pytest.approx([100.0, -480.0, 1920.0, 1200.0])
-    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
 
 
 def test_model_drag_stops_with_one_corner_on_the_display_edge():
@@ -183,10 +187,10 @@ def test_model_drag_stops_with_one_corner_on_the_display_edge():
     model = _model()
     model.move_by(100000, 0)
     assert model.rect == pytest.approx([3440.0, 120.0, 1920.0, 1200.0])
-    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
     model.move_by(-200000, 0)
     assert model.rect == pytest.approx([-1920.0, 120.0, 1920.0, 1200.0])
-    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
 
 
 def test_model_handle_resize_locks_aspect_and_grows_past_the_screens():
@@ -203,27 +207,29 @@ def test_model_handle_resize_locks_aspect_and_grows_past_the_screens():
     assert model.rect[2] == pytest.approx(2520.0 + 6000.0 - 500.0, abs=1.0)
     assert model.rect[0] + model.rect[2] > 3440  # hangs off the right edge
     assert model.rect[3] == round(model.rect[2] * BOX_MM[1] / BOX_MM[0])
-    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
 
 
-def test_model_handle_resize_stops_when_no_corner_would_stay_inside():
-    # PENAREA: the rect hangs off the top-left with its lower-right corner
-    # (500, 137.5) as the ONLY anchor inside the screens; growing the rect
-    # pushes that anchor out, so the resize update is rejected - the handle
-    # stops at the last valid size (no popup).
+def test_model_handle_resize_grows_past_the_display_from_corner_anchor():
+    # PENAREA re-pin of the corner-rule outcome (#467): the rect hangs off
+    # the top-left with its lower-right corner (500, 137.5) as the ONLY
+    # anchor inside the screens; the old rule REJECTED the growth once that
+    # anchor left the screens (the report's position-dependent resize stop -
+    # the wanted rect covered the display but had no corner inside). Under
+    # the overlap rule the wanted rect [~6500 wide] still intersects the
+    # display, so the handle follows: w = 500 - (-1000) + 5000 (abs=1 for
+    # the per-event canvas round-trip int floor), h = the aspect-locked
+    # int(round(w x 203.2/325.12)) - 4062 for either 6499 or 6500.
     model = _model(rect=[-1000.0, -800.0, 1500.0, 937.5])
-    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
     handle = model.handle_canvas()
     model.resize_handle_to(handle[0] + 5000 * model.scale,
                            handle[1] + 5000 * model.scale)
-    assert model.rect == pytest.approx([-1000.0, -800.0, 1500.0, 937.5])
-    # The per-event recompute follows the handle again the moment the wanted
-    # size is legal: w = 3000 puts the lower-right corner at (2000, 1075),
-    # inside the screens.
-    handle = model.handle_canvas()
-    model.resize_handle_to(handle[0] + 1500 * model.scale, handle[1])
-    assert model.rect == pytest.approx([-1000.0, -800.0, 3000.0, 1875.0])
-    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+    assert model.rect[0] == pytest.approx(-1000.0)
+    assert model.rect[1] == pytest.approx(-800.0)
+    assert model.rect[2] == pytest.approx(6500.0, abs=1.0)
+    assert model.rect[3] == 4062
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
 
 
 def test_model_readout_names_px_and_mm():
@@ -243,11 +249,11 @@ def test_corner_rule_boundary_case_one_corner_exactly_on_the_edge():
     # Edges count as inside (closed rule): a flush rect with exactly ONE
     # corner on the display edge is legal and comes back unchanged.
     flush = [200.0, 50.0, 50.0, 40.0]
-    assert gui.rect_any_corner_inside(flush, PURE_BBOX) is True
+    assert gui.rect_overlaps_display(flush, PURE_BBOX) is True
     assert gui.clamp_rect_to_display(flush, PURE_BBOX) == flush
     # One step further right leaves no corner inside -> the rule bites.
     outside = [200.0001, 50.0, 50.0, 40.0]
-    assert gui.rect_any_corner_inside(outside, PURE_BBOX) is False
+    assert gui.rect_overlaps_display(outside, PURE_BBOX) is False
 
 
 def test_corner_rule_drag_out_from_each_corner_direction():
@@ -290,7 +296,7 @@ def test_corner_rule_allows_a_rect_larger_than_the_display_bbox():
     # size is placeable, so a rect bigger than the screens stays when a
     # corner touches, and a floating one snaps to the nearest corner touch.
     big = [0.0, 0.0, 400.0, 300.0]
-    assert gui.rect_any_corner_inside(big, PURE_BBOX) is True
+    assert gui.rect_overlaps_display(big, PURE_BBOX) is True
     assert gui.clamp_rect_to_display(big, PURE_BBOX) == big
     # Fully floating: the nearest placement puts the rect's upper-left
     # corner on the display's lower-right corner.
@@ -315,15 +321,19 @@ def test_apply_fields_accepts_negative_and_beyond_union_entries():
         [3440.0, -300.0, 1920.0, 1200.0])
 
 
-def test_apply_fields_width_stops_when_the_rule_would_break():
-    # The rect hangs off the top-left; w = 3000 keeps the lower-right corner
-    # (2000, 1075) inside, w = 4000 would push every corner out -> rejected,
-    # the previous size stands (the field echoes it back).
+def test_apply_fields_width_grows_past_the_display_from_corner_anchor():
+    # #467 re-pin of test_apply_fields_width_stops_when_the_rule_would_break:
+    # the rect hangs off the top-left with the lower-right corner (2000,
+    # 1075) as the ONLY anchor inside; the old rule rejected w = 4000 once
+    # every corner left the screens - the report's position-dependent
+    # numeric-width stop. Under the overlap rule the wanted rect
+    # [-1000,-800,4000,2500] still intersects the display (it covers it),
+    # so the width is accepted; the size cap stays retired (2500 > 1440).
     m = _model(rect=[-1000.0, -800.0, 1500.0, 937.5])
     assert m.apply_fields(w=3000.0) == pytest.approx(
         [-1000.0, -800.0, 3000.0, 1875.0])
     assert m.apply_fields(w=4000.0) == pytest.approx(
-        [-1000.0, -800.0, 3000.0, 1875.0])
+        [-1000.0, -800.0, 4000.0, 2500.0])
 
 
 def test_model_build_snaps_a_rule_breaking_stored_rect_back():
@@ -332,7 +342,7 @@ def test_model_build_snaps_a_rule_breaking_stored_rect_back():
     # build, so the editor can never show or persist an unreachable rect.
     m = _model(rect=[5000.0, 2000.0, 800.0, 500.0])
     assert m.rect == pytest.approx([3440.0, 1440.0, 800.0, 500.0])
-    assert gui.rect_any_corner_inside(m.rect, m.display_bbox())
+    assert gui.rect_overlaps_display(m.rect, m.display_bbox())
 
 
 def test_viewport_shows_the_offscreen_rect_part_with_margin():
@@ -392,7 +402,7 @@ def test_size_bound_keeps_the_geometry_and_the_save_finite():
     out = m.apply_fields(w=float("1.798e308"))
     assert out[2] == pytest.approx(gui.MAX_SIZE_FACTOR * 3440.0)
     assert math.isfinite(out[3]) and out[3] > 0.0
-    assert gui.rect_any_corner_inside(out, m.display_bbox())
+    assert gui.rect_overlaps_display(out, m.display_bbox())
     out = m.apply_fields(w=float("nan"))
     assert out[2] == pytest.approx(m.MIN_RECT_PX)
     assert math.isfinite(out[3])
@@ -409,11 +419,11 @@ def test_match_box_aspect_after_rotation_reevaluates_the_corner_rule():
     # can never silently leave no corner on-screen. The sensitivity rides
     # across EXACTLY (the retired fit-to-union cap would have shrunk it).
     m = _model(rect=[-1400.0, 100.0, 1500.0, 937.5])
-    assert gui.rect_any_corner_inside(m.rect, m.display_bbox())
+    assert gui.rect_overlaps_display(m.rect, m.display_bbox())
     m.box_mm = (BOX_MM[1], BOX_MM[0])  # 90 deg: the mm box swaps
     out = m.match_box_aspect(1500.0 / BOX_MM[0])  # s from the PREVIOUS box
     assert out == pytest.approx([-937.5, -181.25, 937.5, 1500.0])
-    assert gui.rect_any_corner_inside(out, m.display_bbox())
+    assert gui.rect_overlaps_display(out, m.display_bbox())
     # The shape agrees with the rotated box (aspect kept exactly).
     assert out[2] / out[3] == pytest.approx(BOX_MM[1] / BOX_MM[0], rel=1e-9)
 
@@ -462,7 +472,7 @@ def test_widget_save_writes_fractional_entry_for_current_display_key(root, widge
     assert all(math.isfinite(f) for f in rect_frac)
     assert rect_frac[2] > 0.0 and rect_frac[3] > 0.0
     assert rect_frac[2] < 1.0 and rect_frac[3] < 1.0
-    assert gui.rect_any_corner_inside(widget.model.rect,
+    assert gui.rect_overlaps_display(widget.model.rect,
                                       widget.model.display_bbox())
     assert calls == [1]
 
@@ -479,7 +489,7 @@ def test_widget_editable_without_identity_save_refuses(root, widget_config, monk
     # PENAREA: the drag stops at the corner rule, not at the old bbox edge -
     # the rect hangs off the right edge with its upper-left corner riding it.
     assert widget.model.rect[0] == pytest.approx(3440.0)
-    assert gui.rect_any_corner_inside(widget.model.rect,
+    assert gui.rect_overlaps_display(widget.model.rect,
                                       widget.model.display_bbox())
     assert widget.persist_entry() is False
     # U424r4 R4-D: remove_entry deleted with the Remove Rect button.
@@ -547,7 +557,7 @@ def test_widget_loads_stored_fraction_back_into_model_px(root, widget_config, mo
         box0[0] / box0[1], rel=1e-6)
     assert reopened.model.rect[2] == pytest.approx(1720.0, rel=1e-6)  # s kept
     assert reopened.model.rect[1] == pytest.approx(-33.5, abs=1e-6)
-    assert gui.rect_any_corner_inside(reopened.model.rect,
+    assert gui.rect_overlaps_display(reopened.model.rect,
                                       reopened.model.display_bbox())
 
 
@@ -741,7 +751,7 @@ def test_gui_b_drag_down_hangs_the_rect_below_the_display_freely():
     model.move_by(0, 500 * model.scale)  # hangs 480 px below the screens
     assert model.rect == pytest.approx([100.0, 720.0, 1920.0, 1200.0])
     assert model.rect[1] + model.rect[3] == pytest.approx(1920.0)  # past 1440
-    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
 
 
 def test_gui_b_drag_down_overshoot_stops_with_a_top_corner_on_the_bottom_edge():
@@ -754,12 +764,12 @@ def test_gui_b_drag_down_overshoot_stops_with_a_top_corner_on_the_bottom_edge():
     model = _model()
     model.move_by(0, 100000)
     assert model.rect == pytest.approx([500.0, 1440.0, 1920.0, 1200.0])
-    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
     # Back up over the top the same way (mirror of the pure rule's
     # straight-up leg): the bottom edge rides the display's top limit.
     model.move_by(0, -200000)
     assert model.rect == pytest.approx([500.0, -1200.0, 1920.0, 1200.0])
-    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
 
 
 def test_gui_b_handle_resize_grows_the_rect_past_the_bottom_edge():
@@ -776,7 +786,7 @@ def test_gui_b_handle_resize_grows_the_rect_past_the_bottom_edge():
                            handle[1] + 600 * model.scale)
     assert model.rect[1] + model.rect[3] > 1440.0  # hangs below the bottom
     assert model.rect[3] == round(model.rect[2] * BOX_MM[1] / BOX_MM[0])
-    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
 
 
 def test_gui_b_apply_fields_y_past_the_bottom_stays_where_the_rule_holds():

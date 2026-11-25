@@ -140,7 +140,7 @@ def test_numeric_fields_bidirectional_aspect_locked(modes_cfg, tk_root, monkeypa
     win._apply_rect_field("x_px")
     assert model.rect[0] == pytest.approx(3440.0)
     assert float(win.rect_entries["x_px"].get()) == pytest.approx(3440.0)
-    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
 
 
 def test_numeric_fields_echo_the_stored_rect_on_open(modes_cfg, tk_root, monkeypatch, tmp_path):
@@ -400,7 +400,7 @@ def test_orientation_apply_reorients_editor_box_not_the_footprint(
     box0 = rotated_pen_box_mm(specs, 0)
     s0 = footprint_px[2] / box0[0]
     assert model.rect[2] == pytest.approx(s0 * box90[0], rel=1e-9)
-    assert gui.rect_any_corner_inside(model.rect, model.display_bbox())
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
     # Sensitivity echo follows the new box (w axis).
     assert float(win.rect_entries["s_px"].get()) == pytest.approx(
         model.rect[2] / model.box_mm[0], rel=1e-3)
