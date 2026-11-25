@@ -131,7 +131,7 @@ def test_bad_or_out_of_range_input_is_refused_all_or_nothing(cfg_factory, tk_roo
     # new edges (0/-5 below the floor, 2001 above the ceiling, 0.5 below
     # the 1 Hz floor the GUI holds even though the validator only refuses
     # <= 0).
-    for junk in ("fast", "", "0", "-5", "0.5", "2001"):
+    for junk in ("fast", "0", "-5", "0.5", "2001"):
         spin.delete(0, tk.END)
         spin.insert(0, junk)
         assert win.apply_settings() is False, junk
@@ -139,6 +139,14 @@ def test_bad_or_out_of_range_input_is_refused_all_or_nothing(cfg_factory, tk_roo
     assert cfg.pen_speed == original_speed, (
         "the refused Apply Live still moved pen_speed: not all-or-nothing")
     assert box.errors, "the user got no rejection message"
+    # #471 (2026-11-25) repin: the old junk case "" is NOT junk anymore -
+    # empty entry text means UNCHANGED: the field is skipped, its stored
+    # value stays, and the co-applied pen_speed change lands (the
+    # cleared-field-blocks-unrelated-apply bug is gone).
+    spin.delete(0, tk.END)
+    assert win.apply_settings() is True
+    assert cfg.pen_move_flush_hz == 250.0
+    assert cfg.pen_speed == 3.5
 
 
 def test_widened_edges_one_and_2000_are_accepted(cfg_factory, tk_root,

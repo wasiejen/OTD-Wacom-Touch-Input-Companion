@@ -357,9 +357,11 @@ def test_apply_settings_rejects_bad_orientation(config):
     with pytest.raises(ValueError):
         gui.apply_settings_to_config(
             config, {"orientation_degrees": "abc"}, accel, {}, {})
-    with pytest.raises(ValueError):
-        gui.apply_settings_to_config(
-            config, {"orientation_degrees": ""}, accel, {}, {})
+    # #471 (2026-11-25): EMPTY entry text is "unchanged", not invalid - the
+    # apply lane skips the field and the stored angle stays. (Supersedes this
+    # pin's former empty-rejects leg, which encoded the block-everything bug.)
+    gui.apply_settings_to_config(
+        config, {"orientation_degrees": ""}, accel, {}, {})
     assert config.orientation_degrees == 0
 
 

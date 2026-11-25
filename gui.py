@@ -206,10 +206,17 @@ def resolve_action_mapping(display, saved_action, options):
 def parse_numeric_values(values):
     """Validate raw settings-entry strings and return them as floats.
 
-    Raises ValueError naming the offending key. Nothing is mutated here.
+    #471 (2026-11-25): empty or whitespace-only entry text means the field is
+    UNCHANGED - it is skipped, so the stored config value stays (the same
+    keep-the-stored-value lane as the _KEEP_WIRELESS_SIZE combo; the entries
+    are initialized FROM the config, so cleared text is a lost edit, never a
+    user-chosen value). Non-empty invalid text still raises ValueError naming
+    the offending key. Nothing is mutated here.
     """
     parsed = {}
     for key, raw in values.items():
+        if isinstance(raw, str) and not raw.strip():
+            continue
         try:
             parsed[key] = float(raw)
         except (TypeError, ValueError):
@@ -1093,7 +1100,10 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
     """Apply a complete settings set to config, or apply nothing at all.
 
     numeric_values are raw entry strings; they are validated before the first
-    mutation, so one bad entry cannot leave config half-applied.
+    mutation, so one bad entry cannot leave config half-applied. An empty
+    entry string means unchanged: the field is skipped and its stored value
+    stays (#471), including the orientation_degrees / pen_move_flush_hz lanes
+    (their guards key on the parsed set).
     wireless_tablet_size (U386 / TODO #385) is the Pen-tab combo choice: one
     of WIRELESS_TABLET_SIZES, None for the explicit unset, or the sentinel
     default to leave the attribute untouched.
