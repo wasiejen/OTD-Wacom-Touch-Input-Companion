@@ -238,25 +238,26 @@ def test_model_readout_names_px_and_mm():
     assert "5.9055 px/mm" in out  # 1920 / 325.12 = 5.90551...
 
 
-# --- PENAREA: the pure corner-rule clamp (rect + bbox -> allowed rect) ---
-# Maintainer safety rule, quoted: "at least one corner of the pen-area
-# rectangle must remain inside the display area".
+# --- PENAREA: the pure overlap-rule clamp (rect + bbox -> allowed rect) ---
+# The maintainer's quoted rule "at least one corner of the pen-area rectangle
+# must remain inside the display area" was SUPERSEDED by u467/#467: the rule
+# is now rect INTERSECTS the display bbox (closed edges).
 
 PURE_BBOX = (0.0, 0.0, 200.0, 100.0)
 
 
-def test_corner_rule_boundary_case_one_corner_exactly_on_the_edge():
+def test_overlap_rule_boundary_case_one_corner_exactly_on_the_edge():
     # Edges count as inside (closed rule): a flush rect with exactly ONE
     # corner on the display edge is legal and comes back unchanged.
     flush = [200.0, 50.0, 50.0, 40.0]
     assert gui.rect_overlaps_display(flush, PURE_BBOX) is True
     assert gui.clamp_rect_to_display(flush, PURE_BBOX) == flush
-    # One step further right leaves no corner inside -> the rule bites.
+    # One step further right leaves no overlap -> the rule bites.
     outside = [200.0001, 50.0, 50.0, 40.0]
     assert gui.rect_overlaps_display(outside, PURE_BBOX) is False
 
 
-def test_corner_rule_drag_out_from_each_corner_direction():
+def test_overlap_rule_drag_out_from_each_corner_direction():
     # The rect starts fully inside; a jump out along each diagonal stops
     # with exactly one corner left on the display area (the nearest legal
     # placement), the body hanging outside.
@@ -279,7 +280,7 @@ def test_corner_rule_drag_out_from_each_corner_direction():
         [10.0, -40.0, 50.0, 40.0]
 
 
-def test_corner_rule_extreme_overshoot_still_lands_on_the_nearest_placement():
+def test_overlap_rule_extreme_overshoot_still_lands_on_the_nearest_placement():
     # A programmatic jump 10^6 px away cannot escape the rule either: the
     # nearest legal placement wins (minimal whole-rect displacement).
     assert gui.clamp_rect_to_display([-1e6, -1e6, 50.0, 40.0], PURE_BBOX) == \
@@ -291,7 +292,7 @@ def test_corner_rule_extreme_overshoot_still_lands_on_the_nearest_placement():
         [200.0, -40.0, 50.0, 40.0]
 
 
-def test_corner_rule_allows_a_rect_larger_than_the_display_bbox():
+def test_overlap_rule_allows_a_rect_larger_than_the_display_bbox():
     # The rule binds the PLACEMENT, not the size: with closed edges every
     # size is placeable, so a rect bigger than the screens stays when a
     # corner touches, and a floating one snaps to the nearest corner touch.
@@ -304,7 +305,7 @@ def test_corner_rule_allows_a_rect_larger_than_the_display_bbox():
         [200.0, 100.0, 400.0, 300.0]
 
 
-def test_corner_rule_fully_inside_rect_needs_no_translation():
+def test_overlap_rule_fully_inside_rect_needs_no_translation():
     assert gui.clamp_rect_to_display([50.0, 30.0, 50.0, 40.0], PURE_BBOX) == \
         [50.0, 30.0, 50.0, 40.0]
 
@@ -364,7 +365,7 @@ def test_viewport_shows_the_offscreen_rect_part_with_margin():
 
 
 def test_viewport_refits_after_a_drag_so_the_handle_stays_reachable():
-    # PENAREA (reviewer P1): the corner rule parks the rect with rx up to
+    # PENAREA (reviewer P1): the overlap rule parks the rect with rx up to
     # the desktop width, which pushes its lower-right handle OUT of the
     # fixed-size canvas (the resize lane would strand). The model refits the
     # viewport at build and at the END of each interaction, so after the
@@ -412,7 +413,7 @@ def test_size_bound_keeps_the_geometry_and_the_save_finite():
     assert math.isfinite(m2.rect[3])
 
 
-def test_match_box_aspect_after_rotation_reevaluates_the_corner_rule():
+def test_match_box_aspect_after_rotation_reevaluates_the_overlap_rule():
     # Rotation interaction: a rect placed at 0 deg partly off-screen is
     # rule-valid; after an orientation flip (the mm box swaps, the rect
     # re-derives its shape) the SAME clamp validates the result, so rotation
@@ -468,7 +469,7 @@ def test_widget_save_writes_fractional_entry_for_current_display_key(root, widge
     # negative fractions or fractions past 1 (round-trip pinned in
     # tests/test_pen_area_map.py). The DEFAULT rect (no edit) stays a
     # sub-union footprint, though the R5-E aspect re-derivation can let it
-    # ride a fraction of a pixel off an edge - legal under the corner rule.
+    # ride a fraction of a pixel off an edge - legal under the overlap rule.
     assert all(math.isfinite(f) for f in rect_frac)
     assert rect_frac[2] > 0.0 and rect_frac[3] > 0.0
     assert rect_frac[2] < 1.0 and rect_frac[3] < 1.0
@@ -730,7 +731,7 @@ def test_gui_b_widget_reorient_updates_and_90_skips_the_overlay(
 # bottom edge "cannot pass the displays' bottom limit". Measured at this
 # tip (wtd_combined 1304699): NO bottom clamp exists at any level - the
 # pure clamp_rect_to_display treats all four corner regions equally (its
-# straight-down leg is pinned in test_corner_rule_drag_out_from_each_
+# straight-down leg is pinned in test_overlap_rule_drag_out_from_each_
 # corner_direction), and headless probes of move_by, the field lane, the
 # resize lane, and the widget drag events all let the rect hang below the
 # display bottom. The pins below mirror the existing side-direction pins
