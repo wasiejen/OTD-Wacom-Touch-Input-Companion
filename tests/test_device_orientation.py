@@ -360,9 +360,12 @@ def test_apply_settings_rejects_bad_orientation(config):
     # #471 (2026-11-25): EMPTY entry text is "unchanged", not invalid - the
     # apply lane skips the field and the stored angle stays. (Supersedes this
     # pin's former empty-rejects leg, which encoded the block-everything bug.)
+    # Reviewer P2-1: store a NON-default angle first, so the kept assert
+    # cannot pass on a silent reset to the fresh default.
+    config.orientation_degrees = 45
     gui.apply_settings_to_config(
         config, {"orientation_degrees": ""}, accel, {}, {})
-    assert config.orientation_degrees == 0
+    assert config.orientation_degrees == 45
 
 
 def test_apply_settings_stores_the_wrapped_angle(config):

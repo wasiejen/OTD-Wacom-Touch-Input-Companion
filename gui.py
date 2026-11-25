@@ -204,7 +204,7 @@ def resolve_action_mapping(display, saved_action, options):
 
 
 def parse_numeric_values(values):
-    """Validate raw settings-entry strings and return them as floats.
+    """Coerce raw settings-entry strings to floats, rejecting non-numeric text.
 
     #471 (2026-11-25): empty or whitespace-only entry text means the field is
     UNCHANGED - it is skipped, so the stored config value stays (the same
