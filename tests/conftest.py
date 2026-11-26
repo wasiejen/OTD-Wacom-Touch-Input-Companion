@@ -289,7 +289,7 @@ def inject_guard():
     _offenders_reported = len(inject_offenders)
     if inject_offenders:
         raise AssertionError(
-            "live input injection leaked during this session:\n"
+            "live injection or session lock leaked during this session:\n"
             + "\n".join("  offender: %s node=%s chain: %s" % entry
                         for entry in inject_offenders)
         )
@@ -445,8 +445,9 @@ def stub_lock_workstation(monkeypatch):
 
     The conftest guard blocks LockWorkStation for the whole session, so a test
     that exercises the lock action requests this seam; its monkeypatch shadows
-    the guard for that test only. The recorded return value is the lock's
-    success flag, so a pin can drive the failure branch too.
+    the guard for that test only. The seam always reports a successful lock; a
+    pin that needs the failure branch replaces the attribute itself (see
+    tests/test_button_clipboard_actions.py).
     """
     calls = []
 

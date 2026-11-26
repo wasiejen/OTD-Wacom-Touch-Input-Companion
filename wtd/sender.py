@@ -639,9 +639,14 @@ class ActionDispatcher():
         tablet button. A failure is logged, never raised: an action must not
         take the reader thread down with it.
         """
+        # Resolved BEFORE the call: the lazy kernel32 lookup of GetLastError
+        # would otherwise sit between the failed call and the error read and
+        # could report a stale code (reviewer P2). LockWorkStation itself stays
+        # resolved per call so the test seam can shadow it.
+        get_last_error = ctypes.windll.kernel32.GetLastError
         if not ctypes.windll.user32.LockWorkStation():
             _log.info("[Warning] LockWorkStation failed (Win32 error %d)"
-                      % ctypes.windll.kernel32.GetLastError())
+                      % get_last_error())
 
     def execute_mapped_action(self, action_name):
         if wtd_config.DEBUG:
