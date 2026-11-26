@@ -177,6 +177,17 @@ class ActionDispatcher():
             "redo": self.key_tap("ctrl", "y"),
             "prev": self.key_tap("alt", "left"), 
             "next": self.key_tap("alt", "right"),
+
+            # #472: clipboard trio, session lock and Esc - plain shortcut taps
+            # in the undo/redo shape, so every lane that runs
+            # execute_mapped_action (gesture, pen button, tablet button, dial)
+            # fires them. lock_workstation is Win+L: it locks the signed-in
+            # Windows session immediately (the Start-menu Lock entry).
+            "copy": self.key_tap("ctrl", "c"),
+            "cut": self.key_tap("ctrl", "x"),
+            "paste": self.key_tap("ctrl", "v"),
+            "lock_workstation": self.key_tap("lwin", "l"),
+            "escape": self.key_tap("esc"),
             
             # Media Keys
             "media_play_pause": self.key_tap("media_play"),
