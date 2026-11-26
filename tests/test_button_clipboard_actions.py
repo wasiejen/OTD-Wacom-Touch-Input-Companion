@@ -1,20 +1,25 @@
 """Clipboard, lock and escape button actions (TODO #472).
 
 Five assignable actions: copy (Ctrl+C), cut (Ctrl+X), paste (Ctrl+V),
-lock_workstation (Win+L) and escape (Esc). Pins are synthetic key-event level
-only: the stub_send_input fixture records the emitted SendInput events, so no
-live desktop event is injected, no clipboard content is read or written, and
-the workstation is never locked (the lock pin asserts the emitted combo and
-nothing else). Dispatch follows the existing button action shape
-(test_button_dial_support.py): a press edge taps once, the release edge is a
-no-op, and the config validator accepts the new names while unknown names stay
-rejected.
+lock_workstation and escape (Esc). The keyboard trio and Esc are pinned at
+synthetic key-event level: the stub_send_input fixture records the emitted
+SendInput events, so no live desktop event is injected and no clipboard
+content is read or written anywhere in this file.
+
+lock_workstation is NOT a key tap and the pins hold that line: Windows reads
+the physical Win/L state for the lock hotkey, so an injected Win+L locks
+nothing. The action calls the Win32 LockWorkStation API - the same call the
+Start-menu Lock entry makes - and the pins assert that recorded call while the
+conftest session guard keeps every un-stubbed LockWorkStation call (in this
+file or any other) from ever reaching the desktop.
 """
 
+import ctypes
 import json
 
 import pytest
 
+import conftest
 from vk_codes import vk_codes_dict
 from wtd.config import DriverConfig
 from wtd.gestures import TabletState, process_button_report
@@ -22,14 +27,16 @@ from wtd.sender import ActionDispatcher
 
 NEW_ACTIONS = ("copy", "cut", "paste", "lock_workstation", "escape")
 
-# Emitted key sequence per action, as (vk name, release) events: every key down
-# in order, then every key up in reverse (the send_key_shortcut contract).
+# The four actions that are shortcut taps. lock_workstation is excluded on
+# purpose: it is a session API call, not an injected chord.
+KEY_TAP_ACTIONS = ("copy", "cut", "paste", "escape")
+
+# Emitted key sequence per tap action, as (vk name, release) events: every key
+# down in order, then every key up in reverse (the send_key_shortcut contract).
 EXPECTED_TAPS = {
     "copy": (("ctrl", False), ("c", False), ("c", True), ("ctrl", True)),
     "cut": (("ctrl", False), ("x", False), ("x", True), ("ctrl", True)),
     "paste": (("ctrl", False), ("v", False), ("v", True), ("ctrl", True)),
-    "lock_workstation": (("lwin", False), ("l", False),
-                         ("l", True), ("lwin", True)),
     "escape": (("esc", False), ("esc", True)),
 }
 
@@ -100,11 +107,11 @@ def test_unknown_action_is_still_rejected(monkeypatch, tmp_path, capsys):
     assert cfg.action_mapping["btn1_press"] != "not_a_real_action"
 
 
-# -- the dispatch: key-event level, one tap per press edge ------------------
+# -- the shortcut taps: key-event level, one tap per press edge --------------
 
-@pytest.mark.parametrize("action", NEW_ACTIONS)
+@pytest.mark.parametrize("action", KEY_TAP_ACTIONS)
 def test_button_press_edge_taps_the_mapped_action(action, state, config, dispatcher,
-                                                  stub_send_input):
+                                                 stub_send_input):
     config.action_mapping["btn1_press"] = action
 
     process_button_report(build_button_report(press=0x01), state, dispatcher, config)
@@ -116,9 +123,9 @@ def test_button_press_edge_taps_the_mapped_action(action, state, config, dispatc
     assert dispatcher.button_held == {}
 
 
-@pytest.mark.parametrize("action", NEW_ACTIONS)
+@pytest.mark.parametrize("action", KEY_TAP_ACTIONS)
 def test_gesture_lane_taps_the_mapped_action(action, state, config, dispatcher,
-                                             stub_send_input):
+                                            stub_send_input):
     """The same actions work on a gesture key through the gesture dispatch."""
     config.action_mapping["4f_swipe_up"] = action
     config.feature_toggles["4f_swipe_up"] = True
@@ -127,11 +134,48 @@ def test_gesture_lane_taps_the_mapped_action(action, state, config, dispatcher,
     assert key_events(stub_send_input) == expected_events(action)
 
 
-def test_lock_workstation_emits_the_combo_only(state, config, dispatcher,
-                                               stub_send_input):
-    """The lock pin is the emitted Win+L combo - nothing else is emitted."""
+# -- the session lock: an API call, never a key chord -----------------------
+
+def test_lock_workstation_calls_the_session_lock_and_no_input(state, config,
+                                                             dispatcher,
+                                                             stub_lock_workstation,
+                                                             stub_send_input):
+    """The lock action is one LockWorkStation call and zero injected events."""
     dispatcher.execute_mapped_action("lock_workstation")
 
-    assert key_events(stub_send_input) == expected_events("lock_workstation")
-    assert all(e[0] == "key" for e in stub_send_input), (
-        "lock_workstation must be a key combo, never a shell or API call")
+    assert stub_lock_workstation == ["LockWorkStation"]
+    assert stub_send_input == [], (
+        "an injected Win+L never locks Windows - the action must not tap keys")
+
+
+def test_lock_workstation_failure_is_logged_not_raised(state, config, dispatcher,
+                                                      monkeypatch, capsys):
+    """A refused lock costs one log line, never an exception on the reader thread."""
+    monkeypatch.setattr(ctypes.windll.user32, "LockWorkStation", lambda: 0)
+
+    dispatcher.execute_mapped_action("lock_workstation")
+
+    assert "LockWorkStation failed" in capsys.readouterr().out
+
+
+def test_button_press_edge_locks_once(state, config, dispatcher, stub_lock_workstation):
+    """The tablet-button lane drives the lock on the press edge only."""
+    config.action_mapping["btn1_press"] = "lock_workstation"
+
+    process_button_report(build_button_report(press=0x01), state, dispatcher, config)
+    assert stub_lock_workstation == ["LockWorkStation"]
+
+    process_button_report(build_button_report(press=0x00), state, dispatcher, config)
+    assert stub_lock_workstation == ["LockWorkStation"]
+    assert dispatcher.button_held == {}
+
+
+def test_lock_without_the_stub_is_blocked_by_the_session_guard():
+    """No lane can lock the desktop: the conftest guard owns LockWorkStation.
+
+    The probe runs inside the selfcheck window, so the blocked call raises and
+    is NOT counted as an offender - the guard never reaches Win32 either.
+    """
+    with conftest.inject_guard_selfcheck():
+        with pytest.raises(RuntimeError, match="LIVE SESSION LOCK BLOCKED"):
+            ctypes.windll.user32.LockWorkStation()

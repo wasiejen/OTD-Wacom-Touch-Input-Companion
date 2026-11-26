@@ -10,11 +10,12 @@ states: `v0.3.0` is the latest tag, `v0.4.0` is synced on `main`, and
 
 Assignable actions:
 
-- Clipboard and session keys are now selectable in every action dropdown:
-  **Copy**, **Cut**, **Paste**, **Lock workstation** and **Escape**. Map them
-  to a gesture, a pen button or a tablet button - they tap Ctrl+C, Ctrl+X,
-  Ctrl+V, Windows+L (locks your signed-in session, like the Start-menu Lock
-  entry) or Esc on the press edge.
+- Clipboard and session keys are now selectable in the gesture, pen-button and
+  tablet-button dropdowns: `copy`, `cut`, `paste`, `lock_workstation` and
+  `escape`. Map them to a gesture, a pen button or a tablet button - they tap
+  Ctrl+C, Ctrl+X, Ctrl+V or Esc on the press edge, and `lock_workstation` locks
+  your signed-in session with the same Windows call the Start-menu Lock entry
+  uses.
 
 Per-device settings robustness:
 

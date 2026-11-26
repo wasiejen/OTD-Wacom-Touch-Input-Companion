@@ -577,10 +577,11 @@ class DriverConfig:
             # shared tray touch-output flag; see ActionDispatcher.
             # handle_touch_toggle).
             "touch_toggle",
-            # #472: clipboard trio, session lock and Esc - plain shortcut taps
-            # (ActionDispatcher.ACTION_DISPATCH), selectable for any gesture,
-            # pen button or tablet button. lock_workstation is Win+L, the same
-            # lock the Start-menu Lock entry performs.
+            # #472: clipboard trio, session lock and Esc - shortcut taps plus
+            # one session API call (ActionDispatcher.ACTION_DISPATCH),
+            # selectable for any gesture, pen button or tablet button.
+            # lock_workstation calls LockWorkStation, like the Start-menu Lock
+            # entry (an injected Win+L does not lock - see the handler).
             "copy",
             "cut",
             "paste",

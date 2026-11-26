@@ -59,25 +59,26 @@ Everything in the driver is exposed and editable via the GUI:
 
 1. **Motion & Speed:** Fine-tune base cursor sensitivity, acceleration curves (`speed_low`, `speed_high`), deadzone thresholds, and natural scroll speeds.
 2. **Pen:** Pen movement speed (px/mm for relative deltas), absolute-vs-relative movement toggle, pressure threshold for the left-button hold, the move flush cap (**Move flush Hz**, how often pen cursor updates reach Windows, default 250), and dropdown mapping of the two pen buttons to actions. In the 1:1 pen-area rectangle mode the drawn rectangle may extend beyond the screens - drag, resize, or type values past a monitor edge and it stops only where the last corner would leave the combined display area (the bounding box of all your monitors), because at least one corner must always stay inside it (pen travel in the outside part parks the cursor at the screen edge, so the off-screen part works as a dead zone).
-3. **Features & Actions:** Individual check-box toggles for every single gesture type, paired with dropdown selectors to map gestures to standard actions (e.g., Task View, Show Desktop, Alt-Tab, Desktop Switch, Window Maximize/Minimize, Copy, Cut, Paste, Lock workstation, Escape).
+3. **Features & Actions:** Individual check-box toggles for every single gesture type, paired with dropdown selectors to map gestures to standard actions (e.g., Task View, Show Desktop, Alt-Tab, Desktop Switch, Window Maximize/Minimize, plus the clipboard and session entries `copy`, `cut`, `paste`, `lock_workstation` and `escape`).
 4. **Thresholds & Advanced:** Adjust physical motion tolerances, tap duration limits, press-and-hold timing, swipe distance limits, and pinch activation limits.
 
 ### Clipboard and session actions
 
-Every action dropdown offers the same list, so a gesture, a pen button or a
-tablet button can drive these keys directly:
+The gesture, pen-button and tablet-button dropdowns offer these five options
+(the per-button touch strips keep their own modifier list instead: `none`,
+`ctrl`, `shift`, `alt`):
 
-| Action | Key it sends | Effect |
-|---|---|---|
-| `copy` | Ctrl + C | copies the current selection |
-| `cut` | Ctrl + X | cuts the current selection |
-| `paste` | Ctrl + V | pastes at the current cursor |
-| `lock_workstation` | Windows + L | locks your signed-in Windows session, like the Start-menu Lock entry |
-| `escape` | Esc | closes menus and dialogs |
+| Dropdown entry | What it does |
+|---|---|
+| `copy` | taps Ctrl + C - copies the current selection |
+| `cut` | taps Ctrl + X - cuts the current selection |
+| `paste` | taps Ctrl + V - pastes at the cursor |
+| `lock_workstation` | locks your signed-in Windows session - the same call the Start-menu Lock entry makes, not a Win + L keystroke (Windows ignores an injected Win + L) |
+| `escape` | taps Esc - closes menus and dialogs in many programs |
 
-A tablet button mapped to one of these taps the key on the press edge and
-does nothing on release. `lock_workstation` locks the session immediately, so
-map it where you will not hit it by accident.
+A tablet button mapped to one of these fires on the press edge and does nothing
+on release. `lock_workstation` locks the session at once, so map it where you
+will not hit it by accident.
 
 ---
 

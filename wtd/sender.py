@@ -178,15 +178,15 @@ class ActionDispatcher():
             "prev": self.key_tap("alt", "left"), 
             "next": self.key_tap("alt", "right"),
 
-            # #472: clipboard trio, session lock and Esc - plain shortcut taps
-            # in the undo/redo shape, so every lane that runs
+            # #472: clipboard trio, session lock and Esc - shortcut taps in
+            # the undo/redo shape, so every lane that runs
             # execute_mapped_action (gesture, pen button, tablet button, dial)
-            # fires them. lock_workstation is Win+L: it locks the signed-in
-            # Windows session immediately (the Start-menu Lock entry).
+            # fires them. The lock is the session API handler below, not a
+            # chord.
             "copy": self.key_tap("ctrl", "c"),
             "cut": self.key_tap("ctrl", "x"),
             "paste": self.key_tap("ctrl", "v"),
-            "lock_workstation": self.key_tap("lwin", "l"),
+            "lock_workstation": self.handle_lock_workstation,
             "escape": self.key_tap("esc"),
             
             # Media Keys
@@ -627,6 +627,21 @@ class ActionDispatcher():
         else:
             self.touch_enabled_event.set()
             _log.info("[Toggle] Touch output ON")
+
+    def handle_lock_workstation(self):
+        """Assignable session lock (#472): Windows LockWorkStation.
+
+        The Win+L key combo is deliberately NOT injected: Windows reads the
+        physical Win/L state for that hotkey, so an injected Win+L does not
+        lock the session (documented shell behaviour, re-verified in #472) -
+        the mapped button would tap into the void. LockWorkStation is the same
+        call the Start-menu Lock entry makes, so it always works from a
+        tablet button. A failure is logged, never raised: an action must not
+        take the reader thread down with it.
+        """
+        if not ctypes.windll.user32.LockWorkStation():
+            _log.info("[Warning] LockWorkStation failed (Win32 error %d)"
+                      % ctypes.windll.kernel32.GetLastError())
 
     def execute_mapped_action(self, action_name):
         if wtd_config.DEBUG:

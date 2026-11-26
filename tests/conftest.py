@@ -127,6 +127,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 INJECT_APIS = ("SendInput", "mouse_event", "keybd_event", "SetCursorPos")
 
+# #472: LockWorkStation is not an input injection, but a test that reaches it
+# locks the developer's desktop, so it gets the same blocking treatment. A test
+# that must exercise the session-lock action stubs the seam itself (see
+# tests/test_button_clipboard_actions.py).
+SESSION_APIS = ("LockWorkStation",)
+
 inject_offenders = []
 selfcheck_hits = []
 _inject_seen = set()
@@ -172,11 +178,34 @@ def _block_injection(api):
     )
 
 
+def _block_session_lock(api):
+    """#472: the session lock is destructive rather than an injection.
+
+    Reuses the offender bookkeeping (an unstubbed call is the same class of
+    isolation leak), but names the real hazard in the message so the failure
+    is not misread as an injected keystroke.
+    """
+    chain = _caller_chain()
+    key = (api, _current_nodeid, chain)
+    if _selfcheck_thread is not None and threading.get_ident() == _selfcheck_thread:
+        selfcheck_hits.append(api)
+    elif key not in _inject_seen:
+        _inject_seen.add(key)
+        inject_offenders.append(key)
+    raise RuntimeError(
+        "LIVE SESSION LOCK BLOCKED: %s called by %s (chain: %s). "
+        "Test-isolation leak: request the stub_lock_workstation fixture."
+        % (api, _current_nodeid, chain)
+    )
+
+
 def _install_inject_guard():
     """Replace every Win32 input entry point with a blocking recorder."""
     user32 = ctypes.windll.user32
     for api in INJECT_APIS:
         setattr(user32, api, lambda *args, _api=api: _block_injection(_api))
+    for api in SESSION_APIS:
+        setattr(user32, api, lambda *args, _api=api: _block_session_lock(_api))
     # U369: the instance patch covers only the loader-cached windll.user32.
     # Every ctypes DLL instance resolves function names through
     # CDLL.__getattr__ (WinDLL/OleDLL/PyDLL do not override it), so wrapping
@@ -186,6 +215,8 @@ def _install_inject_guard():
     def _guarded_getattr(self, name):
         if name in INJECT_APIS:
             _block_injection(name)
+        if name in SESSION_APIS:
+            _block_session_lock(name)
         return original_getattr(self, name)
 
     ctypes.CDLL.__getattr__ = _guarded_getattr
@@ -406,3 +437,22 @@ def stub_send_input(monkeypatch):
 
     monkeypatch.setattr(ctypes.windll.user32, "SendInput", fake_send_input)
     return events
+
+
+@pytest.fixture
+def stub_lock_workstation(monkeypatch):
+    """Opt-in session-lock seam (#472): records the call, never locks.
+
+    The conftest guard blocks LockWorkStation for the whole session, so a test
+    that exercises the lock action requests this seam; its monkeypatch shadows
+    the guard for that test only. The recorded return value is the lock's
+    success flag, so a pin can drive the failure branch too.
+    """
+    calls = []
+
+    def fake_lock():
+        calls.append("LockWorkStation")
+        return 1
+
+    monkeypatch.setattr(ctypes.windll.user32, "LockWorkStation", fake_lock)
+    return calls
