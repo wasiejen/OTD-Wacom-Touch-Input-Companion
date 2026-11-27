@@ -14,10 +14,13 @@ IS the skip-mechanism pin (a subprocess pytest run would only re-prove
 pytest's own reporting).
 """
 
+import io
 import os
+import re
 import subprocess
 import sys
 import tkinter
+import tokenize
 from pathlib import Path
 
 import pytest
@@ -75,9 +78,11 @@ def test_non_tclerror_init_failure_still_errors(monkeypatch):
 _TESTS_DIR = Path(__file__).resolve().parent
 _REPO_ROOT = _TESTS_DIR.parent
 
-# The needle below must not occur verbatim in this file (the invariant pin
-# scans every tests/ source), so it is assembled by concatenation.
-_TK_CALL = "tk." + "Tk()"
+# Every executable root-construction spelling (tk.Tk() and tkinter.Tk(),
+# the spelling make_tk_root itself guards) is the invariant target; string
+# literals and comments are masked out before matching, so prose may still
+# document the old spelling.
+_DIRECT_TK = re.compile(r"\btk(inter)?\.Tk\s*\(")
 
 # Process-wide broken-Tk plugin for the nested e2e run below (report-level
 # SKIPPED-vs-ERROR proof the in-process pins cannot give).
@@ -92,66 +97,80 @@ _BROKEN_TK_PLUGIN = (
     "tkinter.Tk = _boom\n"
 )
 
-# A two-line GUI module: module fixture routes through the shared guard.
-_MINI_GUI_TEST = (
-    "import pytest\n"
-    "\n"
-    "from conftest import make_tk_root\n"
-    "\n"
-    "\n"
-    "@pytest.fixture(scope=\"module\")\n"
-    "def mini_root():\n"
-    "    root = make_tk_root()\n"
-    "    root.withdraw()\n"
-    "    yield root\n"
-    "\n"
-    "\n"
-    "def test_mini_gui_lane(mini_root):\n"
-    "    assert mini_root is not None\n"
-)
+def _mask_strings_and_comments(src):
+    """Return src lines with STRING/COMMENT/FSTRING text blanked out.
+
+    The invariant pin targets executable construction only; masking lets
+    documentation and string payloads mention the old spellings freely.
+    """
+    rows = [list(line) for line in src.splitlines()]
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(src).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return ["".join(r) for r in rows]
+    text_types = {tokenize.STRING, tokenize.COMMENT,
+                  getattr(tokenize, "FSTRING_MIDDLE", tokenize.STRING)}
+    for tok in tokens:
+        if tok.type not in text_types:
+            continue
+        (sr, sc), (er, ec) = tok.start, tok.end
+        if sr == er:
+            rows[sr - 1][sc:ec] = [" "] * (ec - sc)
+            continue
+        rows[sr - 1][sc:] = [" "] * (len(rows[sr - 1]) - sc)
+        for r in range(sr, er - 1):
+            rows[r] = [" "] * len(rows[r])
+        rows[er - 1][:ec] = [" "] * ec
+    return ["".join(r) for r in rows]
 
 
 def test_broken_runner_report_shows_skipped_not_error(tmp_path):
     """#476 P2 (committed e2e leg): a broken-Tk pytest process reports SKIPPED.
 
-    Runs a nested pytest over a minimal GUI module with tkbreak patching
-    tkinter.Tk process-wide before collection: the report must show the
-    skip (exit 0, named cause) and no error - the exact report shape CI
-    produces, and the harness that catches module-skip fallout the
-    in-process pins cannot see.
+    Runs a nested pytest over the repo's own root-creating GUI module
+    tests/test_gui_move_flush.py - the file that ERRORed 6x in the #476 CI
+    run - with tkbreak patching tkinter.Tk process-wide before collection:
+    the report must show loud skips (exit 0, named cause), no failed and
+    no error - the exact report shape CI produces, and the harness that
+    catches module-skip fallout the in-process pins cannot see.
     """
     (tmp_path / "tkbreak.py").write_text(_BROKEN_TK_PLUGIN, encoding="utf-8")
-    mini = tmp_path / "test_mini_gui.py"
-    mini.write_text(_MINI_GUI_TEST, encoding="utf-8")
+    gui_file = _TESTS_DIR / "test_gui_move_flush.py"
     env = dict(os.environ)
     env["PYTHONPATH"] = os.pathsep.join(
-        [str(tmp_path), str(_TESTS_DIR), env.get("PYTHONPATH", "")])
+        [str(tmp_path), env.get("PYTHONPATH", "")]).rstrip(os.pathsep)
     proc = subprocess.run(
-        [sys.executable, "-m", "pytest", str(mini), "-p", "tkbreak",
+        [sys.executable, "-m", "pytest", str(gui_file), "-p", "tkbreak",
          "-rs", "-q"],
         cwd=str(_REPO_ROOT), env=env, capture_output=True, text=True,
         timeout=120)
     out = proc.stdout + proc.stderr
     assert proc.returncode == 0, out
-    assert "1 skipped" in out, out
-    assert "1 error" not in out and "1 failed" not in out, out
-    assert "tk runtime unusable on this host" in out, out
+    # >= 6: the #476 CI module had six root-creating lanes; each must skip.
+    assert out.count("tk runtime unusable on this host") >= 6, out
+    # Case-sensitive pytest summary markers (the reason text carries the
+    # word "TclError", so a lowercase substring check would self-match).
+    assert "FAILED" not in out, out
+    assert "ERROR" not in out, out
 
 
 def test_no_direct_tk_root_construction_outside_the_guard():
     """#476 invariant pin: inside tests/ roots are built ONLY via the guard.
 
-    Guards the conftest section comment: a new GUI test file constructing
-    a root directly would silently reintroduce the ERROR class this unit
-    removed on broken-Tk runners.
+    Both executable spellings (tk.Tk() and tkinter.Tk()) are caught in every
+    tests/ source outside conftest; strings and comments are masked first so
+    documentation may still mention the old spelling. A new GUI file
+    constructing a root directly would silently reintroduce the ERROR class
+    this unit removed on broken-Tk runners.
     """
     offenders = []
     for path in sorted(_TESTS_DIR.rglob("*.py")):
         if path.name == "conftest.py":
             continue
-        for lineno, line in enumerate(
-                path.read_text(encoding="utf-8").splitlines(), 1):
-            stripped = line.strip()
-            if _TK_CALL in line and not stripped.startswith("#"):
-                offenders.append("%s:%d: %s" % (path.name, lineno, stripped))
+        masked = _mask_strings_and_comments(
+            path.read_text(encoding="utf-8"))
+        for lineno, line in enumerate(masked, 1):
+            if _DIRECT_TK.search(line):
+                offenders.append("%s:%d: %s" % (path.name, lineno,
+                                                line.strip()))
     assert offenders == []
