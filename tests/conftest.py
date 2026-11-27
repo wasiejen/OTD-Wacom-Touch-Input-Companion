@@ -311,8 +311,9 @@ def inject_guard():
 # on such a runner, never ERROR. make_tk_root() is the ONE root-construction
 # site: every tests/ fixture/helper that needs a withdrawn root calls it
 # instead of tk.Tk() (grep -n "tk.Tk()" tests/ stays empty outside this
-# helper). pytest.skip raised in a module-scoped fixture skips the whole
-# module; raised in a test body skips that test.
+# helper - pinned in tests/test_tk_root_guard.py). pytest.skip raised in a
+# module-scoped fixture skips the whole module; raised in a test body skips
+# that test.
 #
 # Scope of the catch: only a TclError escaping root CONSTRUCTION is the
 # init-time unusable-runtime class (missing tk.tcl/init.tcl, no display).
@@ -329,7 +330,8 @@ def make_tk_root():
     try:
         return tkinter.Tk()
     except tkinter.TclError as exc:
-        pytest.skip("tk runtime unusable on this host: %s" % exc)
+        pytest.skip("tk runtime unusable on this host: %s: %s"
+                    % (type(exc).__name__, exc))
 
 
 class FakeDevice:

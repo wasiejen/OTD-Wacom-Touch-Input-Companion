@@ -226,6 +226,11 @@ def test_live_rect_selection_exact_match_and_none(cfg_state_config, monkeypatch)
     cfg.set_pen_area_entry(IDENTITY, key, RECORDS, RECT_FRAC)
     state.pen_identity = IDENTITY
     monkeypatch.setattr(mapping, "monitor_records", lambda: list(RECORDS))
+    # #476 review P1: own the module display-key cache. A preceding module
+    # can leave a stale key inside the TTL, so this first assertion must
+    # not depend on ambient cache state - and the module-scoped SKIP of a
+    # GUI module must never flip this non-GUI pin into a failure.
+    mapping.reset_pen_area_key_cache()
     assert select_live_pen_area_rect(cfg, state.pen_identity) == pytest.approx(RECT_FRAC)
     monkeypatch.setattr(mapping, "monitor_records",
                         lambda: ["\\\\.\\DISPLAY1|0|0|1920x1080"])
