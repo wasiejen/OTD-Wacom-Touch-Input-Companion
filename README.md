@@ -17,9 +17,9 @@ Touch support on certain older Wacom devices requires specialized parsing. This 
 
 
 
-| Tray Icon & Menu |
-| :---: |
-| <img width="216" height="90" alt="grafik" src="https://github.com/user-attachments/assets/e7da3518-93af-4bc6-8d8c-99df95d47244" /> |
+| Tray Icon & Menu | Tablet Rotation Setting | Rotation also translates to Pen Area (multi-display support) |
+| :---: | :---: | :---: |
+| <img width="216" height="90" alt="grafik" src="https://github.com/user-attachments/assets/e7da3518-93af-4bc6-8d8c-99df95d47244" /> | <img width="627" height="359" alt="image" src="https://github.com/user-attachments/assets/22719475-c579-4968-9400-a6c7f552ce6c" /> | <img width="776" height="470" alt="image" src="https://github.com/user-attachments/assets/e17de153-7469-40b7-9175-758f3a8c7161" /> |
 
 ---
 
