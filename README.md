@@ -11,10 +11,9 @@ Touch support on certain older Wacom devices requires specialized parsing. This 
 
 ## 📸 Overview & Interface
 
-| Settings: Motion & Speed | Settings: Features & Actions | Settings: Thresholds & Advanced |
+| Main menu | Settings: Pen Behavior | Settings: Features & Actions |
 | :---: | :---: | :---: |
-| <img width="301" height="564" alt="grafik" src="https://github.com/user-attachments/assets/ac5b79c7-7b56-40b2-bd51-4f8210ae32d6" /> | <img width="301" height="849" alt="grafik" src="https://github.com/user-attachments/assets/37a2916b-f437-4da6-a66f-730f40223dee" /> | <img width="301" height="849" alt="grafik" src="https://github.com/user-attachments/assets/22c13df3-cfdc-4bfe-a878-e9573c38ff95" />
-
+| <img width="715" height="1653" alt="image" src="https://github.com/user-attachments/assets/9e40eb0c-e42d-4d85-86b9-075f242c7c68" /> | <img width="712" height="1525" alt="image" src="https://github.com/user-attachments/assets/664c0dac-c9a0-4954-9b47-e927ec19e1ef" /> | <img width="692" height="1774" alt="image" src="https://github.com/user-attachments/assets/4391a9c7-7880-43be-a8b3-7ad9b38902e8" /> |
 
 
 
