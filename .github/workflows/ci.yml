@@ -17,6 +17,10 @@ jobs:
         python-version: ["3.12"]
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The golden provenance test probes that _meta.source_commit exists
+          # in git; the default fetch-depth=1 shallow clone cannot answer.
+          fetch-depth: 0
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v4
         with:
