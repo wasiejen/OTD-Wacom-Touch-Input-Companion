@@ -8,6 +8,12 @@ no event pump -- every window stays unmapped (pinned in build_window). Do not
 create and destroy a second Tk root in tests while that module's root is
 alive: on Windows a fresh first root after destroy() can fail to relocate
 init.tcl (measured U383).
+
+Every root is built through make_tk_root() below - the suite's single
+root-construction site (#476). When the host's Tk runtime cannot initialize
+(broken CI runner toolcache, 2026-11-27), each root-creating fixture SKIPS
+loudly ("tk runtime unusable on this host") instead of ERRORing every test;
+on a working Tk every GUI test runs unchanged.
 """
 
 import atexit
@@ -293,6 +299,37 @@ def inject_guard():
             + "\n".join("  offender: %s node=%s chain: %s" % entry
                         for entry in inject_offenders)
         )
+
+
+# ==============================================================================
+# TK-INIT GUARD (#476, 2026-11-27 CI report)
+#
+# CI on main showed "806 passed, 6 errors": the GitHub hosted Windows
+# runner's Tk toolcache was corrupt (every tk.Tk() died in _tkinter.TclError
+# "Can't find a usable tk.tcl ... clamTheme.tcl no such file") while the
+# maintainer's local Tk was fine. Root-creating GUI fixtures must SKIP loudly
+# on such a runner, never ERROR. make_tk_root() is the ONE root-construction
+# site: every tests/ fixture/helper that needs a withdrawn root calls it
+# instead of tk.Tk() (grep -n "tk.Tk()" tests/ stays empty outside this
+# helper). pytest.skip raised in a module-scoped fixture skips the whole
+# module; raised in a test body skips that test.
+#
+# Scope of the catch: only a TclError escaping root CONSTRUCTION is the
+# init-time unusable-runtime class (missing tk.tcl/init.tcl, no display).
+# TclErrors from later widget calls are NOT caught here - the guard wraps
+# construction only, so ordinary Tk misuse still errors. Failures of another
+# exception class at construction likewise stay errors (never silenced); the
+# two classes are not further distinguished because every TclError that
+# escapes Tk() means no usable root exists on this host (recorded
+# ambiguity: an exotic non-environment TclError at init would skip too).
+# ==============================================================================
+def make_tk_root():
+    """Build a Tk root, or skip the test loudly when Tk cannot initialize."""
+    import tkinter
+    try:
+        return tkinter.Tk()
+    except tkinter.TclError as exc:
+        pytest.skip("tk runtime unusable on this host: %s" % exc)
 
 
 class FakeDevice:

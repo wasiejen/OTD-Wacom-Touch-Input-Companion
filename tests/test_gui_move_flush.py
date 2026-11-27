@@ -22,13 +22,15 @@ from wtd.config import DriverConfig
 from wtd.gestures import TabletState
 from wtd.sender import ActionDispatcher
 
+from conftest import make_tk_root
+
 DISP1 = "\\\\.\\DISPLAY1|0|0|1920x1080"
 CONSTRUCTED = []
 
 
 @pytest.fixture(scope="module")
 def tk_root():
-    root = tk.Tk()
+    root = make_tk_root()
     root.withdraw()
     yield root
     for win in CONSTRUCTED:

@@ -15,6 +15,8 @@ import gui
 from wtd.config import DriverConfig, TOUCH_ACTION_CHOICES
 from wtd.gestures import TabletState
 
+from conftest import make_tk_root
+
 CONSTRUCTED = []
 
 
@@ -22,7 +24,7 @@ CONSTRUCTED = []
 def tk_root():
     # One Tk root for the module, never destroyed: a fresh first root after
     # destroy() can fail to relocate init.tcl on Windows (measured U383).
-    root = tk.Tk()
+    root = make_tk_root()
     root.withdraw()
     yield root
     for win in CONSTRUCTED:

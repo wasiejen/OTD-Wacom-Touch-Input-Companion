@@ -22,6 +22,8 @@ from gui import (
 from wtd.config import WIRELESS_TABLET_SIZES
 from wtd.protocol import PEN_SPECS_BY_PRODUCT
 
+from conftest import make_tk_root
+
 # Digitizer sizes the drawing mirrors (PEN_SPECS mm), keyed by size name.
 SPEC_BY_SIZE = {"small": 788, "medium": 789, "large": 791}
 
@@ -152,8 +154,7 @@ def test_layout_button_labels_do_not_renumber_under_rotation():
 
 @pytest.fixture(scope="module")
 def tk_root():
-    import tkinter as tk
-    root = tk.Tk()
+    root = make_tk_root()
     root.withdraw()
     yield root
     root.destroy()

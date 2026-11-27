@@ -22,6 +22,8 @@ from wtd.gestures import TabletState
 from wtd.protocol import pen_specs_for_product
 from wtd.protocol import pen_specs_for_product
 
+from conftest import make_tk_root
+
 SCREEN = (0, 0, 3440, 1440)
 DISP1 = "\\\\.\\DISPLAY1|0|0|1920x1080"
 DISP2 = "\\\\.\\DISPLAY2|1920|0|1520x1440"
@@ -30,7 +32,7 @@ CONSTRUCTED = []
 
 @pytest.fixture(scope="module")
 def tk_root():
-    root = tk.Tk()
+    root = make_tk_root()
     root.withdraw()
     yield root
     for win in CONSTRUCTED:

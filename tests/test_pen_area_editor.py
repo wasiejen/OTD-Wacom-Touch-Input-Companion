@@ -31,6 +31,8 @@ from wtd import config as wtd_config
 from wtd import mapping
 from wtd import protocol
 
+from conftest import make_tk_root
+
 SCREEN = (0, 0, 3440, 1440)
 ORIGIN_SCREEN = (-1440, 0, 4880, 2560)
 RECORDS = ["\\\\.\\DISPLAY1|0|0|3440x1440"]
@@ -432,8 +434,7 @@ def test_match_box_aspect_after_rotation_reevaluates_the_overlap_rule():
 @pytest.fixture(scope="module")
 def root():
     # Same pattern as tests/test_gui_device_bar.py: one withdrawn root.
-    import tkinter as tk
-    root = tk.Tk()
+    root = make_tk_root()
     root.withdraw()
     yield root
     root.destroy()

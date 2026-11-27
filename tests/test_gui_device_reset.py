@@ -16,6 +16,8 @@ import gui
 from gui import device_display_name  # noqa: F401  (name pin: module intact)
 from wtd.config import DriverConfig, device_identity_hash
 
+from conftest import make_tk_root
+
 WACOM_PATH = "WACOM Pen&0b57:05a3"
 _ROOT = [None]
 
@@ -49,8 +51,7 @@ def _root():
         candidate = getattr(mod, "_tk_root", None)
         if candidate is not None and candidate.winfo_exists():
             return candidate
-    import tkinter as tk
-    root = tk.Tk()
+    root = make_tk_root()
     root.withdraw()
     _ROOT[0] = root
     return root

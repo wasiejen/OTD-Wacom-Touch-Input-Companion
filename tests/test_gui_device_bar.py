@@ -26,6 +26,8 @@ from wtd import cli
 from wtd import config as wtd_config
 from wtd import devices
 
+from conftest import make_tk_root
+
 
 class StubManager:
     def __init__(self, conns=()):
@@ -68,7 +70,7 @@ def tk_root():
     # destroyed. On Windows, creating a fresh first Tk root after a
     # destroy() can fail to relocate init.tcl (measured U383). pytest exits
     # with the interpreter alive, so no re-init is ever attempted.
-    root = tk.Tk()
+    root = make_tk_root()
     root.withdraw()
     yield root
     for win in CONSTRUCTED:
