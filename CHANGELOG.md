@@ -162,9 +162,27 @@ Build and internals:
 
 Test suite: 538 -> 656.
 
-## v0.4.0 - November 2026 (synced to `main`; not tagged)
+## v0.4.0 - 2026-11-14 (synced to `main`; not tagged)
 
-The v0.4.0 wave, since v0.3.0, rebuilt the pen and mapping experience:
+The v0.4.0 wave spans the `v0.3.0` tag (2026-10-29) to the `main` sync commit
+(2026-11-14): the driver learned to read the pen itself and grew its movement,
+mapping, button, and per-device settings around that.
+
+Pen input:
+
+- **Built-in pen pointer support - no external driver needed for pointer use.**
+  The driver reads the pen interface itself: cursor movement, pen-tip pressure
+  acting as a left-button press and release (with an adjustable hold
+  threshold), and the two pen buttons, which default to right-click and
+  middle-click and are each remappable to any action from the Pen tab. Touch
+  stays suppressed while the pen is in range.
+- **Pen tilt stays out of scope.** WTD uses pen pressure for the click only and
+  never reads tilt: pen tilt, pressure curves, and any pressure behaviour
+  beyond pointer control remain OpenTabletDriver territory. Install it for
+  those, and do not run both pointer paths at once (README, Software
+  Dependencies).
+
+Pen movement and mapping:
 
 - **Tri-modal pen movement.** Three pen modes on the Pen tab: relative
   (speed control), absolute stretched, and absolute 1:1. The stretched
@@ -176,30 +194,72 @@ The v0.4.0 wave, since v0.3.0, rebuilt the pen and mapping experience:
   bidirectional, carry an editable px/mm sensitivity handle, and the
   mapping answers in DPI-scaled desktop pixel space (the basis is
   labeled in the panel). The pen area follows orientation changes on
-  Apply and rebind.
+  Apply and rebind. The separate `Save Pen Area` and `Remove Rect` buttons
+  are gone: Apply stores the rectangle like every other setting, and the
+  mode radios already cover mode changes.
+- **Orientation support.** Pen and touch coordinates rotate with the
+  configured tablet orientation; the editor and pen area stay in sync,
+  and absolute mode follows the rotated digitizer box at 90 and 270.
+- **Mapping fixes.** Absolute pen mapping is isotropic (equal px/mm on
+  both axes) and centered, and the digitizer extents now use
+  authoritative per-model values; metric-less pen hosts reach the full
+  screen through stretch math instead of clipping, with a grow-only
+  autoscale keeping the mapping box matched to the coordinates a host
+  really reports.
+
+Buttons and dials:
+
 - **Tablet buttons, dial, and touch modifiers.** The tablet buttons and
   the dial now fire presses and rotation steps, are mappable per control,
   and each mapped button can hold a touch modifier that temporarily
   changes touch behavior while pressed.
+
+Per-device settings:
+
+- **One file, one entry per tablet.** Each connected tablet keeps its own
+  values on top of the global settings inside the same `user.cfg`, keyed by
+  device identity. The Focused Device bar picks which device you edit, and a
+  device can carry an alias so the save lanes and the copy-between-devices
+  lane address it by name.
+
+Wireless tablets:
+
 - **Wireless size lane.** The wireless receiver cannot report which
   tablet it is paired to, so the wireless tablet size (small / medium /
-  large) is set explicitly; a loud notice names the three options while
-  unset, and an old renamed setting is migrated with a notice.
-- **Orientation support.** Pen and touch coordinates rotate with the
-  configured tablet orientation; the editor and pen area stay in sync.
-- **Mapping fixes.** Absolute pen mapping is isotropic (equal px/mm on
-  both axes) and centered, and the digitizer extents now use
-  authoritative per-model values; metric-less pen hosts reach the full
-  screen through stretch math instead of clipping.
+  large, i.e. 788 / 789 / 791) is set explicitly. While a receiver is
+  connected and no size is chosen, a console notice and a red GUI row name
+  the three options and the mapping labels its medium-extent fallback
+  instead of hiding it; an old renamed setting is migrated with a notice.
+
+GUI:
+
 - **Redesigned device drawing.** The tablet pictogram in the GUI is
   redrawn per model and size variant, fits the strip at every rotation
   angle, and shows the pen area.
-- **Config CLI lanes.** `--list`, `--restore-with <name>`, and
-  `--save-device <alias>` maintenance lanes; the old bare-name `--save-as`
-  alias now prints a deprecation notice naming `--save-device`.
+
+Configuration and command line:
+
+- **`--config <path>` selects the config file.** New in this wave - the
+  documented pick order came with v0.5.0.
+- **Config load validates before it applies.** A bad value no longer
+  half-applies: the whole file is checked first and your defaults stay
+  intact when it fails, and each bad key, action, or unknown section is
+  named with its section path and the line in the file.
+- **Config CLI lanes.** `--list` and `--restore-with <name or identity>` run
+  against the config file and exit without starting the driver;
+  `--save-device <alias>` took over device-alias saving from the bare-name
+  `--save-as` spelling, which was deprecated in this wave.
+
+Diagnostics and developer guard:
+
+- **Opt-in diagnostic lines.** `WTD_METRICS_DIAG=1` prints the desktop-metrics
+  readout once at start; `WTD_PEN_MAP_DIAG=1` prints the pen absolute-mapping
+  line once per connection.
 - **Developer guard.** Running the test suite with a stray `user.cfg` in
   the repository folder now refuses to collect instead of silently
   reading it.
+
+Test suite: 538 at the `main` sync (the era's own gate lines).
 
 ## Development log
 
