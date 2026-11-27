@@ -10,7 +10,8 @@ import types
 import pytest
 
 import gui
-from touch_controller import DriverConfig
+from wtd.config import DriverConfig
+from wtd import config
 
 
 class FakeEntry:
@@ -91,6 +92,14 @@ def test_parse_numeric_values_names_offending_key():
     with pytest.raises(ValueError) as exc:
         gui.parse_numeric_values({"cursor_speed_low": "abc"})
     assert "cursor_speed_low" in str(exc.value)
+
+
+def test_parse_numeric_values_skips_empty_entries():
+    # #471 (2026-11-25): empty/whitespace-only entry text = the field is
+    # UNCHANGED (the keep-the-stored-value lane, cf. _KEEP_WIRELESS_SIZE);
+    # it never reaches float() and never blocks an unrelated field's apply.
+    parsed = gui.parse_numeric_values({"a": "1.5", "b": "", "c": "   ", "d": "7"})
+    assert parsed == {"a": 1.5, "d": 7.0}
 
 
 def test_apply_all_or_nothing_leaves_config_untouched(window_surface):
@@ -274,6 +283,24 @@ def test_apply_button_invalid_number_leaves_config_untouched(window_surface):
     assert config.dial_step_threshold == 4.0
     assert config.action_mapping["btn1_press"] == "undo"
     assert box.errors
+
+
+def test_apply_button_change_with_empty_dial_entry_succeeds(window_surface):
+    # #471 repro (maintainer live report 2026-11-25): the BUTTON tab apply-live
+    # was blocked because the dial entry carried empty text (user-cleared).
+    # The empty field stays unchanged (kept, NOT reset to the 4.0 default)
+    # and the unrelated button change applies.
+    config, box = window_surface
+    config.dial_step_threshold = 5.5
+    win = make_window(config, {"dial_step_threshold": ""},
+                      buttons={"btn1_press": "task_view"})
+
+    applied = types.MethodType(gui.SettingsWindow.apply_settings, win)()
+
+    assert applied is True
+    assert box.errors == []
+    assert config.dial_step_threshold == 5.5
+    assert config.action_mapping["btn1_press"] == "task_view"
 
 
 def test_apply_touch_settings_updates_config(window_surface):

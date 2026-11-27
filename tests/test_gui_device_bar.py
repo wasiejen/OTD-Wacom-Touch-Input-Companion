@@ -14,13 +14,17 @@ test pumps the event loop, and every constructed window stays unmapped
 """
 
 import sys
+import time
 import tkinter as tk
 
 import pytest
 
 import gui
-import touch_controller
-from touch_controller import DriverConfig, TabletState
+from wtd.config import DriverConfig
+from wtd.gestures import TabletState
+from wtd import cli
+from wtd import config as wtd_config
+from wtd import devices
 
 
 class StubManager:
@@ -215,7 +219,7 @@ def test_save_to_file_without_focus_falls_back_to_global(tk_root, base_config, m
 
 def test_build_device_info_keeps_manager_without_connection(base_config):
     mgr = StubManager([])
-    di = touch_controller.build_device_info(None, base_config, mgr)
+    di = devices.build_device_info(None, base_config, mgr)
     assert di["connection"] is None
     assert di["base_config"] is base_config
     assert di["manager"] is mgr
@@ -231,25 +235,34 @@ class FakeManagerThread:
     def get_primary_connection(self):
         return None
 
+    def live_reader_threads(self):
+        # Owned-shutdown surface main()'s finally drives (Item 1 / A2): this
+        # double starts no readers, so there is nothing to join and nothing to
+        # sweep - the shutdown path must still be able to ask.
+        return []
+
+    def dispatchers(self):
+        return []
+
 
 def test_main_passes_manager_bundle_without_connection(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     # main() reassigns the module globals; re-registering the current values
     # makes monkeypatch restore them at teardown.
-    monkeypatch.setattr(touch_controller, "config", touch_controller.config)
-    monkeypatch.setattr(touch_controller, "DEBUG", touch_controller.DEBUG)
+    monkeypatch.setattr(cli, "config", wtd_config.config)
+    monkeypatch.setattr(wtd_config, "DEBUG", wtd_config.DEBUG)
     monkeypatch.setattr(sys, "argv", ["touch_controller.py"])
-    monkeypatch.setattr(touch_controller.time, "sleep", lambda s: None)
-    monkeypatch.setattr(touch_controller, "DeviceManagerThread", FakeManagerThread)
+    monkeypatch.setattr(time, "sleep", lambda s: None)
+    monkeypatch.setattr(cli, "DeviceManagerThread", FakeManagerThread)
     captured = {}
 
     def recorder(state, gui_config, pause_event, stop_event, device_info=None):
         captured["device_info"] = device_info
     monkeypatch.setattr(gui, "launch_gui", recorder)
 
-    assert touch_controller.main() == 0
+    assert cli.main() == 0
     di = captured["device_info"]
     assert di["connection"] is None
     assert isinstance(di["manager"], FakeManagerThread)
     # The bundle must carry the very module-global config the tray binds.
-    assert di["base_config"] is touch_controller.config
+    assert di["base_config"] is cli.config

@@ -10,18 +10,13 @@ import types
 import gui
 import pytest
 
-from touch_controller import (
-    ActionDispatcher,
-    DeviceManagerThread,
-    DriverConfig,
-    MODEL_CLASS_ALIASES,
-    TabletState,
-    WIRELESS_DEFAULT_ALIAS,
-    resolve_device_alias,
-    run_interface,
-)
+from wtd.config import (DriverConfig, MODEL_CLASS_ALIASES, WIRELESS_DEFAULT_ALIAS, resolve_device_alias)
+from wtd.devices import (DeviceManagerThread, run_interface)
+from wtd.gestures import TabletState
+from wtd.sender import ActionDispatcher
 
 from conftest import ExplodingDevice
+from wtd import config
 
 
 def fresh_config(monkeypatch, tmp_path):
@@ -116,6 +111,9 @@ def test_fork_of_unknown_alias_is_the_global_view(monkeypatch, tmp_path):
 
 
 def test_invalid_overlay_entry_keeps_global(monkeypatch, tmp_path, capsys):
+    # WTD-14 (decision 14) re-pin of the whole-reject doctrine: the bad
+    # MOTION section stays out atomically (both its keys, valid included),
+    # the valid TOGGLES section now APPLIES instead of being poisoned.
     cfg = fresh_config(monkeypatch, tmp_path)
     cfg.devices = {"wacom-intuos5-m": {
         "motion_and_thresholds": {"cursor_speed_low": "abc", "max_tap_duration": 0.4},
@@ -127,9 +125,11 @@ def test_invalid_overlay_entry_keeps_global(monkeypatch, tmp_path, capsys):
 
     assert fork.cursor_speed_low == 5.0
     assert fork.max_tap_duration == DriverConfig().max_tap_duration
-    assert fork.feature_toggles["2f_tap"] is False
+    assert fork.feature_toggles["2f_tap"] is True
     assert "Invalid devices entry" in out
     assert "cursor_speed_low" in out
+    assert "'motion_and_thresholds' not applied" in out
+    assert "1 valid section(s) applied" in out
 
 
 # --- schema round-trip --------------------------------------------------------
@@ -231,12 +231,10 @@ def test_dispatcher_uses_connection_config(monkeypatch, tmp_path, stub_send_inpu
     assert ActionDispatcher.MOUSEEVENTF_MIDDLEUP in flags
 
 
-def test_dispatcher_without_cfg_falls_back_to_module_config(monkeypatch, tmp_path, stub_send_input):
+def test_dispatcher_with_explicit_cfg_defaults_fires_nothing(monkeypatch, tmp_path, stub_send_input):
     """2f_tap is off by default, so a plain dispatcher fires nothing."""
     monkeypatch.chdir(tmp_path)
-    import touch_controller
-    monkeypatch.setattr(touch_controller, "config", DriverConfig())
-    dispatcher = ActionDispatcher(TabletState())
+    dispatcher = ActionDispatcher(TabletState(), DriverConfig())
 
     dispatcher.dispatch_gesture_event("2f_tap")
 
@@ -259,7 +257,7 @@ def test_touch_thread_runs_connection_fork(monkeypatch, tmp_path, fake_hid, stub
     enabled.set()
 
     run_interface("Touch", {"interface_number": 1, "path": b"x"},
-                  state, dispatcher, enabled, threading.Event())
+                  state, dispatcher, threading.Event(), fork)
 
     flags = [event[1] for event in stub_send_input]
     assert ActionDispatcher.MOUSEEVENTF_MIDDLEDOWN in flags
@@ -404,6 +402,8 @@ class FakeDeviceWindow:
         self.save_to_file = types.MethodType(gui.SettingsWindow.save_to_file, self)
         self.save_to_focused_device = types.MethodType(
             gui.SettingsWindow.save_to_focused_device, self)
+        self._write_through_focused_entry = types.MethodType(
+            gui.SettingsWindow._write_through_focused_entry, self)
         self.assign_alias = types.MethodType(gui.SettingsWindow.assign_alias, self)
         self.copy_settings_to_alias = types.MethodType(
             gui.SettingsWindow.copy_settings_to_alias, self)

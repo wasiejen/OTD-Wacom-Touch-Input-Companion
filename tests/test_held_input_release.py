@@ -8,17 +8,19 @@ import threading
 
 import pytest
 
-import touch_controller
-from touch_controller import ActionDispatcher, TabletState
+from wtd.config import DriverConfig
+from wtd.gestures import TabletState
+from wtd.sender import ActionDispatcher
 from vk_codes import vk_codes_dict
 
 from conftest import ExplodingDevice, FakeDevice
+from wtd import devices
 
 
 @pytest.fixture
 def dispatcher(stub_send_input):
     state = TabletState()
-    return ActionDispatcher(state), stub_send_input
+    return ActionDispatcher(state, DriverConfig()), stub_send_input
 
 
 def key_events(events):
@@ -90,7 +92,7 @@ def test_release_covers_both_held_classes(dispatcher):
 
 def test_thread_exit_on_oserror_releases_ctrl(fake_hid, stub_send_input):
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
     ad.press_key("ctrl")
 
     dev = ExplodingDevice()
@@ -100,8 +102,9 @@ def test_thread_exit_on_oserror_releases_ctrl(fake_hid, stub_send_input):
     enabled.set()
     stop = threading.Event()
 
-    touch_controller.run_interface(
-        "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, enabled, stop
+    devices.run_interface(
+        "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, stop,
+        DriverConfig()
     )
 
     assert ("key", vk_codes_dict["ctrl"], ActionDispatcher.KEYEVENTF_KEYUP) in stub_send_input
@@ -110,7 +113,7 @@ def test_thread_exit_on_oserror_releases_ctrl(fake_hid, stub_send_input):
 
 def test_thread_exit_on_oserror_releases_left_button(fake_hid, stub_send_input):
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
     ad.handle_left_hold()
 
     dev = ExplodingDevice()
@@ -120,8 +123,9 @@ def test_thread_exit_on_oserror_releases_left_button(fake_hid, stub_send_input):
     enabled.set()
     stop = threading.Event()
 
-    touch_controller.run_interface(
-        "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, enabled, stop
+    devices.run_interface(
+        "Touch", {"interface_number": 1, "path": b"fake"}, state, ad, stop,
+        DriverConfig()
     )
 
     assert ("mouse", ActionDispatcher.MOUSEEVENTF_LEFTUP, 0, 0, 0) in stub_send_input
@@ -139,13 +143,12 @@ def test_run_interface_calls_release_held_inputs_on_exit(fake_hid):
     fake_hid._queue.append(dev)
 
     enabled = threading.Event()
-    enabled.set()
     stop = threading.Event()
     stop.set()
 
-    touch_controller.run_interface(
+    devices.run_interface(
         "Touch", {"interface_number": 1, "path": b"fake"}, TabletState(),
-        RecordingDispatcher(), enabled, stop
+        RecordingDispatcher(), stop, DriverConfig()
     )
 
     assert calls == ["released"]

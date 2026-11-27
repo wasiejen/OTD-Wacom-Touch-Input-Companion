@@ -1,7 +1,7 @@
 @echo off
 
 :: Define release version tag
-set VERSION=v0.2.2
+set VERSION=v0.5.0
 
 :: Activate virtual environment
 call ./.venv/Scripts/activate.bat
@@ -18,7 +18,7 @@ pyinstaller --onefile --windowed ^
     --hidden-import "pynput.mouse._win32" ^
     --hidden-import "pystray._win32" ^
     --name "OTD_Wacom_Touch_Driver" ^
-    touch_controller.py %*
+    wtd/__main__.py %*
 
 :: --- Rename and move executable ---
 :: Define source (dist) and destination (current dir)

@@ -22,6 +22,22 @@ import types
 
 import pytest
 
+# R1 P1-2: keep test emissions out of the maintainer's live hunting
+# file. Set before any wtd import in this process: the wtd_file sink
+# attaches at first import with this path (the product never sets it).
+os.environ.setdefault(
+    "WTD_LOG_FILE",
+    os.path.join(os.environ.get("TEMP", os.sep + "tmp"), "wtd-test-hunt.log"),
+)
+
+# X-SINGLE 2026-11-16: the suite drives cli.main() from several files; the
+# single-instance guard would refuse every run after the first. This is the
+# guard's own test seam (see wtd/single_instance.py docstring - test-only,
+# deliberately not in user docs).
+os.environ.setdefault("WTD_ALLOW_MULTI_INSTANCE", "1")
+
+from wtd import devices
+
 # ==============================================================================
 # TEST-CWD GUARD (estate TODO #425) - runs at conftest IMPORT time, i.e.
 # during COLLECTION, so a poisoned CWD fails the run BEFORE any test executes.
@@ -32,7 +48,7 @@ import pytest
 # COLLECTION to fail with a named message. A module-level raise in this file
 # is what pytest reports as a collection error.
 #
-# WHY the guard exists: touch_controller.CONFIG_FILE_PATH is the bare
+# WHY the guard exists: wtd.config.CONFIG_FILE_PATH is the bare
 # relative name "user.cfg", and several test modules instantiate
 # DriverConfig() without chdir - any user.cfg left in the pytest CWD by a
 # debug run silently overrides the mapping defaults those tests assume
@@ -58,6 +74,28 @@ def _guard_test_cwd_free_of_config():
 
 
 _guard_test_cwd_free_of_config()
+
+
+@pytest.fixture(scope="session", autouse=True)
+def _isolate_appdata_config_lane(tmp_path_factory):
+    """Point the %APPDATA% config lane (unit B1 / Item 5) at a throwaway folder.
+
+    The approved search order falls back to %APPDATA%/wtd/user.cfg, and several
+    lanes run main() or a save path inside a tmp folder; without this fixture a
+    test could read - or on a first save create - the developer's real per-user
+    config. Pins that must own the lane pass appdata_path to
+    resolve_config_paths explicitly instead of relying on this default.
+    """
+    root = tmp_path_factory.mktemp("appdata-isolation")
+    previous = os.environ.get("APPDATA")
+    os.environ["APPDATA"] = str(root)
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("APPDATA", None)
+        else:
+            os.environ["APPDATA"] = previous
 
 # Make the product modules importable from tests/ without packaging changes.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -88,6 +126,12 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # ==============================================================================
 
 INJECT_APIS = ("SendInput", "mouse_event", "keybd_event", "SetCursorPos")
+
+# #472: LockWorkStation is not an input injection, but a test that reaches it
+# locks the developer's desktop, so it gets the same blocking treatment. A test
+# that must exercise the session-lock action stubs the seam itself (see
+# tests/test_button_clipboard_actions.py).
+SESSION_APIS = ("LockWorkStation",)
 
 inject_offenders = []
 selfcheck_hits = []
@@ -134,11 +178,34 @@ def _block_injection(api):
     )
 
 
+def _block_session_lock(api):
+    """#472: the session lock is destructive rather than an injection.
+
+    Reuses the offender bookkeeping (an unstubbed call is the same class of
+    isolation leak), but names the real hazard in the message so the failure
+    is not misread as an injected keystroke.
+    """
+    chain = _caller_chain()
+    key = (api, _current_nodeid, chain)
+    if _selfcheck_thread is not None and threading.get_ident() == _selfcheck_thread:
+        selfcheck_hits.append(api)
+    elif key not in _inject_seen:
+        _inject_seen.add(key)
+        inject_offenders.append(key)
+    raise RuntimeError(
+        "LIVE SESSION LOCK BLOCKED: %s called by %s (chain: %s). "
+        "Test-isolation leak: request the stub_lock_workstation fixture."
+        % (api, _current_nodeid, chain)
+    )
+
+
 def _install_inject_guard():
     """Replace every Win32 input entry point with a blocking recorder."""
     user32 = ctypes.windll.user32
     for api in INJECT_APIS:
         setattr(user32, api, lambda *args, _api=api: _block_injection(_api))
+    for api in SESSION_APIS:
+        setattr(user32, api, lambda *args, _api=api: _block_session_lock(_api))
     # U369: the instance patch covers only the loader-cached windll.user32.
     # Every ctypes DLL instance resolves function names through
     # CDLL.__getattr__ (WinDLL/OleDLL/PyDLL do not override it), so wrapping
@@ -148,6 +215,8 @@ def _install_inject_guard():
     def _guarded_getattr(self, name):
         if name in INJECT_APIS:
             _block_injection(name)
+        if name in SESSION_APIS:
+            _block_session_lock(name)
         return original_getattr(self, name)
 
     ctypes.CDLL.__getattr__ = _guarded_getattr
@@ -220,7 +289,7 @@ def inject_guard():
     _offenders_reported = len(inject_offenders)
     if inject_offenders:
         raise AssertionError(
-            "live input injection leaked during this session:\n"
+            "live injection or session lock leaked during this session:\n"
             + "\n".join("  offender: %s node=%s chain: %s" % entry
                         for entry in inject_offenders)
         )
@@ -292,6 +361,32 @@ class ExplodingDevice(FakeDevice):
         raise OSError("device disconnected")
 
 
+class SignalDevice(PlainDevice):
+    """Plain device that signals its own lifecycle with events, not sleeps.
+
+    first_read sets on every read (a waiter only needs the first one),
+    closed_event sets when the device is closed, in a finally so a raising
+    close cannot strand a waiter. Those are the two points the lifetime pins
+    in tests/test_lifecycle_pins.py synchronize on, so a slow machine waits
+    longer but never reads state that has not happened yet.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self.first_read = threading.Event()
+        self.closed_event = threading.Event()
+
+    def read(self, max_size=64):
+        self.first_read.set()
+        return super().read(max_size)
+
+    def close(self):
+        try:
+            super().close()
+        finally:
+            self.closed_event.set()
+
+
 def make_hid_module(devices=None, device_queue=None):
     """Build a fake `hid` module exposing enumerate() and device()."""
     module = types.ModuleType("hid")
@@ -313,11 +408,10 @@ def make_hid_module(devices=None, device_queue=None):
 
 @pytest.fixture
 def fake_hid(monkeypatch):
-    """Install a fake hid module before touch_controller resolves hid."""
+    """Install a fake hid module before the devices lane resolves hid."""
     module = make_hid_module()
     monkeypatch.setitem(sys.modules, "hid", module)
-    import touch_controller
-    monkeypatch.setattr(touch_controller, "hid", module)
+    monkeypatch.setattr(devices, "hid", module)
     return module
 
 
@@ -343,3 +437,23 @@ def stub_send_input(monkeypatch):
 
     monkeypatch.setattr(ctypes.windll.user32, "SendInput", fake_send_input)
     return events
+
+
+@pytest.fixture
+def stub_lock_workstation(monkeypatch):
+    """Opt-in session-lock seam (#472): records the call, never locks.
+
+    The conftest guard blocks LockWorkStation for the whole session, so a test
+    that exercises the lock action requests this seam; its monkeypatch shadows
+    the guard for that test only. The seam always reports a successful lock; a
+    pin that needs the failure branch replaces the attribute itself (see
+    tests/test_button_clipboard_actions.py).
+    """
+    calls = []
+
+    def fake_lock():
+        calls.append("LockWorkStation")
+        return 1
+
+    monkeypatch.setattr(ctypes.windll.user32, "LockWorkStation", fake_lock)
+    return calls

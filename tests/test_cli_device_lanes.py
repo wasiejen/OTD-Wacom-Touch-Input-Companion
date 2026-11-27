@@ -5,16 +5,8 @@ Device-free: tmp files only, no real device, no GUI window, no driver start.
 
 import json
 
-from touch_controller import (
-    DEVICE_SETTINGS_PREFIX,
-    DriverConfig,
-    cli_list_devices,
-    cli_restore_with,
-    cli_save_as,
-    looks_like_path,
-    resolve_cli_lanes,
-    resolve_config_paths,
-)
+from wtd.cli import (cli_list_devices, cli_restore_with, cli_save_as, looks_like_path, resolve_cli_lanes, resolve_config_paths)
+from wtd.config import (DEVICE_SETTINGS_PREFIX, DriverConfig)
 
 
 def test_list_prints_alias_and_identity_key(monkeypatch, tmp_path, capsys):
@@ -178,7 +170,9 @@ def test_cli_lanes_pass_path_arguments_through(monkeypatch, tmp_path):
     assert notes == []
     assert path_args == ["--config", "base.cfg"]
 
-    load, save, _, other = resolve_config_paths(path_args)
+    # path_exists stubbed True: these pins own the save-lane routing,
+    # not the search-order ladder (pinned in test_config_path_resolution.py).
+    load, save, _, other = resolve_config_paths(path_args, path_exists=lambda path: True)
     assert load == "base.cfg"
     assert save == "base.cfg"
     assert other == []
@@ -188,7 +182,9 @@ def test_save_as_path_form_keeps_the_save_path_lane():
     _, _, alias, _, path_args = resolve_cli_lanes(["--save-as", "out.cfg", "-wireless"])
 
     assert alias is None
-    load, save, _, other = resolve_config_paths(path_args)
+    # path_exists stubbed True: these pins own the save-lane routing,
+    # not the search-order ladder (pinned in test_config_path_resolution.py).
+    load, save, _, other = resolve_config_paths(path_args, path_exists=lambda path: True)
     assert load == "user.cfg"
     assert save == "out.cfg"
     assert other == ["-wireless"]
@@ -262,7 +258,9 @@ def test_save_as_absolute_path_form_keeps_the_path_lane():
         ["--save-as", "C:/x/y.json", "-wireless"])
     assert alias is None
     assert path_args == ["--save-as", "C:/x/y.json", "-wireless"]
-    load, save, _, other = resolve_config_paths(path_args)
+    # path_exists stubbed True: these pins own the save-lane routing,
+    # not the search-order ladder (pinned in test_config_path_resolution.py).
+    load, save, _, other = resolve_config_paths(path_args, path_exists=lambda path: True)
     assert save == "C:/x/y.json"
     assert other == ["-wireless"]
 

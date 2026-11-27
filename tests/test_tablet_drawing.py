@@ -19,7 +19,8 @@ from gui import (
     resolve_drawing_size,
     tablet_pictogram_layout,
 )
-from touch_controller import PEN_SPECS_BY_PRODUCT, WIRELESS_TABLET_SIZES
+from wtd.config import WIRELESS_TABLET_SIZES
+from wtd.protocol import PEN_SPECS_BY_PRODUCT
 
 # Digitizer sizes the drawing mirrors (PEN_SPECS mm), keyed by size name.
 SPEC_BY_SIZE = {"small": 788, "medium": 789, "large": 791}
@@ -75,7 +76,7 @@ def test_layout_pen_area_rect_inside_frame_matching_digitizer():
 
 
 def test_layout_pen_area_and_buttons_rotate_with_the_angle():
-    from touch_controller import rotate_point
+    from wtd.mapping import rotate_point
     zero = tablet_pictogram_layout(0)
     quarter = tablet_pictogram_layout(90)
     for corner, rotated in zip(zero["pen_area"], quarter["pen_area"]):
@@ -287,7 +288,7 @@ def test_all_key_circles_stay_inside_the_body_outline():
 
 @pytest.mark.parametrize("degrees", (0, 90, 180, 270))
 def test_layout_seam_endpoints_rotate_with_the_angle(degrees):
-    from touch_controller import rotate_point
+    from wtd.mapping import rotate_point
     layout = _medium_layout(degrees)
     drawing = TABLET_DRAWINGS["medium"]
     half_w, half_h = drawing["body_mm"][0] / 2, drawing["body_mm"][1] / 2
@@ -321,3 +322,65 @@ def test_widget_size_changes_the_drawing(tk_root):
     assert small._scale != pytest.approx(large._scale, rel=0.05)
     small.destroy()
     large.destroy()
+
+
+# --- Exact-angle contract lock (maintainer report 2026-11-16, F2) -----------
+# The maintainer saw the projection drawing rotate only in 90-degree steps.
+# The tip audit found NO quantization site left: the quantized generation
+# died with the #407 L1/L2 redraw (21dece2/096b9d9, 2026-11-11) - body,
+# blue pen-area rect, seam, dial and buttons all go through the shared
+# rotate_point matrix at the EXACT angle (verified headless on the tip and
+# in a live Tk canvas at 10 deg). These pins lock that contract so ANY
+# future lane that rounds the angle to a 90-degree step fails loudly.
+# Premise-state disclosure per the honesty guard: these pins PASS on the
+# pre-change tip (they are contract locks, not RED-first defect pins);
+# their discriminating power was proven with a scratch negative control
+# that re-quantizes draw_degrees to round(deg/90)*90 (pins FAIL there).
+
+@pytest.mark.parametrize("degrees", (10, 45, 270))
+def test_preview_corners_are_the_shared_matrix_at_exact_angle(degrees):
+    # Coordinate math, not pixels: every drawn corner equals the shared
+    # rotation matrix applied at the EXACT configured angle.
+    from wtd.mapping import rotate_point
+    zero = tablet_pictogram_layout(0)
+    exact = tablet_pictogram_layout(degrees)
+    for key in ("rect", "pen_area"):
+        assert len(exact[key]) == len(zero[key])
+        for corner, got in zip(zero[key], exact[key]):
+            assert got == pytest.approx(rotate_point(*corner, degrees, 0, 0))
+
+
+@pytest.mark.parametrize("degrees", (10, 45))
+def test_preview_corners_differ_from_the_90_stepped_expectation(degrees):
+    # A 90-degree-quantized preview would collapse 10/45 onto 0/90: the
+    # drawn corner coordinates must NOT equal the stepped layout's.
+    stepped = tablet_pictogram_layout(round(degrees / 90.0) * 90)
+    exact = tablet_pictogram_layout(degrees)
+    assert exact["rect"] != stepped["rect"]
+    assert exact["pen_area"] != stepped["pen_area"]
+
+
+def test_preview_at_270_is_not_another_quadrant():
+    # At 270 the nearest 90-step IS 270, so the leg pins against the
+    # other quadrants: the 270 drawing must differ from 0/90/180.
+    exact = tablet_pictogram_layout(270)
+    for other in (0, 90, 180):
+        assert exact["rect"] != tablet_pictogram_layout(other)["rect"]
+        assert exact["pen_area"] != tablet_pictogram_layout(other)["pen_area"]
+
+
+def test_widget_canvas_polygon_is_exact_angle_at_10_degrees(tk_root):
+    # Widget-level leg: the DRAWN body polygon (not the model) equals the
+    # exact angle - it must match neither the 0-deg nor the 90-deg widget
+    # (a 90-step quantizer would collapse 10 deg onto one of them).
+    def body_polygon(degrees):
+        widget = OrientationWidget(tk_root, degrees=degrees, size="medium")
+        polys = [i for i in widget.find_all() if widget.type(i) == "polygon"]
+        assert len(polys) == 2  # body + blue pen-area rect
+        coords = widget.coords(polys[0])
+        widget.destroy()
+        return coords
+
+    exact = body_polygon(10)
+    for stepped in (0, 90):
+        assert exact != body_polygon(stepped)

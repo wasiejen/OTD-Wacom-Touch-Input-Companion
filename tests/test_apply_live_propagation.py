@@ -4,7 +4,8 @@ Evidence (projects/OTD-Wacom-Touch-Input-Companion/handover_u378.md, U381
 reviewer P1): manage_connections built conn_config = base_config.fork_for_device
 (...) and stored it in the connection dict, but never passed it to the
 run_interface spawns, so every reader resolved its cfg from the module global
-config (run_interface: cfg = config if cfg is None else cfg). The GUI edits
+config through its optional-cfg fallback (since removed: unit B2 made cfg a
+required parameter of run_interface, so a reader cannot inherit a global any more). The GUI edits
 that fork (main(): gui_config = conn['config']; apply_settings mutates it in
 place), so a live "Apply Live" reached no running reader and every setting
 took effect only after a restart. The U381 button/touch lanes looked green
@@ -31,12 +32,10 @@ import pytest
 
 from conftest import PlainDevice
 
-import touch_controller
-from touch_controller import (
-    DeviceManagerThread,
-    DriverConfig,
-    run_interface,
-)
+from wtd.config import DriverConfig
+from wtd.devices import (DeviceManagerThread, run_interface)
+from wtd import config
+from wtd import devices as wtd_devices
 
 VK_VOLUME_UP = 0xAF
 VK_VOLUME_DOWN = 0xAE
@@ -84,7 +83,7 @@ def decoy_global(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     global_cfg = DriverConfig()
     global_cfg.action_mapping["btn1_press"] = "volume_up"
-    monkeypatch.setattr(touch_controller, "config", global_cfg)
+    monkeypatch.setattr(config, "config", global_cfg)
     return global_cfg
 
 
@@ -180,11 +179,10 @@ def test_manager_passes_fork_to_every_reader_spawn(fake_hid, decoy_global,
     """
     calls = []
 
-    def recording_run_interface(interface_type, device_info, state, dispatcher,
-                                enabled, stop, idle_poll=None, cfg=None):
+    def recording_run_interface(interface_type, device_info, state, dispatcher, stop, idle_poll=None, cfg=None):
         calls.append((interface_type, cfg))
 
-    monkeypatch.setattr(touch_controller, "run_interface", recording_run_interface)
+    monkeypatch.setattr(wtd_devices, "run_interface", recording_run_interface)
     base = DriverConfig()
     fake_hid.enumerate = lambda: wired_trio_devices(789)
     enabled = threading.Event()

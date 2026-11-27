@@ -5,13 +5,15 @@ SendInput is stubbed; no device and no real input injection.
 
 import pytest
 
-from touch_controller import ActionDispatcher, TabletState
+from wtd.config import DriverConfig
+from wtd.gestures import TabletState
+from wtd.sender import ActionDispatcher
 
 
 @pytest.fixture
 def dispatcher(stub_send_input):
     state = TabletState()
-    return ActionDispatcher(state), stub_send_input
+    return ActionDispatcher(state, DriverConfig()), stub_send_input
 
 
 def wheel_events(events):

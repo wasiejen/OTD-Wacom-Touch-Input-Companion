@@ -26,14 +26,9 @@ import tkinter as tk
 import pytest
 
 import gui
-import touch_controller
-from touch_controller import (
-    DriverConfig,
-    PEN_SPECS_BY_PRODUCT,
-    PEN_SPECS_DEFAULT,
-    TabletState,
-    pen_specs_for_product,
-)
+from wtd.config import DriverConfig
+from wtd.gestures import TabletState
+from wtd.protocol import (PEN_SPECS_BY_PRODUCT, PEN_SPECS_DEFAULT, pen_specs_for_product)
 
 WIRELESS_RECEIVER_ID = 132
 

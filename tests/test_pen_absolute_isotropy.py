@@ -20,20 +20,19 @@ import math
 
 import pytest
 
-import touch_controller
-from touch_controller import (
-    ActionDispatcher,
-    DriverConfig,
-    TabletState,
-    apply_orientation,
-    pen_rotation_center,
-    pen_specs_for_product,
-    update_pen_cursor,
-)
+from wtd.config import DriverConfig
+from wtd.gestures import TabletState
+from wtd.mapping import (apply_orientation, pen_rotation_center, update_pen_cursor)
+from wtd.protocol import pen_specs_for_product
+from wtd.sender import ActionDispatcher
+from wtd import config
+from wtd import mapping
+from wtd import protocol
+import ctypes
 
 ABS_FLAGS = 0x0001 | 0x8000 | 0x4000
-VIRT = touch_controller.PEN_VIRTUAL_RESOLUTION
-SPEC_791 = touch_controller.PEN_SPECS_BY_PRODUCT[791]
+VIRT = protocol.PEN_VIRTUAL_RESOLUTION
+SPEC_791 = protocol.PEN_SPECS_BY_PRODUCT[791]
 ULTRAWIDE_3440 = (0, 0, 3440, 1440)
 ULTRAWIDE_5120 = (0, 0, 5120, 1440)
 SQUARE_1440 = (0, 0, 1440, 1440)
@@ -57,6 +56,10 @@ def _map_corner(state, config, specs, x, y, metrics, events, stretch=False):
     dispatcher = ActionDispatcher(state, config)
     update_pen_cursor(state, dispatcher, config, specs, x, y,
                       screen_metrics=metrics)
+    # WTD-BATCH: the absolute lane parks the move; flush so the mapping
+    # value lands in the log (emission collapse itself is pinned in
+    # tests/test_move_coalescing.py).
+    dispatcher.flush_pending_move()
     assert events and events[-1][0] == "mouse" and events[-1][1] == ABS_FLAGS
     return events[-1][3], events[-1][4]
 
@@ -243,7 +246,7 @@ def test_wireless_medium_explicit_preset_is_isotropic_but_clips_the_large_box(
     capsys.readouterr()  # drain the config-load banner
     config.wireless_tablet_size = "medium"
     specs = pen_specs_for_product(132, config)
-    assert specs is touch_controller.PEN_SPECS_BY_PRODUCT[789]
+    assert specs is protocol.PEN_SPECS_BY_PRODUCT[789]
     metrics = ULTRAWIDE_3440
     scale = 1440 / 139.7
     scale_x, scale_y, _ = axis_scales_px_per_mm(
@@ -271,26 +274,26 @@ def test_virtual_desktop_metrics_reads_the_documented_indices(monkeypatch):
         reads.append(index)
         return table[index]
 
-    monkeypatch.setattr(touch_controller.ctypes.windll.user32, "GetSystemMetrics", fake)
-    assert touch_controller.virtual_desktop_metrics() == (0, -100, 3440, 1440)
+    monkeypatch.setattr(ctypes.windll.user32, "GetSystemMetrics", fake)
+    assert mapping.virtual_desktop_metrics() == (0, -100, 3440, 1440)
     assert reads == [76, 77, 7, 8]
-    assert touch_controller.monitor_count() == 2
+    assert mapping.monitor_count() == 2
     assert reads == [76, 77, 7, 8, 2]
     table[7] = 0
-    assert touch_controller.virtual_desktop_metrics() is None
+    assert mapping.virtual_desktop_metrics() is None
     # Positive junk must not drive the live mapping: a 3 x 3 pair was measured
     # on this project's headless test host, and it routes to the degraded lane.
     table.update({7: 3, 8: 3})
-    assert touch_controller.virtual_desktop_metrics() is None
+    assert mapping.virtual_desktop_metrics() is None
 
 
 def test_virtual_desktop_metrics_is_none_when_the_host_offers_none(monkeypatch):
     def raise_error(index):
         raise OSError("no metrics")
 
-    monkeypatch.setattr(touch_controller.ctypes.windll.user32, "GetSystemMetrics", raise_error)
-    assert touch_controller.virtual_desktop_metrics() is None
-    assert touch_controller.monitor_count() is None
+    monkeypatch.setattr(ctypes.windll.user32, "GetSystemMetrics", raise_error)
+    assert mapping.virtual_desktop_metrics() is None
+    assert mapping.monitor_count() is None
 
 
 def _junk_metrics(monkeypatch):
@@ -301,7 +304,7 @@ def _junk_metrics(monkeypatch):
     future routing of the metrics-less lane.
     """
     table = {76: 0, 77: 0, 7: 0, 8: 0, 2: 2}
-    monkeypatch.setattr(touch_controller.ctypes.windll.user32,
+    monkeypatch.setattr(ctypes.windll.user32,
                         "GetSystemMetrics", lambda i: table[i])
 
 
@@ -350,7 +353,7 @@ def test_missing_metrics_fill_the_full_normalized_range(state, config, stub_send
     # without usable desktop metrics the lane now runs the shipped stretch
     # full-fill math, so the declared box spans the whole 0..65535 on both
     # axes; the mode is named `stretch_unmeasured` in the diag line.
-    monkeypatch.setattr(touch_controller, "virtual_desktop_metrics", lambda: None)
+    monkeypatch.setattr(mapping, "virtual_desktop_metrics", lambda: None)
     nx0, ny0 = _map_corner(state, config, SPEC_791, 0, 0, None, stub_send_input)
     stub_send_input.clear()
     nx1, ny1 = _map_corner(state, config, SPEC_791, SPEC_791["max_x"],
@@ -363,10 +366,10 @@ def test_missing_metrics_fill_the_full_normalized_range(state, config, stub_send
 
 def test_mapping_diagnostic_line_names_mode_scales_and_bands_once(
         state, config, stub_send_input, capsys, monkeypatch):
-    monkeypatch.setenv(touch_controller.PEN_MAP_DIAG_ENV, "1")
-    monkeypatch.setattr(touch_controller, "virtual_desktop_metrics",
+    monkeypatch.setenv(mapping.PEN_MAP_DIAG_ENV, "1")
+    monkeypatch.setattr(mapping, "virtual_desktop_metrics",
                         lambda: ULTRAWIDE_3440)
-    monkeypatch.setattr(touch_controller, "monitor_count", lambda: 2)
+    monkeypatch.setattr(mapping, "monitor_count", lambda: 2)
     state.pen_product_id = 791
     state.pen_obs_max_x = 65024
     state.pen_obs_max_y = 40640
@@ -384,8 +387,8 @@ def test_mapping_diagnostic_line_names_mode_scales_and_bands_once(
 
 def test_mapping_diagnostic_stays_quiet_when_gated_off(
         state, config, stub_send_input, capsys, monkeypatch):
-    monkeypatch.delenv(touch_controller.PEN_MAP_DIAG_ENV, raising=False)
-    monkeypatch.setattr(touch_controller, "virtual_desktop_metrics",
+    monkeypatch.delenv(mapping.PEN_MAP_DIAG_ENV, raising=False)
+    monkeypatch.setattr(mapping, "virtual_desktop_metrics",
                         lambda: ULTRAWIDE_3440)
     _map_corner(state, config, SPEC_791, 0, 0, ULTRAWIDE_3440, stub_send_input)
     assert capsys.readouterr().out == ""
@@ -393,10 +396,10 @@ def test_mapping_diagnostic_stays_quiet_when_gated_off(
 
 def test_mapping_diagnostic_names_the_stretch_branch_once(
         state, config, stub_send_input, capsys, monkeypatch):
-    monkeypatch.setenv(touch_controller.PEN_MAP_DIAG_ENV, "1")
-    monkeypatch.setattr(touch_controller, "virtual_desktop_metrics",
+    monkeypatch.setenv(mapping.PEN_MAP_DIAG_ENV, "1")
+    monkeypatch.setattr(mapping, "virtual_desktop_metrics",
                         lambda: ULTRAWIDE_3440)
-    monkeypatch.setattr(touch_controller, "monitor_count", lambda: 2)
+    monkeypatch.setattr(mapping, "monitor_count", lambda: 2)
     state.pen_product_id = 791
     _map_corner(state, config, SPEC_791, 0, 0, ULTRAWIDE_3440,
                 stub_send_input, stretch=True)
@@ -412,7 +415,7 @@ def test_mapping_diagnostic_names_the_stretch_unmeasured_branch_once(
     # junk virtual-screen reads at the GetSystemMetrics level, monitor count
     # answers (his shape: monitors=17, screen=na). RED-before @8636c4a: the
     # line named `isotropic_unmeasured`.
-    monkeypatch.setenv(touch_controller.PEN_MAP_DIAG_ENV, "1")
+    monkeypatch.setenv(mapping.PEN_MAP_DIAG_ENV, "1")
     _junk_metrics(monkeypatch)
     state.pen_product_id = 791
     capsys.readouterr()  # drain any fixture config banner

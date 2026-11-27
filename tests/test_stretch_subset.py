@@ -17,17 +17,17 @@ import json
 
 import pytest
 
-import touch_controller
-from touch_controller import (
-    ActionDispatcher,
-    DriverConfig,
-    TabletState,
-    update_pen_cursor,
-)
+from wtd.config import DriverConfig
+from wtd.gestures import TabletState
+from wtd.mapping import update_pen_cursor
+from wtd.sender import ActionDispatcher
+from wtd import config
+from wtd import mapping
+from wtd import protocol
 
 ABS_FLAGS = 0x0001 | 0x8000 | 0x4000
-VIRT = touch_controller.PEN_VIRTUAL_RESOLUTION
-SPEC_791 = touch_controller.PEN_SPECS_BY_PRODUCT[791]
+VIRT = protocol.PEN_VIRTUAL_RESOLUTION
+SPEC_791 = protocol.PEN_SPECS_BY_PRODUCT[791]
 SCREEN = (0, 0, 3440, 1440)
 DISP1 = "\\\\.\\DISPLAY1|0|0|1920x1080"
 DISP2 = "\\\\.\\DISPLAY2|1920|0|1520x1440"
@@ -51,6 +51,8 @@ def _map(state, config, x, y, events, screens=None):
     dispatcher = ActionDispatcher(state, config)
     update_pen_cursor(state, dispatcher, config, SPEC_791, x, y,
                       screen_metrics=SCREEN)
+    # WTD-BATCH: flush the parked absolute move (see test_pen_absolute_isotropy).
+    dispatcher.flush_pending_move()
     assert events and events[-1][0] == "mouse" and events[-1][1] == ABS_FLAGS
     return events[-1][3], events[-1][4]
 
@@ -102,15 +104,17 @@ def test_junk_metrics_keep_the_degraded_full_fill(state, cfg, stub_send_input):
     dispatcher = ActionDispatcher(state, cfg)
     cfg.set_pen_mode("stretched")
     update_pen_cursor(state, dispatcher, cfg, SPEC_791, 0, 0, screen_metrics=None)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1][3:] == (0, 0)
     update_pen_cursor(state, dispatcher, cfg, SPEC_791, SPEC_791["max_x"],
                       SPEC_791["max_y"], screen_metrics=None)
+    dispatcher.flush_pending_move()
     assert stub_send_input[-1][3:] == (VIRT, VIRT)
 
 
 def test_diag_names_the_subset_mode(state, cfg, stub_send_input, capsys, monkeypatch):
-    monkeypatch.setenv(touch_controller.PEN_MAP_DIAG_ENV, "1")
-    monkeypatch.setattr(touch_controller, "monitor_count", lambda: 2)
+    monkeypatch.setenv(mapping.PEN_MAP_DIAG_ENV, "1")
+    monkeypatch.setattr(mapping, "monitor_count", lambda: 2)
     state.pen_product_id = 791
     capsys.readouterr()
     _map(state, cfg, 0, 0, stub_send_input, screens=[DISP1])

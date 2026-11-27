@@ -9,7 +9,8 @@ import types
 import pytest
 
 import gui
-from touch_controller import DriverConfig
+from wtd.config import DriverConfig
+from wtd import config as wtd_config
 
 OPTIONS = ["left_click", "right_click", "middle_click", "task_view"]
 

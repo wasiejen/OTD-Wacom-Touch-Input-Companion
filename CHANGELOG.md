@@ -1,8 +1,460 @@
 # Changelog
 
-All notable changes are documented here. Entries are development timestamps
-(`YYMMDD-HHMM`, newest first), kept verbatim from the work log. Release tags
-on GitHub mark shipped states — `v0.2.2` is the latest release.
+Release sections collect the user-facing changes per version (newest
+first). The development log below keeps the work-log entries verbatim
+(`YYMMDD-HHMM`, newest first). Release tags on GitHub mark shipped
+states: `v0.3.0` is the latest tag, `v0.4.0` is synced on `main`, and
+`v0.5.0` ships with the next tag.
+
+## [Unreleased]
+
+Assignable actions:
+
+- Clipboard and session keys are now selectable in the gesture, pen-button and
+  tablet-button dropdowns: `copy`, `cut`, `paste`, `lock_workstation` and
+  `escape`. Map them to a gesture, a pen button or a tablet button - they tap
+  Ctrl+C, Ctrl+X, Ctrl+V or Esc on the press edge, and `lock_workstation` locks
+  your signed-in session with the same Windows call the Start-menu Lock entry
+  uses.
+
+Per-device settings robustness:
+
+- One bad value in a device's settings no longer throws away that device's
+  whole override: the valid sections still apply, only the section holding
+  the bad value is skipped - and the error now names the section, the key,
+  and the line in the saved file - whenever that key actually sits in the
+  device's saved block (in-memory-only values honestly say 'item N').
+
+System tray and touch on/off (BEHAVIOR CHANGE - this changes a habit):
+
+- The tray's stop switch no longer stops the whole tablet: it stops TOUCH
+  output only (gestures, touch cursor, touch scroll, the button touch
+  strips). The pen and the tablet buttons keep working while the icon is
+  red - no driver restart needed to reach them again. (Was: any input at
+  all stopped, pen and buttons included.)
+- New assignable action **Touch toggle**: map it to any tablet button to
+  switch touch output on and off without touching the tray at all. The
+  tray icon and the button always show the same state.
+- The tray tooltip now reads **Touch Enabled** / **Touch Disabled - pen
+  and tablet buttons stay live**, so the red icon cannot be mistaken for
+  a dead tablet.
+
+Configuration and command line:
+
+- New start flag `--elevated` (`-elevated`, WTD mirror of the shipped FST
+  `--elevate`; maintainer decision 2026-11-16): a not-elevated run relaunches
+  the same exe through one UAC `runas` prompt, passing every other start
+  argument with the flag stripped (loop guard), and exits 0; an
+  already-elevated run logs one `[Elevation] running elevated` line and
+  starts normally; under python.exe (dev mode) no relaunch is attempted - a
+  hint prints and the run continues. The prompt-free route stays the
+  scheduled task with `/RL HIGHEST` (README, Command line options).
+- Single-instance guard: one WTD instance at a time (maintainer decision
+  2026-11-16 - a double start doubled the input streams). A second start
+  logs one `[SingleInstance] another WTD is already running - exiting`
+  line and exits with code 1 (no traceback). The guard runs after the
+  `--elevated` lane and before the config read, the CLI maintenance
+  lanes, and any device or window init, on a `Global\` named mutex
+  (visible across all sessions, session-0 included); a mutex API failure
+  fails OPEN - a warning names it and the start continues.
+
+Pen cursor responsiveness:
+
+- Smoother cursor under load: when a burst of pen positions arrives at once
+  (for example after the app was busy), WTD now sends the newest position
+  instead of queueing every intermediate point to Windows, so the cursor
+  catches up at a bounded rate and no backlog of stale positions is left to
+  drain. Clicks, presses, and scrolling are unaffected and always land in
+  order at the pen's current position. Advanced users can tune the flush
+  rate with the config key `pen_move_flush_hz` (default 250).
+- The flush rate is now also a GUI field: the Pen tab gained a **Move flush
+  Hz** spinbox (1..2000 Hz - widened from 30..1000 on 2026-11-16 so extreme
+  config values like a slow congestion test stay visible and settable) for
+  `pen_move_flush_hz`. It applies live like the other pen fields and saves
+  with the rest of the settings.
+
+GUI:
+
+- Rotation box: type anything - 370 becomes 10, -10 becomes 350, 360
+  becomes 0 (the box shows the corrected angle when you leave it), and
+  fractions like 10.5 are accepted. No more silent ignore.
+- Settings window opens big: it sizes to the content you showed me
+  (~870x1600) shrunk into your screen's usable work area at your display
+  scaling - at 150% it no longer starts too small to work in, and it is
+  never larger than the work area.
+- Rotation preview and pen mapping verified one-to-one at exact angles
+  (10 deg shows 10 deg, not the nearest 90) and now locked by tests; the
+  exact-angle drawing itself landed 2026-11-11 in this same (untagged)
+  wave - builds installed before that date still show the stepped preview.
+- The pen-area rectangle can hang partly off the screens now: drag it, grow
+  the handle, or type values past a monitor edge and it keeps going - it
+  stops only where your rule says no ("at least one corner of the pen-area
+  rectangle must remain inside the display area"). The preview shows the
+  part outside the monitors; pen travel in that part parks the cursor at the
+  screen edge, which makes the outside usable as a dead zone.
+- The pen-area editor now also shows the real slanted angle: a lighter
+  dashed outline inside the blue frame marks the actual projected shape of
+  the rotated pen box, while the blue frame stays its bounding box. Turn
+  the rotation and the dashed shape turns with it.
+- The pen-area rectangle's bottom edge behaves exactly like its left,
+  right, and top edges: it hangs past the screens too - only the "at least
+  one corner stays on the display" rule decides, on all four sides alike.
+  (This came in with the off-screen rectangle on the 2026-11-16 builds -
+  installs from before that date still stop the bottom edge at the screen;
+  this unit locks the symmetry with tests.)
+- The settings window opens a little smaller: it now fills at most 70 % of
+  the screen's work area (was 90 %), so it no longer dwarfs the desktop on
+  big monitors.
+
+## v0.5.0 - 2026-11-15 (pending release tag)
+
+Reliability:
+
+- Quit no longer leaves keys pressed. The driver waits a bounded moment
+  for its input readers to finish, then force-releases every modifier key
+  or mouse button still held. The stuck-Ctrl-after-quit class of bugs is
+  gone.
+- **Apply Live** survives pause, resume, and reconnect: applied settings
+  are written through to the focused device's stored entry, and each
+  device keeps its own values. Apply still does not write your config
+  file - use **Save to File** for that.
+- One press, one release: concurrent reconnects can no longer release the
+  same held input twice (a per-dispatcher lock guards the held-input
+  registry).
+
+Configuration and command line:
+
+- One config file is picked at start, in this order: the file named by
+  `--config <path>`, else a `user.cfg` that already exists next to the
+  application, else your per-user file `%APPDATA%\wtd\user.cfg` (its
+  folder is created by the first save). Existing portable installs keep
+  working unchanged, and a fresh install needs no setup. Reading a config
+  file at code-import time is gone.
+- One strict command line: a flag the driver does not know stops the
+  start with a `[Start Parameter]` line instead of being skipped silently.
+  All legacy spellings keep working: single-dash options, `=` forms, and
+  the deprecated bare `--save-as <alias>` (it prints a notice naming
+  `--save-device`). `-h` / `--help` prints usage and exits without
+  starting the driver.
+
+Diagnostics:
+
+- Every console line is mirrored to `%APPDATA%\wtd\wtd.log` (UTF-8,
+  rotating at 2 MB with 2 backups), created on first use - a tray start
+  without a console keeps the same grep-able log.
+
+GUI:
+
+- The Focused Device section shows `Device-specific values active:
+  <sections>`: exactly which settings the focused device overrides right
+  now, recomputed on every focus change and apply/save.
+- New `Restore to Defaults` button: clears the focused device's override
+  entry after a confirm dialog naming the sections. The device runs the
+  global values immediately (no restart); pen-area maps and aliases are
+  untouched.
+
+Build and internals:
+
+- Pushing a `v*` tag builds the Windows executable in CI and attaches it
+  to the release.
+- The driver code now lives in a `wtd/` package (`python -m wtd`);
+  behavior and console output are unchanged.
+
+Test suite: 538 -> 656.
+
+## v0.4.0 - November 2026 (synced to `main`; not tagged)
+
+The v0.4.0 wave, since v0.3.0, rebuilt the pen and mapping experience:
+
+- **Tri-modal pen movement.** Three pen modes on the Pen tab: relative
+  (speed control), absolute stretched, and absolute 1:1. The stretched
+  mode reaches every screen on ultrawide and multi-monitor setups, and a
+  per-screen checkbox subset decides which screens the pen reaches.
+- **Pen-area editor with px/mm sensitivity.** A 1:1 pen-area mode maps a
+  drawn or numerically typed rectangle on the tablet surface to the
+  screen union. The canvas editor and numeric rect fields are
+  bidirectional, carry an editable px/mm sensitivity handle, and the
+  mapping answers in DPI-scaled desktop pixel space (the basis is
+  labeled in the panel). The pen area follows orientation changes on
+  Apply and rebind.
+- **Tablet buttons, dial, and touch modifiers.** The tablet buttons and
+  the dial now fire presses and rotation steps, are mappable per control,
+  and each mapped button can hold a touch modifier that temporarily
+  changes touch behavior while pressed.
+- **Wireless size lane.** The wireless receiver cannot report which
+  tablet it is paired to, so the wireless tablet size (small / medium /
+  large) is set explicitly; a loud notice names the three options while
+  unset, and an old renamed setting is migrated with a notice.
+- **Orientation support.** Pen and touch coordinates rotate with the
+  configured tablet orientation; the editor and pen area stay in sync.
+- **Mapping fixes.** Absolute pen mapping is isotropic (equal px/mm on
+  both axes) and centered, and the digitizer extents now use
+  authoritative per-model values; metric-less pen hosts reach the full
+  screen through stretch math instead of clipping.
+- **Redesigned device drawing.** The tablet pictogram in the GUI is
+  redrawn per model and size variant, fits the strip at every rotation
+  angle, and shows the pen area.
+- **Config CLI lanes.** `--list`, `--restore-with <name>`, and
+  `--save-device <alias>` maintenance lanes; the old bare-name `--save-as`
+  alias now prints a deprecation notice naming `--save-device`.
+- **Developer guard.** Running the test suite with a stray `user.cfg` in
+  the repository folder now refuses to collect instead of silently
+  reading it.
+
+## Development log
+
+Development entries, kept verbatim from the work log (`YYMMDD-HHMM`,
+newest first).
+
+261115-0305:
+
+  - DEVICE RESET (estate WTD plan unit D1, ruling R4-a: identity-entry-wins
+    stays the config rule): the Focused Device section gains (a) a one-line
+    hint stating exactly which config sections the focused device overrides
+    right now - `Device-specific values active: <sections>` or `(none)` -
+    computed from the base config on every focus change and Apply/Save
+    route, never remembered; and (b) a `Restore to Defaults` button that,
+    after a confirm dialog NAMING the sections and stating the scope
+    (config values only: pen area maps and aliases untouched; the global
+    file rewritten only at the next Save), removes the focused device's
+    `device_settings[identity]` entry and re-forks the LIVE connection
+    config IN PLACE from the base config - readers and dispatchers keep
+    their object and resolve global values at the next lookup, no restart.
+    Six new headless-window pins (`tests/test_gui_device_reset.py`), incl.
+    cancel-path, multi-device, file-untouched, and pen_area_maps-survives.
+
+261115-0210:
+
+  - NO-CONSOLE LOG SINK (estate WTD follow-up unit R1, finishing review
+    Item 11): the shared `wtd` logger grows a second named sink -
+    `RotatingFileHandler` on `%APPDATA%\wtd\wtd.log` (same per-user folder
+    family as the config lane), UTF-8, 2 MB x 2 backups, formatter unchanged
+    (`%(message)s`) so every file line carries the console text verbatim
+    (hunting contract; line endings follow the channel: LF console,
+    CRLF file - pinned per-line in tests). Folder and file are created on demand at the FIRST
+    emitted line (`delay=True` + lazy parent create); if the folder cannot
+    be created the file sink is skipped and the console stays the channel.
+    `install_sinks()` is idempotent per handler name (GUI + CLI + tray flows
+    never double-attach). Tray-mode (console-less) pinning: the pen_abs_map
+    and metrics hunting lines are read back from the actual file verbatim
+    (`tests/test_log_file_sink.py`). Note: a full pytest run now also writes
+    the real `%APPDATA%\wtd\wtd.log` (rotation caps the size).
+
+261115-0153:
+
+  - PACKAGE SPLIT (estate WTD plan Phase C unit C1, review Item 3 + the
+    remaining halves of Items 9/11): `touch_controller.py` (4013 lines) is
+    split into the `wtd/` package - `config`, `protocol`, `sender`, `mapping`,
+    `gestures`, `devices`, `cli`, `_log`, `__main__`. Move-then-split commit
+    discipline: commit 1 is a pure verbatim move behind a forwarding
+    compatibility shim with the whole untouched suite green; later commits
+    re-point tests, gui, probe, and the build entry, then delete the shim -
+    no `touch_controller` import remains anywhere. Console output is
+    byte-identical: all 65 print sites now flow through the shared `wtd`
+    logger (named handler `wtd_stream`, bare-message formatter, stdout
+    resolved per emit), and the two hunting-contract diagnostic lines are
+    pinned verbatim in `tests/test_diag_string_contract.py`. The last
+    module-global config fallbacks die: `ActionDispatcher(state, cfg)` and
+    `DeviceManagerThread(..., base_config, ...)` are required now. The
+    exe/`-m` entry is `wtd/__main__.py` (spec + bat updated). Suite:
+    640 passed (636 baseline + 4 contract pins), goldens byte-stable.
+
+261115-0043:
+
+  - RELEASE WORKFLOW (estate WTD plan Phase B unit B3, review Item 11 minus the
+    logging half, which moved to C1): `.github/workflows/release.yml` builds the
+    Windows executable on a `v*` tag push - `windows-latest`, Python 3.12,
+    `requirements.txt` plus PyInstaller, then the repo's own
+    `OTD_Wacom_Touch_Driver.spec`, and uploads `dist/OTD_Wacom_Touch_Driver.exe`
+    as a build artifact (`actions/upload-artifact@v4`, failing if the build
+    produced nothing) and attaches it to the tag's release
+    (`softprops/action-gh-release@v2`). CI (`ci.yml`) is untouched. The workflow
+    creates no tag and pushes nothing: it runs on the maintainer's next tag, and
+    tagging stays his action. Because the spec bundles
+    `.venv/Lib/site-packages/hid.cp312-win_amd64.pyd`, the job builds inside a
+    `.venv` it creates, mirroring the local build instead of editing the spec.
+  - DEVELOPMENT SETUP in README: the exact fresh-clone steps to run the suite
+    (venv, `pip install -r requirements.txt`, `pip install pytest`,
+    `python -m pytest tests -q`), the reason the venv and the repo root are
+    required, the `tests/conftest.py` CWD guard, and that the suite is device-free
+    and injects no live input.
+  - Removed the stale root `test/` directory: `git ls-files test/` tracked
+    nothing and the folder held only `__pycache__`, so it was a local artifact of
+    an earlier name. `.gitignore` was not touched (it ignores `/testing`, not
+    `/test`, and `__pycache__` is what kept the folder out of `git status`).
+    Reviewer round (P0=1 P1=1 P2=4, fixed forward): the build spec turned out to
+    be untracked (`.gitignore` lists `*.spec`), so `OTD_Wacom_Touch_Driver.spec`
+    is force-added - without it no fresh checkout can build, and the ignore rule
+    itself stays as it is; the released executable is now named
+    `OTD_Wacom_Touch_Driver_<tag>_win64.exe` like the release page and
+    `built_pyinstaller.bat` advertise; the job installs from the repo's own
+    `requirements-built.txt`, the README uses `requirements-dev.txt` and mentions
+    `ruff`; the workflow says what the two expected pynput ERROR lines are; and
+    the stale `tests/README.md` note about the leftover `test/` dir is retired.
+    Gate: `597 passed, 0 xfailed` (unchanged); both workflow files parse as YAML.
+
+261115-0025:
+
+  - ONE PARSER FOR THE START LINE (estate WTD plan Phase B unit B2, review
+    Item 9 + the C1-enabler half of Item 3): `parse_start_args` (compat folding +
+    one argparse parser) is now the only component that reads start tokens, and
+    `main()` reads its result. The lanes stay as they were (run by default,
+    `--list`, `--restore-with <name>`, `--save-device <alias>`, `--config` /
+    `--save-as`), the flags come from the parsed namespace, and `--save-device`
+    now routes through the one lane decision (it wins over a bare `--save-as`).
+    Compat spellings are kept by folding them through an exact table - single-dash
+    long flags (`-wireless`, `-DEBUG`, `-save-device`), `=` value forms, paired
+    values - while `allow_abbrev` stays off so no new spelling is invented. Two
+    small widenings came with the fold: `-WIRELESS` now counts (the old lowercase
+    test skipped it) and a value glued to a boolean flag (`--debug=x`) still turns
+    the flag on, with one note naming the ignored value. and a value option with no value keeps the legacy note it always
+    printed. What changed on purpose: an unknown start flag is now an ERROR
+    instead of being skipped, so `-wirelessize` no longer turns on wireless mode
+    (the old substring match); `resolve_cli_lanes` and `resolve_config_paths`
+    remain as tuple adapters over the single parser. Two combinations are
+    documented rather than preserved: when both alias spellings appear
+    `--save-device` owns the alias (pre-B2 the later flag won) while the
+    deprecated bare `--save-as` still prints its note, and a repeated `--save-as`
+    keeps only its last value (pre-B2 both took effect). `-h`/`--help` prints the
+    start options and exits instead of being skipped and starting the driver.
+  - No more config fallbacks in the reader lanes: `process_touch_report` and
+    `run_interface` required nothing and silently used the module-level `config`
+    when a caller passed nothing; both now require the caller to name the config
+    it reads. Every spawn site names its config (in the product it already did;
+    the harnesses now do too), so no reader can inherit whatever the import-time
+    global happened to hold.
+  - New pins `tests/test_cli_parser_pins.py`: a 28-row compat matrix asserting
+    every accepted spelling parses to the same effective values through both the
+    namespace and the legacy adapters, the unknown-flag lanes (including
+    `-wirelessize`), the byte-stable `--save-device` deprecation line, and the
+    legacy missing-value notes. RED-before: with the pre-B2 `touch_controller.py`
+    the pin module cannot import the parser surface; with only strictness
+    reverted (`parse_known_args`) exactly the 6 strictness lanes fail while the
+    30 contract lanes stay green.
+    The reviewer round added six more lanes (the alias/path combinations
+    above, the inline boolean values, the help lane, the note order) and a
+    README line on the new strictness.
+    Gate: `597 passed, 0 xfailed` (555 baseline + 42 pins).
+
+261115-0004:
+
+  - CONFIG SEARCH ORDER (estate WTD plan Phase B unit B1, review Item 5,
+    maintainer-approved order): the start now resolves the config file once, in
+    `main()`, through the single lane `resolve_config_paths` - an explicit
+    `--config` first, else `user.cfg` in the current folder ONLY when it exists
+    (an existing portable install keeps reading its own file), else the per-user
+    lane `%APPDATA%\wtd\user.cfg` (new `appdata_config_path()`; on a non-Windows
+    host the same per-user spot comes from the home directory). The folder for
+    the per-user lane is created by the first save instead of failing.
+  - No more file I/O at import: the module-global `config = DriverConfig()`
+    stays a defaults object, and `DriverConfig` only loads when a file is named.
+    The config the driver actually uses is built once in `main()` from the
+    resolved lane. The `tests/conftest.py` CWD guard (TODO #425) stays as the
+    belt-and-braces check, and the suite now also isolates `%APPDATA%` so no
+    test can touch a real profile.
+  - One-time migration notice (`[Config Migration]`): printed at start when the
+    current folder's `user.cfg` was chosen while `%APPDATA%\wtd\user.cfg` also
+    exists with a different modification time - the current folder wins and
+    nothing is moved or copied.
+    New pin module `tests/test_config_path_resolution.py` (7 pins: the order
+    matrix, the profile-lane derivation, first-save folder, the import probe in a
+    subprocess, and the notice's three cases). RED-before: with the pre-B1
+    `touch_controller.py` the module cannot import the new lane symbols; with the
+    B1 seams kept and only the behaviors reverted, exactly the four
+    discriminators fail (fresh-install order, first-save folder, no-I/O-at-import,
+    migration notice) while the two labeled regression guards stay green.
+    Gate: `555 passed, 0 xfailed` (548 baseline + 7 pins).
+
+261114-2347:
+
+  - HELD-INPUT LOCK (estate WTD plan Phase A unit A4, review Item 7 - closes
+    Phase A): each `ActionDispatcher` now owns one `threading.Lock` over its
+    held-input registry - `held_keys` add/discard, the left-hold flag pair, the
+    pressure-held pair, and the drain in `release_held_inputs`. Two callers
+    inside a release at the same moment (an interface thread's own exit lane and
+    the A2 shutdown sweep) can no longer both claim the same held input and
+    inject the key-up twice: the registry is drained under the lock and every
+    injection happens afterwards, in the unchanged order, with the touch-slot
+    modifiers still excluded from the generic pass (U381 behaviour kept). The
+    lock guards bookkeeping only - no injection ever runs under it, and nothing
+    was added to the mapping/decode paths. `TabletState` gained a class docstring
+    stating that its own fields stay deliberately lock-free single-writer, with
+    the exceptions listed.
+    The A1 pin `test_concurrent_reader_exits_release_the_modifier_once` flipped
+    from pinned red to a hard green assertion. RED-before: with
+    `touch_controller.py` at `9c2ea53~1` that one lane fails ("released the held
+    modifier 2 times") while the other nine lifecycle lanes stay green.
+    Gate: pin module `10 passed`, full suite green - every Phase A lifecycle pin
+    is green, no xfail left.
+
+261114-2329:
+
+  - APPLY LIVE DURABILITY (estate WTD plan Phase A unit A3, review Item 2):
+    "Apply Live" now writes the applied settings through to the focused
+    device's entry in the base config (`_write_through_focused_entry`, the same
+    identity-keyed subset the device Save button stores), so a pause, a resume,
+    or a reconnect refork starts from what the user applied instead of from the
+    pre-Apply values. Only the in-memory base config is written: Apply Live
+    stays the non-persisting path, the file still takes the Save button, and the
+    entry is keyed by the connection's identity, so one device's Apply never
+    reaches another. `save_to_focused_device` reuses the new helper (single
+    write path, its messages unchanged). Side effect to know (reviewer note):
+    the global Save button runs the same apply lane, so a Save now also
+    refreshes the focused device's identity entry in memory before writing the
+    file - previously only "Save to device" touched it.
+    The A1 pin `test_apply_live_survives_pause_reconnect` flipped from pinned
+    red to green; the new `test_apply_live_does_not_leak_between_devices` pins
+    the divergence in both directions. RED-before: with `gui.py` at the pre-A3
+    commit both lanes fail (no write-through surface), and with the apply call
+    removed but the helper present the survival lane fails with its own
+    durability message. Gate: pin module `9 passed, 1 xfailed` (only the A4 lane
+    stays pinned red), full suite green.
+
+261114-2312:
+
+  - OWNED SHUTDOWN (estate WTD plan Phase A unit A2, review Item 1): quitting
+    mid-gesture no longer leaves a modifier or the left button pressed.
+    `main()`'s finally now sets `stop_event` and calls the new
+    `shutdown_readers()`, which joins the reader handles the manager already
+    recorded per connection (`DeviceManagerThread.live_reader_threads()`)
+    inside ONE total budget (`SHUTDOWN_JOIN_BUDGET_SECONDS`, 1.0 s), then
+    force-releases every live connection's dispatcher as a last resort.
+    Readers stay daemon threads, so a wedged HID read costs at most the budget
+    and can never hang the exit - the release happens whether the reader
+    returns or not. The tray/GUI quit path flows through the same finally, so
+    both routes get the join and the sweep.
+    Flip proof: the A1 pin `test_shutdown_path_leaves_no_reader_alive_behind_it`
+    went red with the fix stashed and green with it restored; the new
+    `test_shutdown_sweeps_a_wedged_readers_held_input` pins the sweep against a
+    read that never returns and asserts the shutdown stays bounded. Gate:
+    `7 passed, 2 xfailed` in the pin module (only the A3/A4 lanes remain
+    pinned red), full suite green.
+
+261114-2241:
+
+  - LIFECYCLE PINS (estate WTD improvement plan Phase A unit A1, tests only):
+    new `tests/test_lifecycle_pins.py` pins the four lifetime lanes the
+    architecture review found uncovered - held-input release on shutdown
+    within a bounded join window, the shutdown path leaving no reader alive
+    behind it, Apply-Live survival across pause/reconnect, concurrent reader
+    exits on one dispatcher, and the multi-device primary bind. Three lanes
+    stay red on purpose with `pytest.xfail` reasons naming the fix units and
+    carrying the measurement: A2 (main()'s finally leaves both readers
+    running), A3 (the applied value is lost when the respawn forks a fresh
+    config from base), A4 (two exits inside one release window inject the
+    Ctrl-up twice). Every red lane is proven to flip: with one lock around
+    `release_held_inputs` the A4 pin goes green, with `main()`'s finally joining
+    its readers the A2 pin goes green, and with a per-identity config fork kept
+    across the churn the A3 pin goes green (scratch fix probes; a join timeout
+    below the bounded reader park stays red by design). RED control: removing
+    `run_interface`'s `release_held_inputs` call turns four release lanes red,
+    so no pin passes vacuously. Green suite runs: 543 passed, 3 xfailed.
+    `conftest.py` gains `SignalDevice`, a plain fake device that signals its
+    first read and its close with events, so the thread lanes never sleep. Two
+    reviewer fires (P0=0/P1=1/P2=9, then P0=0/P1=3/P2=3) folded in: the A4 seam
+    got its own shorter wait plus a seam arrival count, the reader park is
+    bounded so a joining shutdown path can actually finish, and the named
+    liveness and cleanup gaps are closed.
 
 261114-1755:
 

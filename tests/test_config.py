@@ -5,7 +5,8 @@ Pure JSON handling: tmp_path files only, no device, no GUI.
 
 import json
 
-from touch_controller import DriverConfig, resolve_config_paths
+from wtd.cli import resolve_config_paths
+from wtd.config import DriverConfig
 
 
 def fresh_config(monkeypatch, tmp_path):
@@ -167,7 +168,16 @@ def test_unknown_keys_do_not_create_attributes(monkeypatch, tmp_path):
 
 
 def test_config_option_omitted_keeps_default_lanes(monkeypatch, tmp_path):
+    """No --config plus a config in the folder: both lanes stay user.cfg.
+
+    Search-order step 2 (unit B1 / review Item 5) kept this lane first, so an
+    existing portable install reads exactly what it always read. The per-user
+    fallback and the rest of the matrix are pinned in
+    tests/test_config_path_resolution.py; the file is created here because the
+    lane is now filesystem-aware.
+    """
     monkeypatch.chdir(tmp_path)
+    (tmp_path / "user.cfg").write_text("{}")
     load_path, save_path, notes, other = resolve_config_paths(["-DEBUG"])
 
     assert load_path == "user.cfg"
@@ -228,7 +238,10 @@ def test_config_option_accepts_equals_form_and_flags_missing_value():
     assert save_path == "X.cfg"
     assert other == ["-wireless"]
 
-    load_path, save_path, notes, _ = resolve_config_paths(["--config"])
+    # path_exists stubbed True: this pin owns the flag parser, not the
+    # search-order ladder (the ladder has its own module since unit B1).
+    load_path, save_path, notes, _ = resolve_config_paths(
+        ["--config"], path_exists=lambda path: True, path_mtime=lambda path: 0.0)
     assert load_path == "user.cfg"
     assert save_path == "user.cfg"
     assert len(notes) == 1 and "config" in notes[0]

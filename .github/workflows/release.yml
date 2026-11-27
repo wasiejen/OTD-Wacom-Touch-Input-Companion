@@ -1,0 +1,73 @@
+name: Release build
+
+# Packaging only (estate WTD plan Phase B unit B3 / review Item 11): a version
+# tag builds the Windows executable with this repo's own PyInstaller spec and
+# uploads it as a build artifact plus a release attachment. The workflow never
+# creates or pushes a tag - tagging stays the maintainer's action - so this runs
+# on HIS next tag and changes nothing until then.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# softprops/action-gh-release@v2 needs to create the release object for the tag.
+# If the repository settings ever deny that, delete this step's job permission
+# and the last step: the artifact upload above already carries the executable.
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    # Same reasoning as ci.yml: the product targets Windows HID + tray, and the
+    # spec bundles gui.py with the pystray backend. An ubuntu runner cannot build
+    # or import it.
+    #
+    # Expected, harmless build-log noise: the spec still lists the pynput
+    # hiddenimports, but no product module imports pynput any more, so
+    # PyInstaller prints two "Hidden import 'pynput...' not found" ERROR lines
+    # and still exits 0. The spec stays the maintainer's local build file.
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.12"
+
+      # The spec bundles '.venv/Lib/site-packages/hid.cp312-win_amd64.pyd', the
+      # same local venv path the maintainer builds from, so CI creates that venv
+      # and builds inside it instead of editing the spec. Python 3.12 is what the
+      # cp312 wheel name requires.
+      - name: Create the build venv and install the build requirements
+        shell: bash
+        run: |
+          python -m venv .venv
+          .venv/scripts/python.exe -m pip install --upgrade pip
+          .venv/scripts/python.exe -m pip install -r requirements-built.txt
+
+      - name: Build the executable with the repo spec
+        shell: bash
+        run: .venv/scripts/pyinstaller.exe --noconfirm OTD_Wacom_Touch_Driver.spec
+
+      # Name the executable the way the release page advertises it
+      # (README "Using the portable Executable", and built_pyinstaller.bat copies
+      # to the same OTD_Wacom_Touch_Driver_<version>_win64.exe shape).
+      - name: Name the executable for the release
+        shell: bash
+        run: |
+          cp dist/OTD_Wacom_Touch_Driver.exe \
+             dist/OTD_Wacom_Touch_Driver_${{ github.ref_name }}_win64.exe
+
+      - name: Upload the executable as a build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: OTD_Wacom_Touch_Driver_${{ github.ref_name }}_win64
+          path: dist/OTD_Wacom_Touch_Driver_${{ github.ref_name }}_win64.exe
+          if-no-files-found: error
+
+      - name: Attach the executable to the tag's release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/OTD_Wacom_Touch_Driver_${{ github.ref_name }}_win64.exe

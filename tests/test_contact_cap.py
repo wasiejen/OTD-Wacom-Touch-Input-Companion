@@ -8,15 +8,11 @@ import time
 
 import pytest
 
-import touch_controller
-from touch_controller import (
-    MAX_TOUCH_CONTACTS,
-    ActionDispatcher,
-    TabletState,
-    clamped_contact_index,
-    process_touch_report,
-    run_interface,
-)
+from wtd.config import DriverConfig
+from wtd.devices import run_interface
+from wtd.gestures import (TabletState, clamped_contact_index, process_touch_report)
+from wtd.protocol import MAX_TOUCH_CONTACTS
+from wtd.sender import ActionDispatcher
 
 from conftest import FakeDevice
 
@@ -59,9 +55,9 @@ def test_eleven_contact_report_processes_without_exception(stub_send_input):
     # 5+ contacts drive the mapped gesture lanes (5f_alt_tab -> ctrl+alt+tab),
     # so the dispatcher needs the input stub: record the events, inject none.
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
 
-    process_touch_report(down_report(11), state, ad)
+    process_touch_report(down_report(11), state, ad, DriverConfig())
 
     assert len(state.active_contacts) == 11
     assert state.peak_contact_count == 11
@@ -72,10 +68,10 @@ def test_twelve_contact_report_processes_without_exception(stub_send_input):
     # Same lane as the 11-contact case: the input stub keeps the gesture real
     # in the dispatcher and the events out of the desktop.
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
 
     process_touch_report(touch_report([touch_down_block(i, 50 + i, 60 + i) for i in range(1, 13)]),
-                         state, ad)
+                         state, ad, DriverConfig())
 
     assert len(state.active_contacts) == 12
     assert state.peak_contact_count == 12
@@ -85,10 +81,10 @@ def test_state_still_processes_reports_after_an_over_cap_report(stub_send_input)
     # The release report closes the 5f_alt_tab lane (ctrl_alt_tab_commit), so
     # this case injects on both legs without the input stub in place.
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
 
-    process_touch_report(down_report(11), state, ad)
-    process_touch_report(touch_report([release_block(i) for i in range(1, 12)]), state, ad)
+    process_touch_report(down_report(11), state, ad, DriverConfig())
+    process_touch_report(touch_report([release_block(i) for i in range(1, 12)]), state, ad, DriverConfig())
 
     assert state.active_contacts == {}
     assert state.last_num_active == 0
@@ -96,9 +92,9 @@ def test_state_still_processes_reports_after_an_over_cap_report(stub_send_input)
 
 def test_normal_contact_count_indexes_its_own_cell():
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
 
-    process_touch_report(down_report(2), state, ad)
+    process_touch_report(down_report(2), state, ad, DriverConfig())
 
     assert len(state.active_contacts) == 2
     assert state.start_time[2] is not None
@@ -108,7 +104,7 @@ def test_interface_thread_survives_an_over_cap_report(fake_hid, stub_send_input)
     dev = FakeDevice(reports=[down_report(11)])
     fake_hid._queue.append(dev)
     state = TabletState()
-    ad = ActionDispatcher(state)
+    ad = ActionDispatcher(state, DriverConfig())
 
     enabled = threading.Event()
     enabled.set()
@@ -116,8 +112,9 @@ def test_interface_thread_survives_an_over_cap_report(fake_hid, stub_send_input)
 
     thread = threading.Thread(
         target=run_interface,
-        args=("Touch", {"interface_number": 1, "path": b"fake-path"}, state, ad, enabled, stop),
-        kwargs={"idle_poll": 0.02},
+        args=("Touch", {"interface_number": 1, "path": b"fake-path"}, state, ad, stop),
+        # cfg is required since unit B2 (no module-global fallback).
+        kwargs={"idle_poll": 0.02, "cfg": DriverConfig()},
         daemon=True,
     )
     thread.start()
@@ -130,7 +127,7 @@ def test_interface_thread_survives_an_over_cap_report(fake_hid, stub_send_input)
     assert thread.is_alive(), "the interface thread died on the over-cap report"
     assert state.peak_contact_count == 11
 
-    enabled.clear()
+    stop.set()
     thread.join(timeout=0.5)
     assert not thread.is_alive()
     assert dev.closed is True

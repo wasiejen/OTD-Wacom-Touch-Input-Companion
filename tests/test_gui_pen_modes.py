@@ -17,8 +17,10 @@ import tkinter as tk
 import pytest
 
 import gui
-import touch_controller
-from touch_controller import DriverConfig, TabletState, resolved_pen_mode
+from wtd.config import DriverConfig, resolved_pen_mode
+from wtd.gestures import TabletState
+from wtd.protocol import pen_specs_for_product
+from wtd.protocol import pen_specs_for_product
 
 SCREEN = (0, 0, 3440, 1440)
 DISP1 = "\\\\.\\DISPLAY1|0|0|1920x1080"
@@ -128,15 +130,21 @@ def test_numeric_fields_bidirectional_aspect_locked(modes_cfg, tk_root, monkeypa
     win.rect_entries["x_mm"].insert(0, "254")  # 10 inches
     win._apply_rect_field("x_mm")
     assert model.rect[0] == pytest.approx(254.0 * 96.0 / 25.4)
-    # clamp to the union: past the right edge lands ON the edge
+    # PENAREA re-pin (the retired "clamp to the union" leg): an X entry past
+    # the right edge no longer lands the rect's RIGHT edge on the union edge
+    # - the corner rule clamps the placement to the nearest legal one, so
+    # the rect's LEFT edge rides the union's right edge and the body hangs
+    # off-screen (the field echoes back the clamped value).
     win.rect_entries["x_px"].delete(0, tk.END)
     win.rect_entries["x_px"].insert(0, "99999")
     win._apply_rect_field("x_px")
-    assert model.rect[0] + model.rect[2] == pytest.approx(3440.0)
+    assert model.rect[0] == pytest.approx(3440.0)
+    assert float(win.rect_entries["x_px"].get()) == pytest.approx(3440.0)
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
 
 
 def test_numeric_fields_echo_the_stored_rect_on_open(modes_cfg, tk_root, monkeypatch, tmp_path):
-    from touch_controller import display_key_for_records
+    from wtd.mapping import display_key_for_records
     modes_cfg.set_pen_area_entry("0123456789ab",
                                  display_key_for_records([DISP1, DISP2]),
                                  [DISP1, DISP2],
@@ -362,7 +370,7 @@ def test_apply_writes_the_rect_entry_like_other_settings(modes_cfg, tk_root, mon
 def test_orientation_apply_reorients_editor_box_not_the_footprint(
         modes_cfg, tk_root, monkeypatch, tmp_path):
     # RED-before c8189e8: box stayed the 0-deg layout after applying 90.
-    from touch_controller import pen_specs_for_product, rotated_pen_box_mm
+    from wtd.mapping import rotated_pen_box_mm
     win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
     model = win.pen_area_editor.model
     specs = pen_specs_for_product(791, modes_cfg)
@@ -382,13 +390,17 @@ def test_orientation_apply_reorients_editor_box_not_the_footprint(
     box90 = rotated_pen_box_mm(specs, 90)
     assert model.rect[2] / model.rect[3] == pytest.approx(
         box90[0] / box90[1], rel=1e-6)
-    # (center-keep-with-fit-clamp is pinned exactly in the no-pointer
-    # test at a sensitivity that FITS; here the 0-deg default does not
-    # fit rotated at its s, so the fit-clamp may ride an edge - assert
-    # union-validity instead.)
-    assert model.rect[0] >= 0 and model.rect[1] >= 0
-    assert model.rect[0] + model.rect[2] <= model.desktop_w + 1e-6
-    assert model.rect[1] + model.rect[3] <= model.desktop_h + 1e-6
+    # PENAREA: the retired fit-to-union cap means the sensitivity now rides
+    # the rotation EXACTLY even when the rotated box exceeds the union; the
+    # re-derived placement is validated by the SAME corner-rule clamp every
+    # move lane uses ("at least one corner of the pen-area rectangle must
+    # remain inside the display area"), so rotation can never silently
+    # invalidate the rule. The rect may now hang outside the union instead
+    # of being squeezed onto it.
+    box0 = rotated_pen_box_mm(specs, 0)
+    s0 = footprint_px[2] / box0[0]
+    assert model.rect[2] == pytest.approx(s0 * box90[0], rel=1e-9)
+    assert gui.rect_overlaps_display(model.rect, model.display_bbox())
     # Sensitivity echo follows the new box (w axis).
     assert float(win.rect_entries["s_px"].get()) == pytest.approx(
         model.rect[2] / model.box_mm[0], rel=1e-3)
@@ -399,7 +411,7 @@ def test_orientation_reorients_the_drawn_rect_shape_no_pointer(
     # U424r5 R5-E (#424 item E): SHAPE follows orientation (watch
     # resolved - pen-wins presentation accepted, now the shape pushes).
     # RED-before 3e20f3a: rect aspect stayed 0-deg until a handle grab.
-    from touch_controller import rotated_pen_box_mm
+    from wtd.mapping import rotated_pen_box_mm
     win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
     model = win.pen_area_editor.model
     model.apply_scale(2.0)  # a sensitivity that FITS both orientations
@@ -424,7 +436,7 @@ def test_orientation_apply_then_reload_keeps_the_new_shape(
     # Apply Live persists the re-derived shape; a fresh window (reload)
     # shows the same shape - and a legacy mismatched stored rect is
     # re-derived at BUILD time too (canvas-only until next Apply).
-    from touch_controller import display_key_for_records, rotated_pen_box_mm
+    from wtd.mapping import display_key_for_records, rotated_pen_box_mm
     modes_cfg.set_pen_area_entry(
         "0123456789ab", display_key_for_records([DISP1, DISP2]),
         [DISP1, DISP2],
@@ -444,12 +456,12 @@ def test_orientation_apply_then_reload_keeps_the_new_shape(
 
 
 def pen_specs_for(product_id, cfg):
-    from touch_controller import pen_specs_for_product
+    from wtd.protocol import pen_specs_for_product
     return pen_specs_for_product(product_id, cfg)
 
 
 def test_editor_built_after_orientation_shows_rotated_box(modes_cfg, tk_root, monkeypatch, tmp_path):
-    from touch_controller import pen_specs_for_product, rotated_pen_box_mm
+    from wtd.mapping import rotated_pen_box_mm
     modes_cfg.orientation_degrees = 180
     win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
     specs = pen_specs_for_product(791, modes_cfg)
@@ -555,3 +567,27 @@ def test_virtual_desktop_dpi_helper_returns_positive_pair(modes_cfg):
     dpi = gui.virtual_desktop_dpi()
     assert isinstance(dpi, tuple) and len(dpi) == 2
     assert all(isinstance(v, float) and v > 0 for v in dpi)
+
+
+# --- F1 (2026-11-16): the rotation entry DISPLAYS the normalized angle -----
+
+
+def test_orientation_field_displays_the_wrapped_angle(modes_cfg, tk_root,
+                                                      monkeypatch, tmp_path):
+    # No silent ignore: focus-out rewrites 370 -> 10, -10 -> 350, 360 -> 0
+    # and keeps fractions; invalid text stays for Apply to refuse.
+    win = make_window(tk_root, modes_cfg, monkeypatch, tmp_path)
+    entry = win.entries["orientation_degrees"]
+    for typed, shown in (("370", "10"), ("-10", "350"), ("360", "0"),
+                         ("90.5", "90.5"), ("725", "5")):
+        entry.delete(0, tk.END)
+        entry.insert(0, typed)
+        win._normalize_orientation_entry()
+        assert entry.get() == shown, typed
+    entry.delete(0, tk.END)
+    entry.insert(0, "abc")
+    win._normalize_orientation_entry()
+    assert entry.get() == "abc"
+    # The handler must stay wired to focus-out (reviewer P2: the behavior
+    # pin above calls the method directly).
+    assert entry.bind("<FocusOut>")

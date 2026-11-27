@@ -1,3 +1,6 @@
+import ctypes
+import ctypes.wintypes
+import math
 import sys
 import threading
 import tkinter as tk
@@ -6,28 +9,11 @@ from PIL import Image, ImageDraw, ImageFont
 import pystray
 from pystray import MenuItem as item
 
-from touch_controller import (
-    ORIENTATION_MAX_DEGREES,
-    TOUCH_ACTION_CHOICES,
-    WIRELESS_RECEIVER_PRODUCT_ID,
-    WIRELESS_TABLET_SIZES,
-    display_key_for_records,
-    monitor_records,
-    pen_area_rect_aspect_lock,
-    pen_mm_per_px,
-    pen_specs_for_product,
-    resolved_pen_mode,
-    reset_pen_area_key_cache,
-    rotate_point,
-    rotated_pen_box_mm,
-    select_pen_area_entry,
-    snapshot_device_sections,
-    union_rect_from_records,
-    virtual_desktop_dpi,
-    virtual_desktop_metrics,
-    PEN_MODES,
-    PEN_SPECS_BY_PRODUCT,
-)
+from wtd.config import (DEVICE_SECTION_KEYS, TOUCH_ACTION_CHOICES, WIRELESS_RECEIVER_PRODUCT_ID, WIRELESS_TABLET_SIZES, resolved_pen_mode, snapshot_device_sections, union_rect_from_records, PEN_MODES)
+from wtd.mapping import (display_key_for_records, monitor_records, pen_area_rect_aspect_lock, pen_mm_per_px, pen_rotation_center, reset_pen_area_key_cache, rotate_point, rotated_pen_box_mm, rotated_pen_extents, select_pen_area_entry, virtual_desktop_dpi, virtual_desktop_metrics)
+from wtd.protocol import (pen_specs_for_product, PEN_SPECS_BY_PRODUCT)
+from wtd._log import logger as _log
+from wtd import config
 
 # Wireless tablet size GUI lane (U386 / TODO #385). The combo offers the
 # explicit unset label plus the tablet-size vocabulary; the notice text is
@@ -218,12 +204,19 @@ def resolve_action_mapping(display, saved_action, options):
 
 
 def parse_numeric_values(values):
-    """Validate raw settings-entry strings and return them as floats.
+    """Coerce raw settings-entry strings to floats, rejecting non-numeric text.
 
-    Raises ValueError naming the offending key. Nothing is mutated here.
+    #471 (2026-11-25): empty or whitespace-only entry text means the field is
+    UNCHANGED - it is skipped, so the stored config value stays (the same
+    keep-the-stored-value lane as the _KEEP_WIRELESS_SIZE combo; the entries
+    are initialized FROM the config, so cleared text is a lost edit, never a
+    user-chosen value). Non-empty invalid text still raises ValueError naming
+    the offending key. Nothing is mutated here.
     """
     parsed = {}
     for key, raw in values.items():
+        if isinstance(raw, str) and not raw.strip():
+            continue
         try:
             parsed[key] = float(raw)
         except (TypeError, ValueError):
@@ -231,7 +224,8 @@ def parse_numeric_values(values):
     return parsed
 
 
-# Device orientation (U74 c): direct numeric entry in 1° steps plus presets.
+# Device orientation (U74 c): direct numeric entry (any angle - the entry
+# wraps by 360 and accepts fractions) plus preset shortcuts.
 ORIENTATION_PRESETS = (0, 90, 180, 270)
 # Generalized tablet aspect for the pictogram (PTH-651 digitizer, mm).
 PICTOGRAM_WIDTH = 223.52
@@ -260,14 +254,45 @@ TABLET_DRAWINGS = {
 
 
 def parse_orientation_degrees(raw):
-    """Whole degrees 0..359 from an entry string; None when invalid."""
+    """Entry string to an angle in [0, 360), fractions kept (F1 2026-11-16).
+
+    Anything numeric wraps by modulo 360 (-10 -> 350, 370 -> 10, 360 -> 0),
+    so the field can never hold an angle the rotation matrix would ignore.
+    Whole numbers stay ints, fractions stay floats; non-numeric or
+    non-finite input returns None (the existing refuse style).
+    """
     try:
         degrees = float(raw)
     except (TypeError, ValueError):
         return None
-    if degrees != int(degrees) or not 0 <= degrees <= ORIENTATION_MAX_DEGREES:
+    if not math.isfinite(degrees):
         return None
-    return int(degrees)
+    degrees %= 360.0
+    return int(degrees) if degrees.is_integer() else degrees
+
+
+# Pen move flush cap (the existing config knob `pen_move_flush_hz`, default
+# PEN_MOVE_FLUSH_HZ_DEFAULT = 250 Hz): GUI bounds for the Pen-tab spinbox.
+# GUI-B B4 / decision 8=a (maintainer 2026-11-16): widened from 30..1000 to
+# 1..2000 in the validator's direction, so extreme test values (e.g. a
+# sub-30 Hz congestion experiment) stay reachable in the GUI too; the
+# config-file validator keeps its own refuse-only-above-0 rule
+# (wtd/config.py). Out-of-range, zero, and negative entries are still
+# rejected consistently (the spinbox arrow range mirrors
+# parse_move_flush_hz, the Apply Live check). Fractional Hz stay legal.
+MOVE_FLUSH_HZ_MIN = 1
+MOVE_FLUSH_HZ_MAX = 2000
+
+
+def parse_move_flush_hz(raw):
+    """Float Hz inside MOVE_FLUSH_HZ_MIN..MOVE_FLUSH_HZ_MAX; None when invalid."""
+    try:
+        hz = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if not MOVE_FLUSH_HZ_MIN <= hz <= MOVE_FLUSH_HZ_MAX:
+        return None
+    return hz
 
 
 def _drawing_layout_rects(width, height, digitizer):
@@ -476,6 +501,111 @@ def _screen_label(record):
         return record
 
 
+# PENAREA (maintainer-requested 2026-11-16): the editor rect may extend
+# PARTLY outside the combined display area. The old clamp (rect inside the
+# display bbox) is retired. The PENAREA corner rule ("at least one corner
+# of the pen-area rectangle must remain inside the display area") is
+# SUPERSEDED by u467/#467: per corner it is the UNION of four origin
+# regions, disconnected on one axis once the rect is longer than the
+# display on that axis - the gap made slow drags pin a corner ON the edge
+# (uncrossable) and only fast jumps crossed, exactly the maintainer's
+# rotation 45/90 report. Current rule: the rect must INTERSECT the display
+# area (closed edges). For a rect that fits the display the two rules are
+# the identical interval, so the proven-good 0 deg behavior is preserved;
+# an oversized rect may cover the display (every corner outside, the whole
+# screen still mapped) instead of sticking at one edge.
+VIEW_MARGIN = 0.15  # fraction of the desktop dims added per viewport side
+# PENAREA: the placement rule (#467) binds the PLACEMENT, not the size, so the editor
+# keeps an arithmetic bound of its own - a wanted size beyond
+# MAX_SIZE_FACTOR x the larger desktop dim (or non-finite) floors/caps
+# instead of propagating: the retired inside-union cap used to hide these
+# inputs, and an unbounded size reaches the normalized 0..65535 pen math and
+# overflows it. 10x the desktop is far above any real pen area.
+MAX_SIZE_FACTOR = 10.0
+
+
+def rect_overlaps_display(rect, bbox):
+    """True when the rect intersects the display bbox (closed edges).
+
+    The bbox is [x, y, w, h]. Placement rule (#467, superseding the PENAREA
+    corner rule): the pen-area rect must keep touching the display area,
+    touching an edge counts. Per axis the legal origins form ONE interval
+    (the rect's edges straddle the display's), so unlike the retired corner
+    rule this set is connected for EVERY size - that is what makes slow and
+    fast drags land identically. For a rect no longer than the display on
+    both axes this is value-for-value the retired corner rule (the two
+    corner origin-regions join into exactly this interval), which is why
+    the 0 deg pins never move.
+    """
+    rx, ry, rw, rh = rect
+    bx, by, bw, bh = bbox
+    return (bx <= rx + rw and rx <= bx + bw
+            and by <= ry + rh and ry <= by + bh)
+
+
+def clamp_rect_to_display(rect, bbox):
+    """Translate a whole rect to the nearest placement that obeys the rule.
+
+    Pure (rect + bbox -> allowed rect), no tkinter. Placement rule (#467):
+    the rect must intersect the display area (closed edges); the size is
+    untouched, so the function is total. The legal origins are the interval
+    product [bx - rw, bx + bw] x [by - rh, by + bh]; the nearest placement
+    is the per-axis clamp onto it (smallest whole-rect displacement). The
+    retired corner-rule clamp projected onto the union of four per-corner
+    regions - disconnected once the rect is longer than the display on an
+    axis, so its projection pinned slow drags at the gap's near edge while
+    fast jumps crossed (the #467 rotation report). The move lanes run every
+    candidate through here: an overshooting drag stops with the rect's edge
+    riding the display edge instead of escaping it (no popup); an oversized
+    rect that covers the display stands where it is.
+    """
+    rx, ry, rw, rh = rect
+    bx, by, bw, bh = bbox
+    if bw <= 0 or bh <= 0:
+        return [float(rx), float(ry), float(rw), float(rh)]
+    rx = min(max(rx, bx - rw), bx + bw)
+    ry = min(max(ry, by - rh), by + bh)
+    return [rx, ry, rw, rh]
+
+
+def projection_overlay_corners(rect, degrees, pen_specs):
+    """GUI-B B1: the rotated projection footprint inside the blue bbox.
+
+    The editor's blue rect is the axis-aligned BOUNDING BOX of the pen
+    projection (its size follows the rotated mm box; it is never drawn
+    rotated). This returns the ACTUAL footprint: the four device-box
+    corners run through the SAME two steps a pen cursor takes in
+    wtd.mapping.update_pen_cursor - rotation about `pen_rotation_center`
+    by `degrees` via `rotate_point` (the one sin/cos matrix shared by both
+    input paths; y down, positive angle clockwise on screen), then the
+    per-axis affine that maps `rotated_pen_extents` onto the rect (the
+    rect-space form of `pen_area_norm_projection`: off + (q - left) *
+    rw / extent_w). Every overlay corner is exactly where that device
+    corner sends the cursor - the footprint BY CONSTRUCTION, hence always
+    INSIDE the blue bbox, touching its edges where the rotated device box
+    touches the extents box (the reviewer P1 over the first draft, which
+    rotated the bbox itself - a circumscribed box, not the footprint).
+    Returned in CYCLIC order (TL, TR, BR, BL) for the polygon lane
+    (a row-major corner order would draw a bowtie - reviewer P1).
+    Anchor: `pen_rotation_center` projects to the center of the extents
+    box, which the affine carries to the rect center (pinned in
+    test_gui_b_rotation_anchor_maps_to_the_rect_center). Uniform-density
+    digitizers (every shipped PEN_SPECS row is exactly 200 counts/mm on
+    both axes - pinned in
+    test_gui_b_shipped_specs_are_uniform_density) keep the affine
+    isotropic, so the footprint is a true rectangle.
+    """
+    left, top, ext_w, ext_h = rotated_pen_extents(pen_specs, degrees)
+    cx, cy = pen_rotation_center(pen_specs)
+    rx, ry, rw, rh = rect
+    sx, sy = rw / ext_w, rh / ext_h
+    mx, my = float(pen_specs["max_x"]), float(pen_specs["max_y"])
+    rotated = [rotate_point(x, y, degrees, cx, cy)
+               for x, y in ((0.0, 0.0), (mx, 0.0), (mx, my), (0.0, my))]
+    return [(rx + (x - left) * sx, ry + (y - top) * sy)
+            for x, y in rotated]
+
+
 class PenAreaCanvasModel:
     """Pure model behind the pen-area rect editor (U414 / #406 option A).
 
@@ -496,21 +626,89 @@ class PenAreaCanvasModel:
         self.records = [str(rec) for rec in records]
         self.box_mm = (float(box_mm_w), float(box_mm_h))
         self.canvas_w, self.canvas_h = float(canvas_w), float(canvas_h)
-        self.scale = min(canvas_w / self.desktop_w, canvas_h / self.desktop_h)
-        # U424r4 R4-A (#424 item A): the drawn screen union is CENTERED
-        # in the canvas - slack lives as equal margins, not as dead area
-        # on one side. Every canvas-space conversion adds the offsets;
-        # drag deltas are offset-free, so the datum stays the desktop
-        # origin.
-        self.offset_x = (self.canvas_w - self.desktop_w * self.scale) / 2.0
-        self.offset_y = (self.canvas_h - self.desktop_h * self.scale) / 2.0
         if rect_px is None:
             start_w = min(self.desktop_w * 2.0 / 3.0,
                           self.desktop_h * self.box_mm[0] / self.box_mm[1])
-            self.rect = [float(v) for v in pen_area_rect_aspect_lock(
+            rect = [float(v) for v in pen_area_rect_aspect_lock(
                 [0, 0, start_w, 0], self.box_mm[0], self.box_mm[1])]
         else:
-            self.rect = [float(v) for v in rect_px]
+            rect = [float(v) for v in rect_px]
+        # PENAREA: a stored or hand-edited entry that leaves NO overlap
+        # with the display area (the rule has no size cap, only a placement
+        # rule - #467) snaps back to the nearest rule-valid placement at build.
+        self.rect = clamp_rect_to_display(rect, self.display_bbox())
+        # U424r4 R4-A (#424 item A) generalized by PENAREA: the CANVAS
+        # VIEWPORT is the display bbox plus a margin (extended to the rect
+        # when it hangs outside), centered in the canvas with equal margins,
+        # so an off-screen rect part stays visible and grabbable.
+        self._set_view()
+
+    def _set_view(self):
+        """Derive the viewport (and the scale/offsets) from the CURRENT rect.
+
+        Called at build and by `retarget_view` only - NEVER while a drag is
+        in progress, so the scale cannot fight the pointer (the U424 L3
+        jitter rule: no transform change between press and release).
+        """
+        pad_x = self.desktop_w * VIEW_MARGIN
+        pad_y = self.desktop_h * VIEW_MARGIN
+        self.view_x0 = min(0.0, self.rect[0]) - pad_x
+        self.view_y0 = min(0.0, self.rect[1]) - pad_y
+        self.view_w = (max(self.desktop_w, self.rect[0] + self.rect[2])
+                       + pad_x - self.view_x0)
+        self.view_h = (max(self.desktop_h, self.rect[1] + self.rect[3])
+                       + pad_y - self.view_y0)
+        self.scale = min(self.canvas_w / self.view_w, self.canvas_h / self.view_h)
+        self.offset_x = (self.canvas_w - self.view_w * self.scale) / 2.0
+        self.offset_y = (self.canvas_h - self.view_h * self.scale) / 2.0
+
+    def retarget_view(self):
+        """Refit the viewport to the current rect (PENAREA, reviewer P1).
+
+        The placement rule legally parks the rect far enough out that its
+        lower-right handle leaves the fixed-size canvas, which would strand
+        the resize lane. The editor therefore calls this at the END of each
+        interaction (drag release, field apply, reorient): the view refits
+        so the whole rect and its handle are visible again. The rect datum
+        (desktop px from the virtual-desktop origin) is untouched, so the
+        persisted fractions cannot move.
+        """
+        self._set_view()
+
+    def display_bbox(self):
+        """The combined display area in the model datum (desktop px)."""
+        return (0.0, 0.0, self.desktop_w, self.desktop_h)
+
+    def canvas_xy(self, x, y):
+        """Desktop-px (origin-relative) -> canvas px (viewport, centered)."""
+        return ((x - self.view_x0) * self.scale + self.offset_x,
+                (y - self.view_y0) * self.scale + self.offset_y)
+
+    def desktop_xy_from_canvas(self, canvas_x, canvas_y):
+        """Canvas px -> desktop-px (origin-relative); the inverse of canvas_xy."""
+        return ((canvas_x - self.offset_x) / self.scale + self.view_x0,
+                (canvas_y - self.offset_y) / self.scale + self.view_y0)
+
+    def _bounded_size(self, value):
+        """Floor/cap a wanted rect size into the editor's arithmetic bound.
+
+        PENAREA (reviewer P2): with the inside-union size cap retired, a
+        non-finite or absurd field entry would propagate an infinite height
+        into `persist_entry` (Apply Live raised) and into the normalized pen
+        mapping (OverflowError). Non-finite floors to MIN_RECT_PX, a huge
+        size caps at MAX_SIZE_FACTOR x the larger desktop dim; both echo
+        back through the field sync, so the control agrees with the model.
+        """
+        try:
+            wanted = float(value)
+        except (TypeError, ValueError):
+            return self.MIN_RECT_PX
+        if wanted != wanted:  # NaN floors (+inf caps via min, -inf floors)
+            return self.MIN_RECT_PX
+        if wanted < self.MIN_RECT_PX:
+            return self.MIN_RECT_PX
+        return min(wanted, MAX_SIZE_FACTOR * max(self.desktop_w,
+                                                 self.desktop_h))
 
     @staticmethod
     def parse_record(record):
@@ -522,42 +720,54 @@ class PenAreaCanvasModel:
     def apply_fields(self, x=None, y=None, w=None):
         """Set the rect from the numeric fields (U424 / #424 ruling 2).
 
-        Width aspect-locks the height to the rotated digitizer box; every
-        value is clamped INSIDE the display union (the model bounds).
-        Returns the new rect [rx, ry, rw, rh] in px.
+        Width aspect-locks the height to the rotated digitizer box (PENAREA:
+        no display-bbox size cap - the rect may extend beyond the screens).
+        A size at a placement that would leave NO overlap with the display
+        area is rejected (the previous size stands, so the field echoes it
+        back); a position that breaks the #467 placement rule clamps to the
+        nearest rule-valid placement. Returns the new rect [rx, ry, rw, rh].
         """
         rx, ry, rw, rh = self.rect
+        bbox = self.display_bbox()
         if w is not None:
-            rw = min(max(float(w), self.MIN_RECT_PX), self.desktop_w)
-            rh = min(rw * self.box_mm[1] / self.box_mm[0], self.desktop_h)
+            wanted_w = self._bounded_size(w)
+            candidate = [rx, ry, wanted_w,
+                         wanted_w * self.box_mm[1] / self.box_mm[0]]
+            if rect_overlaps_display(candidate, bbox):
+                rx, ry, rw, rh = candidate
         if x is not None:
-            rx = min(max(float(x), 0.0), self.desktop_w - rw)
+            rx = float(x)
         if y is not None:
-            ry = min(max(float(y), 0.0), self.desktop_h - rh)
-        self.rect = [rx, ry, rw, rh]
+            ry = float(y)
+        self.rect = clamp_rect_to_display([rx, ry, rw, rh], bbox)
         return list(self.rect)
 
     def apply_scale(self, px_mm):
         """Resize the footprint to the wanted sensitivity px/mm, keeping its
         CENTER (U424r3 R3-L3, #424 item 3b; protocol DECISION: s is the
         derived handle s = rw_px / box_mm_w - aspect-lock makes one scalar
-        suffice; footprint semantics and the pen math are unchanged)."""
+        suffice; footprint semantics and the pen math are unchanged).
+
+        PENAREA: no display-bbox size cap. #467: a huge centered
+        sensitivity COVERS the display and stands (the center promise holds
+        exactly); only a placement that left the display entirely slides to
+        the nearest rule-valid overlap.
+        """
         cx = self.rect[0] + self.rect[2] / 2
         cy = self.rect[1] + self.rect[3] / 2
-        w = min(max(float(px_mm) * self.box_mm[0], self.MIN_RECT_PX),
-                self.desktop_w)
-        h = min(w * self.box_mm[1] / self.box_mm[0], self.desktop_h)
-        rx = min(max(cx - w / 2.0, 0.0), self.desktop_w - w)
-        ry = min(max(cy - h / 2.0, 0.0), self.desktop_h - h)
-        self.rect = [rx, ry, w, h]
+        w = self._bounded_size(float(px_mm) * self.box_mm[0])
+        h = w * self.box_mm[1] / self.box_mm[0]
+        self.rect = clamp_rect_to_display([cx - w / 2.0, cy - h / 2.0, w, h],
+                                          self.display_bbox())
         return list(self.rect)
 
     def match_box_aspect(self, s=None):
         """Re-derive the rect shape to the current box aspect (U424r5
         R5-E / #424 item E, watch resolved: the SHAPE follows
-        orientation). Rule: keep the CENTER and the SENSITIVITY s
-        (new w = s x new box_w, height follows the new aspect), clamp
-        inside the union. No-op (tolerance 1e-6 rel) when the rect
+        orientation). Rule: keep the CENTER and the SENSITIVITY s (new w = s
+        x new box_w, height follows the new aspect), then validate the
+        placement with the placement-rule clamp (PENAREA/#467). No-op (tolerance
+        1e-6 rel) when the rect
         already matches, so normal loads never move the stored rect.
         `s` = the sensitivity of the PREVIOUS box (callers that swap
         box_mm first pass it explicitly; None = derive from the model's
@@ -575,16 +785,17 @@ class PenAreaCanvasModel:
         cy = self.rect[1] + self.rect[3] / 2.0
         w = s * bw
         h = w * bh / bw
-        # U424r5 R5-E: when the sensitivity-exact box does not FIT the
-        # union (a 90-deg tall box on a wide desktop), fit it back down
-        # with the ASPECT kept (s lowers) - the shape must always agree
-        # with the box, never clamp into a wrong aspect.
-        fit = min(1.0, self.desktop_w / w, self.desktop_h / h)
-        w *= fit
-        h *= fit
-        rx = min(max(cx - w / 2.0, 0.0), self.desktop_w - w)
-        ry = min(max(cy - h / 2.0, 0.0), self.desktop_h - h)
-        self.rect = [rx, ry, w, h]
+        # U424r5 R5-E stays: the shape must always agree with the box,
+        # never clamp into a wrong aspect. PENAREA retires the fit-to-union
+        # size cap (the rect may extend beyond the screens now), so the
+        # sensitivity rides across the rotation EXACTLY even when the rotated
+        # box exceeds the display bbox; the #467 placement rule then
+        # validates the placement with the same clamp every move lane uses
+        # (rotation can therefore never silently invalidate the rule, and
+        # with a connected legal set it can no longer snap the center per
+        # park position either - the #467 report).
+        self.rect = clamp_rect_to_display([cx - w / 2.0, cy - h / 2.0, w, h],
+                                          self.display_bbox())
         return list(self.rect)
 
     def monitor_canvas_rects(self):
@@ -595,55 +806,67 @@ class PenAreaCanvasModel:
         desktop rectangle instead of staying black.
         """
         if not self.records:
-            return [(self.offset_x, self.offset_y,
-                     self.offset_x + self.desktop_w * self.scale,
-                     self.offset_y + self.desktop_h * self.scale)]
+            x0, y0 = self.canvas_xy(0.0, 0.0)
+            x1, y1 = self.canvas_xy(self.desktop_w, self.desktop_h)
+            return [(x0, y0, x1, y1)]
         boxes = []
         for record in self.records:
             left, top, width, height = self.parse_record(record)
-            x0 = (left - self.origin_x) * self.scale + self.offset_x
-            y0 = (top - self.origin_y) * self.scale + self.offset_y
-            boxes.append((x0, y0, x0 + width * self.scale, y0 + height * self.scale))
+            x0, y0 = self.canvas_xy(left - self.origin_x, top - self.origin_y)
+            x1, y1 = self.canvas_xy(left - self.origin_x + width,
+                                    top - self.origin_y + height)
+            boxes.append((x0, y0, x1, y1))
         return boxes
 
     def rect_canvas(self):
-        """The rect in canvas px (origin-relative datum times the view
-        scale, plus the centering offset - U424r4 R4-A)."""
+        """The rect in canvas px (origin-relative datum through the view
+        transform - U424r4 R4-A, PENAREA viewport)."""
         rx, ry, rw, rh = self.rect
-        s = self.scale
-        ox, oy = self.offset_x, self.offset_y
-        return (rx * s + ox, ry * s + oy,
-                (rx + rw) * s + ox, (ry + rh) * s + oy)
+        x0, y0 = self.canvas_xy(rx, ry)
+        x1, y1 = self.canvas_xy(rx + rw, ry + rh)
+        return (x0, y0, x1, y1)
 
     def handle_canvas(self):
         """Lower-right corner handle position in canvas px."""
         rx, ry, rw, rh = self.rect
-        return ((rx + rw) * self.scale + self.offset_x,
-                (ry + rh) * self.scale + self.offset_y)
+        return self.canvas_xy(rx + rw, ry + rh)
 
     def move_by(self, delta_canvas_x, delta_canvas_y):
-        """Drag the whole rect by a canvas-px delta; clamp inside the desktop."""
+        """Drag the whole rect by a canvas-px delta (PENAREA).
+
+        The old clamp kept the whole rect inside the desktop bbox - that
+        "ok for now" expired. Now only the placement rule applies (the rect
+        must keep intersecting the display area - PENAREA corner rule as
+        superseded by #467), so a drag may take the rect partly off-screen;
+        an update that would leave NO overlap clamps to the nearest
+        rule-valid placement (the rect simply stops, no popup).
+        """
         rx, ry, rw, rh = self.rect
-        self.rect[0] = min(max(rx + delta_canvas_x / self.scale, 0.0),
-                           self.desktop_w - rw)
-        self.rect[1] = min(max(ry + delta_canvas_y / self.scale, 0.0),
-                           self.desktop_h - rh)
+        self.rect = clamp_rect_to_display(
+            [rx + delta_canvas_x / self.scale,
+             ry + delta_canvas_y / self.scale, rw, rh], self.display_bbox())
 
     def resize_handle_to(self, handle_canvas_x, handle_canvas_y):
         """Move the lower-right handle to a canvas point; aspect stays locked.
 
-        Width follows the drag; rh is re-derived from the rotated mm box
-        (`pen_area_rect_aspect_lock`), and the width shrinks first when the
-        clamped axis would leave the desktop, so the aspect never breaks.
+        Width follows the drag (PENAREA: no display-bbox cap, so the rect may
+        grow past the screens); rh is re-derived from the rotated mm box
+        (`pen_area_rect_aspect_lock`), so the aspect never breaks. The
+        placement rule still decides: a wanted size at a placement that would
+        leave NO overlap with the display area is rejected - the handle
+        simply stops at the last valid size (no popup). With the #467 rule
+        the rejection can no longer depend on which corner happens to be the
+        only anchor inside (that position-dependence was the report).
         """
         rx, ry = self.rect[0], self.rect[1]
-        wanted = (handle_canvas_x - self.offset_x) / self.scale - rx
-        max_w = min(self.desktop_w - rx,
-                    (self.desktop_h - ry) * self.box_mm[0] / self.box_mm[1])
+        handle_x, _ = self.desktop_xy_from_canvas(handle_canvas_x,
+                                                  handle_canvas_y)
+        wanted = handle_x - rx
         locked = pen_area_rect_aspect_lock(
-            [rx, ry, int(max(min(wanted, max_w), self.MIN_RECT_PX)), 0],
+            [rx, ry, int(self._bounded_size(wanted)), 0],
             self.box_mm[0], self.box_mm[1])
-        self.rect = [float(v) for v in locked]
+        if rect_overlaps_display(locked, self.display_bbox()):
+            self.rect = [float(v) for v in locked]
 
     def readout(self):
         """Live mm/px readout line for the editor label."""
@@ -697,6 +920,11 @@ class PenAreaEditor(ttk.Frame):
         product_id = conn.get("product_id")
         specs = pen_specs_for_product(product_id, config)
         box_mm = rotated_pen_box_mm(specs, config.orientation_degrees)
+        # GUI-B B1: the rotated projection overlay follows the SAME angle
+        # the pen path rotates by (reorient keeps it current), and the
+        # SAME device extents the cursor math rotates (reviewer P1).
+        self.orientation_degrees = config.orientation_degrees
+        self.pen_specs = specs
         bounds = None
         usable_records = []
         if metrics is not None and metrics[2] > 0 and metrics[3] > 0:
@@ -737,6 +965,10 @@ class PenAreaEditor(ttk.Frame):
         self._drag_mode = "rect"
         self.canvas.bind("<ButtonPress-1>", self._press)
         self.canvas.bind("<B1-Motion>", self._motion)
+        # PENAREA (reviewer P1): the viewport refits when the button lets go
+        # (never mid-drag), so a rect parked at the placement-rule limit keeps
+        # its handle inside the canvas and the resize lane reachable.
+        self.canvas.bind("<ButtonRelease-1>", self._release)
         self._redraw()
 
     def _stored_rect(self, records, bounds_w, bounds_h):
@@ -754,7 +986,7 @@ class PenAreaEditor(ttk.Frame):
         """Follow a tablet-orientation change (U424r4 R4-B / #424 item B).
 
         PEN PATH WINS: the pen maps the STORED rect as the footprint and
-        fills it with the ROTATED extents (touch_controller
+        fills it with the ROTATED extents (wtd.mapping
         pen_area_norm_projection + update_pen_cursor), so the editor
         keeps the rect px footprint EXACTLY and only updates its box_mm
         - the mm readout, the sensitivity (w-axis) echo and the aspect
@@ -769,10 +1001,14 @@ class PenAreaEditor(ttk.Frame):
         # pointer interaction required. Apply persists it (the window
         # reorients BEFORE persisting); the pen then follows the entry.
         box = rotated_pen_box_mm(pen_specs, orientation_degrees)
+        # GUI-B B1 overlay follows the pen path's angle AND extents.
+        self.orientation_degrees = orientation_degrees
+        self.pen_specs = pen_specs
         old_bw = self.model.box_mm[0]
         s = self.model.rect[2] / old_bw if old_bw > 0 else None
         self.model.box_mm = (float(box[0]), float(box[1]))
         self.model.match_box_aspect(s)
+        self.model.retarget_view()  # PENAREA: the refit shape may need room
         self._redraw()
 
     def persist_entry(self):
@@ -813,6 +1049,18 @@ class PenAreaEditor(ttk.Frame):
         if self.on_change is not None:
             self.on_change()
 
+    def _release(self, event):
+        """Refit the viewport once the pointer lets go (PENAREA, P1 cure).
+
+        Mid-drag the transform stays fixed (the jitter rule); at release the
+        view refits to the rect, so the whole rect and its handle are inside
+        the canvas again before the next interaction.
+        """
+        if self.model is None:
+            return
+        self.model.retarget_view()
+        self._redraw()
+
     def _redraw(self):
         self.canvas.delete("all")
         if self.model is None:
@@ -822,6 +1070,22 @@ class PenAreaEditor(ttk.Frame):
         rx0, ry0, rx1, ry1 = self.model.rect_canvas()
         self.canvas.create_rectangle(rx0, ry0, rx1, ry1, outline="#00c8ff",
                                      width=2, tags="penarea_rect")
+        # GUI-B B1 (maintainer-accepted design, reviewer P1 fixes): the
+        # blue rect stays the axis-aligned bounding box; the lighter
+        # DASHED outline drawn over it is the ACTUAL projected footprint
+        # (device corners through the cursor's own rotate + extents-to-rect
+        # affine), always INSIDE the blue frame. At the 90-degree multiples
+        # the footprint IS the bbox - there the dashes would just re-draw
+        # the solid blue frame, so the overlay is skipped (reviewer P2).
+        if self.orientation_degrees % 90:
+            overlay = [self.model.canvas_xy(*corner) for corner in
+                       projection_overlay_corners(self.model.rect,
+                                                  self.orientation_degrees,
+                                                  self.pen_specs)]
+            self.canvas.create_polygon(
+                *[p for corner in overlay for p in corner],
+                outline="#aee4ff", fill="", dash=(4, 3),
+                tags="penarea_projection")
         hx, hy = self.model.handle_canvas()
         half = self.HANDLE / 2.0
         self.canvas.create_rectangle(hx - half, hy - half, hx + half, hy + half,
@@ -836,7 +1100,10 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
     """Apply a complete settings set to config, or apply nothing at all.
 
     numeric_values are raw entry strings; they are validated before the first
-    mutation, so one bad entry cannot leave config half-applied.
+    mutation, so one bad entry cannot leave config half-applied. An empty
+    entry string means unchanged: the field is skipped and its stored value
+    stays (#471), including the orientation_degrees / pen_move_flush_hz lanes
+    (their guards key on the parsed set).
     wireless_tablet_size (U386 / TODO #385) is the Pen-tab combo choice: one
     of WIRELESS_TABLET_SIZES, None for the explicit unset, or the sentinel
     default to leave the attribute untouched.
@@ -850,13 +1117,26 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
     parsed = parse_numeric_values(numeric_values)
 
     if "orientation_degrees" in parsed:
-        # U74: the entry feeds the 1° rotation matrix; whole degrees only.
+        # F1 2026-11-16: the entry wraps by 360 (fractions kept), so only a
+        # non-numeric or non-finite value can refuse here.
         degrees = parse_orientation_degrees(numeric_values["orientation_degrees"])
         if degrees is None:
-            raise ValueError(f"Field 'orientation_degrees' needs a whole degree "
-                             f"0..{ORIENTATION_MAX_DEGREES}: "
+            raise ValueError(f"Field 'orientation_degrees' needs a number "
+                             f"(angles wrap by 360): "
                              f"{numeric_values['orientation_degrees']!r}")
         parsed["orientation_degrees"] = degrees
+
+    if "pen_move_flush_hz" in parsed:
+        # The Pen-tab spinbox lane of the existing WTD-BATCH knob: bounded
+        # per MOVE_FLUSH_HZ_MIN/MAX before the first mutation (the same
+        # all-or-nothing contract as the orientation entry; the config-file
+        # validator keeps its own refuse-only-above-0 rule).
+        flush_hz = parse_move_flush_hz(numeric_values["pen_move_flush_hz"])
+        if flush_hz is None:
+            raise ValueError(f"Field 'pen_move_flush_hz' needs a number "
+                             f"{MOVE_FLUSH_HZ_MIN}..{MOVE_FLUSH_HZ_MAX} Hz: "
+                             f"{numeric_values['pen_move_flush_hz']!r}")
+        parsed["pen_move_flush_hz"] = flush_hz
 
     for key, val in parsed.items():
         setattr(config, key, val)
@@ -890,6 +1170,52 @@ def apply_settings_to_config(config, numeric_values, accel_toggles, feature_togg
         config.action_mapping[key] = action
 
 
+# Initial window geometry (F3 2026-11-16, maintainer 150%-scaling report):
+# the window opens at the size the content wants (his manual resize measured
+# ~870x1600) shrunk to fit the PRIMARY MONITOR WORK AREA (taskbar excluded)
+# and never larger than it. SPI_GETWORKAREA reports the work area in THIS
+# process's DPI space - the same coordinate space tkinter window geometry
+# uses - so the fit honors display scaling without manual DPI math.
+SPI_GETWORKAREA = 0x0030
+WINDOW_NEEDED_W = 870
+WINDOW_NEEDED_H = 1600
+WINDOW_WORKAREA_FILL = 0.7  # GUI-B B3 (maintainer 2026-11-16): 0.9 opened
+# the window too big; settled at 70% of the work area (he asked ~66%).
+
+
+def initial_window_geometry(work_area, needed_w=WINDOW_NEEDED_W,
+                            needed_h=WINDOW_NEEDED_H,
+                            fill=WINDOW_WORKAREA_FILL):
+    """Pure geometry math: work area (left, top, width, height) in, initial
+    (width, height, x, y) out - all ints, deterministic, no tkinter. The
+    wanted size is capped to `fill` of the work area (never larger than
+    it) and CENTERED in it (integer floor division)."""
+    left, top, area_w, area_h = work_area
+    width = int(min(float(needed_w), area_w * fill) + 0.5)
+    height = int(min(float(needed_h), area_h * fill) + 0.5)
+    x = left + (area_w - width) // 2
+    y = top + (area_h - height) // 2
+    return (width, height, x, y)
+
+
+def primary_work_area():
+    """Primary monitor work area (left, top, w, h) via SPI_GETWORKAREA.
+    None when the API is missing or reports junk (the caller falls back to
+    the tkinter screen metrics)."""
+    try:
+        rect = ctypes.wintypes.RECT()
+        if not ctypes.windll.user32.SystemParametersInfoW(
+                SPI_GETWORKAREA, 0, ctypes.byref(rect), 0):
+            return None
+        width = rect.right - rect.left
+        height = rect.bottom - rect.top
+        if width <= 0 or height <= 0:
+            return None
+        return (rect.left, rect.top, width, height)
+    except Exception:
+        return None
+
+
 class SettingsWindow(tk.Toplevel):
     def __init__(self, parent, state_ref, config_ref, device_info=None):
         super().__init__(parent)
@@ -902,8 +1228,17 @@ class SettingsWindow(tk.Toplevel):
         # settings.
         self.device_info = device_info
         self.title("Wacom Touch Driver Settings")
-        self.geometry("460x650")
-        self.minsize(460, 480)
+        # F3 2026-11-16 (maintainer 150%-scaling report): the fixed 460x650
+        # hid most tab content - open at the needed size fit into the
+        # PRIMARY MONITOR WORK AREA (junk or missing read falls back to the
+        # tkinter primary-screen metrics; never larger than the work area).
+        area = primary_work_area() or (0, 0, self.winfo_screenwidth(),
+                                       self.winfo_screenheight())
+        win_w, win_h, win_x, win_y = initial_window_geometry(area)
+        self.geometry(f"{win_w}x{win_h}+{win_x}+{win_y}")
+        # The usability floor follows the computed size on degenerate hosts
+        # so the never-larger-than-the-work-area promise holds there too.
+        self.minsize(min(460, win_w), min(480, win_h))
 
         # Shared numeric-entry registry: Motion, Pen and Advanced tabs fill this dict.
         self.entries = {}
@@ -1032,6 +1367,30 @@ class SettingsWindow(tk.Toplevel):
                                 command=self.save_to_focused_device)
         device_btn.grid(row=6, column=0, columnspan=2, sticky="w", pady=(8, 0))
 
+        # D1 (ruling R4-a): identity-entry-wins stays the config rule; this
+        # hint states WHICH sections the focused device overrides right now,
+        # computed from the base config on every focus/apply/save refresh.
+        self.identity_hint_label = ttk.Label(frame, text="", wraplength=400,
+                                             justify="left")
+        # Row 7: rows 3-5 belong to the copy-lane checkbuttons (row 5 was
+        # the reviewer P1 overlap), row 6 is the button row; the wireless
+        # lane moved to row 8 below.
+        self.identity_hint_label.grid(row=7, column=0, columnspan=4, sticky="w",
+                                      pady=(6, 0))
+        self._refresh_identity_hint()
+
+        # D1: restore-to-defaults removes the focused device identity entry
+        # (config values only; geometry and naming lanes stay, pen_area_maps
+        # untouched) and re-forks the live connection from base.
+        self.reset_defaults_btn = ttk.Button(
+            frame, text="Restore to Defaults",
+            command=self.reset_focused_device_defaults)
+        self.reset_defaults_btn.grid(row=6, column=2, sticky="w", pady=(8, 0))
+        ToolTip(self.reset_defaults_btn, "Clear this device identity entry "
+                  "overrides (config values only: pen area maps and aliases "
+                  "are NOT touched) and re-apply global values live; the file "
+                  "takes the change on the next save.")
+
         # U424r3 R3-L5 (#424 item 5): the wireless size lane lives HERE,
         # inside Focused Device, visible only for the receiver (id 132).
         self._build_wireless_lane(frame)
@@ -1088,7 +1447,7 @@ class SettingsWindow(tk.Toplevel):
         is_wireless = conn.get("product_id") == WIRELESS_RECEIVER_PRODUCT_ID
         packed = frame.winfo_manager() == "grid"
         if is_wireless and not packed:
-            frame.grid(row=7, column=0, columnspan=4, sticky="w", pady=(8, 0))
+            frame.grid(row=8, column=0, columnspan=4, sticky="w", pady=(8, 0))
         elif not is_wireless and packed:
             frame.grid_forget()
         if hasattr(self, "wireless_size_combo"):
@@ -1186,6 +1545,10 @@ class SettingsWindow(tk.Toplevel):
         self.alias_entry.insert(0, conn.get("alias") or "")
         self.device_label.configure(text=device_display_name(conn))
         self._rebind_config_widgets()
+        # Duck-typed rebind harnesses (FakeDeviceWindow) carry no hint.
+        refresh_hint = getattr(self, "_refresh_identity_hint", None)
+        if refresh_hint is not None:
+            refresh_hint()
         # U424r3 R3-L5: dynamic lane on focus change; duck-typed rebind
         # harnesses (FakeDeviceWindow) carry neither the lane nor the sync.
         sync_lane = getattr(self, "_sync_wireless_lane", None)
@@ -1337,15 +1700,20 @@ class SettingsWindow(tk.Toplevel):
         orient_frame = ttk.LabelFrame(scroll_frame, text=" Device Orientation ", padding=10)
         orient_frame.pack(fill="x", padx=10, pady=8, expand=True)
 
-        orient_lbl = ttk.Label(orient_frame, text="Rotation (degrees, 1° steps):")
+        orient_lbl = ttk.Label(orient_frame, text="Rotation (degrees):")
         orient_lbl.grid(row=0, column=0, sticky="w", pady=4)
         orient_ent = ttk.Entry(orient_frame, width=8)
         orient_ent.insert(0, str(self.config.orientation_degrees))
         orient_ent.grid(row=0, column=1, sticky="w", padx=(4, 0))
         self.entries["orientation_degrees"] = orient_ent
         orient_ent.bind("<KeyRelease>", self._on_orientation_entry)
+        # F1 2026-11-16: leaving the field rewrites the normalized angle
+        # into it (no silent ignore - the displayed value is the stored one).
+        orient_ent.bind("<FocusOut>", self._normalize_orientation_entry)
         orient_tip = ("Rotates the interpretation of touch and pen input clockwise "
-                      "by this angle around the tablet center. 0 leaves input unchanged.")
+                      "by this angle around the tablet center. 0 leaves input unchanged. "
+                      "Values wrap by 360 (370 becomes 10, -10 becomes 350); "
+                      "fractions are allowed.")
         ToolTip(orient_lbl, orient_tip)
         ToolTip(orient_ent, orient_tip)
 
@@ -1463,6 +1831,20 @@ class SettingsWindow(tk.Toplevel):
         if degrees is not None:
             self.orientation_widget.draw_degrees(degrees)
 
+    def _normalize_orientation_entry(self, event=None):
+        """F1 2026-11-16: after editing, the field DISPLAYS the normalized
+        angle (370 -> 10, -10 -> 350, 360 -> 0; fractions kept). Invalid
+        text stays untouched - Apply refuses it in the validation style."""
+        entry = self.entries["orientation_degrees"]
+        degrees = parse_orientation_degrees(entry.get())
+        if degrees is None:
+            return
+        text = str(degrees)
+        if entry.get() != text:
+            entry.delete(0, "end")
+            entry.insert(0, text)
+        self.orientation_widget.draw_degrees(degrees)
+
     def _set_orientation(self, degrees):
         """Preset button: write the angle into the entry and redraw the widget."""
         entry = self.entries["orientation_degrees"]
@@ -1529,8 +1911,10 @@ class SettingsWindow(tk.Toplevel):
 
     def _apply_rect_field(self, source_key):
         # Ruling 2: px and mm entries are bidirectional, aspect-locked
-        # (height edits re-derive width), clamped inside the display
-        # union by the model.
+        # (height edits re-derive width). PENAREA: the model enforces the
+        # placement rule (the rect keeps intersecting the display area -
+        # #467), NOT the old inside-the-union clamp - negative and
+        # beyond-union entries are accepted and echoed back when clamped.
         editor = getattr(self, "pen_area_editor", None)
         model = editor.model if editor is not None else None
         if model is None:
@@ -1550,6 +1934,7 @@ class SettingsWindow(tk.Toplevel):
             return
         if field == "s":  # sensitivity handle (U424r3 R3-L3)
             model.apply_scale(raw)
+            model.retarget_view()  # PENAREA: keep the handle in reach
             editor._redraw()
             self._sync_rect_entries()
             return
@@ -1560,6 +1945,7 @@ class SettingsWindow(tk.Toplevel):
             value_px = value_px * model.box_mm[0] / model.box_mm[1]
             field = "w"
         model.apply_fields(**{field: value_px})
+        model.retarget_view()  # PENAREA: keep the handle in reach
         editor._redraw()
         self._sync_rect_entries()
 
@@ -1577,6 +1963,7 @@ class SettingsWindow(tk.Toplevel):
         pen_tooltips = {
             "pen_speed": "Relative-mode speed: pixels per millimeter of pen travel. Ignored in absolute mode.",
             "pen_pressure_threshold": "Pressure units (0..2047) at which the left button is held. Below it the button releases; filters light-contact jitter.",
+            "pen_move_flush_hz": "Caps how often pen cursor updates reach Windows (default 250; lower only to test congestion behavior). Applies to the absolute modes; the relative lane is unaffected.",
         }
 
         # --- 1. Movement Frame ---
@@ -1613,12 +2000,23 @@ class SettingsWindow(tk.Toplevel):
         pen_fields = [
             ("Speed (px/mm):", "pen_speed", self.config.pen_speed, 4),
             ("Pressure Threshold:", "pen_pressure_threshold", self.config.pen_pressure_threshold, 5),
+            # Mode-independent (like the pressure row): the flush cap governs
+            # the ABSOLUTE-lane slot, and it stays editable in every mode so
+            # the value never hides while a mode switch is in progress.
+            ("Move flush Hz:", "pen_move_flush_hz", self.config.pen_move_flush_hz, 6),
         ]
 
         for label_text, key, initial_val, row_idx in pen_fields:
             lbl = ttk.Label(movement_frame, text=label_text)
             lbl.grid(row=row_idx, column=0, sticky="w", pady=4)
-            ent = ttk.Entry(movement_frame, width=12)
+            if key == "pen_move_flush_hz":
+                # Bounded spinbox (the maintainer's ask for this knob): the
+                # arrow range mirrors parse_move_flush_hz, the Apply Live
+                # check, so neither lane can step out of range.
+                ent = ttk.Spinbox(movement_frame, from_=MOVE_FLUSH_HZ_MIN,
+                                  to=MOVE_FLUSH_HZ_MAX, increment=10, width=12)
+            else:
+                ent = ttk.Entry(movement_frame, width=12)
             ent.insert(0, str(initial_val))
             ent.grid(row=row_idx, column=1, sticky="e", pady=4)
             self.entries[key] = ent
@@ -2090,7 +2488,139 @@ class SettingsWindow(tk.Toplevel):
         # the combo nor the notice.
         if wireless_combo is not None:
             self._refresh_wireless_notice()
+        # A3 / review Item 2: the applied values also go through to the focused
+        # device's base-config entry, so a pause/resume/reconnect refork starts
+        # from what the user sees now instead of from the pre-Apply values.
+        # Duck-typed apply_settings callers (the FakeWindow pins) carry no
+        # helper, so they keep today's fork-only behavior.
+        write_through = getattr(self, "_write_through_focused_entry", None)
+        if write_through is not None:
+            write_through()
+
+        # D1 hint stays honest: Apply/Save routes can create the entry.
+        refresh_hint = getattr(self, "_refresh_identity_hint", None)
+        if refresh_hint is not None:
+            refresh_hint()
         ToastNotification(self, "Success", "Settings applied directly to driver!", timeout_ms=1500)
+        return True
+
+    def _write_through_focused_entry(self):
+        """Store the live-applied values under the focused device's identity key.
+
+        A3 (review Item 2): Apply Live used to reach the running connection's
+        config fork only. A pause, a resume, or a reconnect rebuilt that fork
+        from base_config, which still carried the pre-Apply values, so a change
+        the user applied mid-session silently came back as the old one. Writing
+        the same section subset the device Save button stores - and nothing else
+        - makes every later refork of THAT identity inherit what is live now,
+        while another device's entry stays untouched.
+
+        Only the in-memory base config is written here: Apply Live stays the
+        non-persisting path, the file still takes the Save button. Returns
+        'written', or why nothing was written ('no_connection', 'no_identity',
+        'no_base_config'), so callers keep their own messaging.
+        """
+        device_info = getattr(self, "device_info", None) or {}
+        conn = device_info.get("connection")
+        if conn is None:
+            return "no_connection"
+        base = device_info.get("base_config")
+        if base is None:
+            return "no_base_config"
+        identity = conn.get("identity")
+        if identity is None:
+            return "no_identity"
+        base.set_device_identity_settings(
+            identity, collect_config_sections(conn["config"], DEVICE_TRANSFER_SECTIONS))
+        return "written"
+
+    def _focused_identity_override_sections(self):
+        """D1 hint data: the config sections the focused identity overrides NOW.
+
+        Computed from the base config on every call (never remembered), so the
+        hint cannot drift from what the next fork actually applies.
+        """
+        device_info = getattr(self, "device_info", None) or {}
+        conn = device_info.get("connection") or {}
+        base = device_info.get("base_config")
+        identity = conn.get("identity")
+        if base is None or identity is None:
+            return ()
+        entry = base.device_settings.get(identity) or {}
+        return tuple(sorted(name for name in DEVICE_SECTION_KEYS
+                                  if name in entry))
+
+    def _refresh_identity_hint(self):
+        """D1 hint: which identity-entry overrides are active for the focus."""
+        label = getattr(self, "identity_hint_label", None)
+        if label is None:
+            return
+        sections = self._focused_identity_override_sections()
+        if sections:
+            text = "Device-specific values active: " + ", ".join(sections)
+        else:
+            text = "Device-specific values active: (none)"
+        label.configure(text=text)
+
+    def reset_focused_device_defaults(self):
+        """D1: clear the focused device identity entry (config values only).
+
+        Pen area maps (geometry) and device aliases (naming) are separate
+        lanes and are never touched. The live connection re-forks from the
+        base config IN PLACE, so the running readers keep going and resolve
+        global values immediately (the pen-mode #424-ruling-3 live shape);
+        the on-file state takes the removal at the next Save like any
+        config change - the global file is not rewritten here.
+        """
+        device_info = getattr(self, "device_info", None) or {}
+        conn = device_info.get("connection")
+        if conn is None:
+            messagebox.showerror(
+                "No Device Focused",
+                "Wake the device and pick it in the device list first.")
+            return False
+        base = device_info.get("base_config")
+        if base is None:
+            messagebox.showerror(
+                "No Base Config",
+                "This window carries no base config; nothing was reset.")
+            return False
+        identity = conn.get("identity")
+        entry = (base.device_settings.get(identity) or {}) if identity else {}
+        sections = [name for name in DEVICE_SECTION_KEYS if name in entry]
+        if not sections:
+            messagebox.showinfo(
+                "Nothing to Restore",
+                "This device runs global values already; no identity entry "
+                "sections are active.")
+            return False
+        confirmed = messagebox.askyesno(
+            "Restore Device Defaults",
+            "Clear the device-specific config values: " + ", ".join(sections)
+            + "?\n\n"
+            "Config values only: pen area maps (geometry) and device aliases "
+            "(naming) are NOT touched. The global file is NOT rewritten now; "
+            "the removal takes effect on the next Save to File.")
+        if not confirmed:
+            return False
+        # Remove the entry; keep any untouched lane (pen_area_maps is a
+        # separate config map and never lives here).
+        base.device_settings.pop(identity, None)
+        # Live re-apply WITHOUT restarting readers: rebuild the fork from
+        # base (identity=None overlay) and swap fields inside the live
+        # config object, so every holder (dispatcher, reader, editor) sees
+        # global values at the next lookup.
+        fresh = base.fork_for_device(conn.get("alias"), None)
+        live_cfg = conn["config"]
+        for name, value in vars(fresh).items():
+            setattr(live_cfg, name, value)
+        live_cfg.sync_sensitivities()
+        _log.info("[Device] Restored defaults for identity "
+                  + str(identity) + " (cleared: " + ", ".join(sections) + ")")
+        self._rebind_focused_device()
+        ToastNotification(self, "Defaults Restored",
+                          f"{device_display_name(conn)} runs global values.",
+                          timeout_ms=1800)
         return True
 
     def save_to_focused_device(self):
@@ -2102,22 +2632,25 @@ class SettingsWindow(tk.Toplevel):
         if not self.apply_settings():
             return False
 
-        conn = self.device_info.get("connection")
-        if conn is None:
+        status = self._write_through_focused_entry()
+        if status == "no_connection":
             messagebox.showerror(
                 "No Device Focused",
                 "Wake the device and pick it in the device list first.")
             return False
-        base = self.device_info["base_config"]
-        identity = conn.get("identity")
-        if identity is None:
+        if status == "no_identity":
             messagebox.showerror(
                 "No Device Identity",
                 "This connection carries no identity key; nothing was saved.")
             return False
+        if status != "written":
+            messagebox.showerror(
+                "No Base Config",
+                "This window carries no base config; nothing was saved.")
+            return False
 
-        base.set_device_identity_settings(
-            identity, collect_config_sections(conn["config"], DEVICE_TRANSFER_SECTIONS))
+        base = self.device_info["base_config"]
+        conn = self.device_info["connection"]
         filepath = getattr(base, "save_path", "user.cfg")
         base.save_to_file(filepath)
 
@@ -2158,6 +2691,10 @@ class SettingsWindow(tk.Toplevel):
 
 
 class DriverTrayApp:
+    # TRAY unit (#448): icon-state poll cadence for toggle-driven changes
+    # (a button-mapped touch_toggle flips the flag off the reader thread).
+    ICON_WATCH_MS = 500
+
     def __init__(self, root, state_ref, config_ref, enabled_event_ref, stop_event_ref, device_info=None):
         self.root = root
         self.state = state_ref
@@ -2168,6 +2705,8 @@ class DriverTrayApp:
         self.icon = None
         self.settings_window = None
         self.icon_cache = IconCache(text="WT")
+        self._icon_state_seen = None
+        self.start_icon_watch()
 
     def toggle_touch(self, icon=None, item=None):
         if self.touch_enabled_event.is_set():
@@ -2176,17 +2715,59 @@ class DriverTrayApp:
             self.touch_enabled_event.set()
         
         status = "Paused" if not self.touch_enabled_event.is_set() else "Active"
-        print(f"[Tray] Touch input is now {status} (touch_paused = {not self.touch_enabled_event.is_set()})")
+        print(f"[Tray] Touch output is now {status} "
+              f"(touch_paused = {not self.touch_enabled_event.is_set()}; "
+              "pen and tablet buttons stay live)")
         self.update_icon()
+
+    def start_icon_watch(self):
+        # TRAY unit (#448): the touch_toggle action can flip the shared
+        # flag from a READER thread (mapped tablet button), and pystray
+        # never re-reads the icon image on its own - so a slow Tk timer
+        # polls the ONE flag and re-runs update_icon on change (the same
+        # refresh the tray click uses; no second source of state).
+        if self.root is None or not hasattr(self.root, "after"):
+            return
+        self._icon_state_seen = self.touch_enabled_event.is_set()
+        self._tick_icon_watch()
+
+    def _poll_icon_state(self):
+        # One watch tick (test seam): refresh only on an actual change.
+        seen = self.touch_enabled_event.is_set()
+        if seen != self._icon_state_seen:
+            self._icon_state_seen = seen
+            self.update_icon()
+            return True
+        return False
+
+    def _tick_icon_watch(self):
+        # Reviewer P2 (wtd-tray-review): one failing update_icon (a pystray/
+        # win32 hiccup) must not silently end the watcher chain - log it and
+        # keep the tick alive; only a destroyed root ends it.
+        try:
+            self._poll_icon_state()
+        except Exception as exc:
+            print(f"[Tray] icon watch tick failed: {exc}")
+        finally:
+            try:
+                self.root.after(self.ICON_WATCH_MS, self._tick_icon_watch)
+            except tk.TclError:
+                # Root destroyed on quit: the watcher dies with it.
+                pass
         
     def is_touch_enabled(self, item=None):
         return self.touch_enabled_event.is_set()
     
     def update_icon(self):
+        # TRAY unit (#448): the STOP state is TOUCH-OUTPUT-scoped now -
+        # the title says so, so a stopped touch lane is never mistaken
+        # for a dead tablet (pen and tablet buttons keep working).
         if self.icon:
             is_enabled = self.touch_enabled_event.is_set()
             self.icon.icon = self.icon_cache.get(is_enabled)
-            self.icon.title = f"Wacom Touch Driver ({'Enabled' if self.touch_enabled_event.is_set() else 'Disabled'})"
+            self.icon.title = ("Wacom Touch Driver (Touch Enabled)" if is_enabled
+                               else "Wacom Touch Driver (Touch Disabled - "
+                                    "pen and tablet buttons stay live)")
 
     def open_settings(self, icon=None, item=None):
         self.root.after(0, self._show_settings_gui)
@@ -2201,16 +2782,18 @@ class DriverTrayApp:
         print("[Tray] Exiting Wacom Touch Driver...")
         self.stop_event.set()
         #self.state.set_running_global(False)
-        # to stop waiting of device manager if touch is disabled
-        if self.touch_enabled_event:
-            self.touch_enabled_event.set()
+        # TRAY unit (#448): the retired touch-flag unblock hack - the
+        # manager no longer waits on the flag (it only gates emissions),
+        # so quitting with touch stopped needs no event fiddling.
         if self.icon:
             self.icon.stop()
         self.root.after(0, self.root.quit)
 
     def run_tray(self):
         menu = pystray.Menu(
-            item('Enable Touch Input', self.toggle_touch, checked=self.is_touch_enabled, default=True),
+            # #448 wording: OUTPUT vocabulary (pen and tablet buttons stay
+            # live regardless), matching the tooltip, CHANGELOG, and README.
+            item('Enable Touch Output', self.toggle_touch, checked=self.is_touch_enabled, default=True),
             item('Settings...', self.open_settings),
             pystray.Menu.SEPARATOR,
             item('Exit Driver', self.quit_driver)
@@ -2223,6 +2806,9 @@ class DriverTrayApp:
             "Wacom Touch Driver",
             menu
         )
+        # Reviewer P2 (wtd-tray-review): carry the touch-scoped title and
+        # state color from the FIRST frame, not from the first change.
+        self.update_icon()
         self.icon.run()
 
 
@@ -2235,4 +2821,4 @@ def launch_gui(state_ref, config_ref, pause_event_ref, stop_event_ref, device_in
     tray_thread = threading.Thread(target=app.run_tray, daemon=True)
     tray_thread.start()
 
-    root.mainloop()
+    root.mainloop()

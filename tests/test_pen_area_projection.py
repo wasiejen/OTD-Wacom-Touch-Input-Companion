@@ -14,22 +14,17 @@ px-kwarg contract (junk-metrics pin used to assert the degraded lane).
 
 import pytest
 
-import touch_controller
-from touch_controller import (
-    ActionDispatcher,
-    DriverConfig,
-    TabletState,
-    PEN_AREA_MAP_PREFIX,
-    cached_display_key,
-    display_key_for_records,
-    pen_area_norm_projection,
-    select_live_pen_area_rect,
-    update_pen_cursor,
-)
+from wtd.config import (DriverConfig, PEN_AREA_MAP_PREFIX)
+from wtd.gestures import TabletState
+from wtd.mapping import (cached_display_key, display_key_for_records, pen_area_norm_projection, select_live_pen_area_rect, update_pen_cursor)
+from wtd.sender import ActionDispatcher
+from wtd import config
+from wtd import mapping
+from wtd import protocol
 
 ABS_FLAGS = 0x0001 | 0x8000 | 0x4000
-VIRT = touch_controller.PEN_VIRTUAL_RESOLUTION
-SPEC_791 = touch_controller.PEN_SPECS_BY_PRODUCT[791]
+VIRT = protocol.PEN_VIRTUAL_RESOLUTION
+SPEC_791 = protocol.PEN_SPECS_BY_PRODUCT[791]
 SCREEN = (0, 0, 3440, 1440)
 # 16:10 rect consistent with the box aspect (325.12x203.2 mm -> 1.6) and
 # fully inside the synthetic 3440x1440 desktop (500+1920, 120+1200):
@@ -56,6 +51,8 @@ def _map(state, config, specs, x, y, metrics, events, rect=None, stretch=False):
     dispatcher = ActionDispatcher(state, config)
     update_pen_cursor(state, dispatcher, config, specs, x, y,
                       screen_metrics=metrics, pen_area_rect=rect)
+    # WTD-BATCH: flush the parked absolute move (see test_pen_absolute_isotropy).
+    dispatcher.flush_pending_move()
     assert events and events[-1][0] == "mouse" and events[-1][1] == ABS_FLAGS
     return events[-1][3], events[-1][4]
 
@@ -75,12 +72,44 @@ def test_rect_corners_land_at_the_rect_bounds(state, config, stub_send_input):
                                                 RECT[1] + RECT[3])
 
 
+# PENAREA (2026-11-16): the editor may place the rect PARTLY outside the
+# display union, so rect fractions leave 0..1. Documented v1 semantics of
+# the mapper for the off-screen part (see update_pen_cursor docstring).
+OFFSCREEN_FRAC = [-0.5, 0.0, 1.0, 0.5]
+
+
+def test_offscreen_rect_part_maps_to_the_desktop_edge_dead_zone(state, config,
+                                                                stub_send_input):
+    # The off-screen rect half aims at virtual-desktop coords OUTSIDE the
+    # monitors; the mapper's existing nx/ny clamp pins the result to 0 or
+    # 65535, so the cursor stands at the virtual-desktop edge while the pen
+    # travels the off-screen part - a usable dead zone, no per-monitor
+    # clipping (accepted v1 semantics, maintainer-requested PENAREA unit).
+    # rx = -0.5: the pen's box-left corner aims 1720 px left of the desktop.
+    nx, ny = _map(state, config, SPEC_791, 0, 0, SCREEN, stub_send_input,
+                  OFFSCREEN_FRAC)
+    assert (nx, ny) == (0, 0)
+    # The on-screen corner still maps through normally (rx+rw = 0.5 of the
+    # width, ry+rh = 0.5 of the height -> 1720, 720).
+    stub_send_input.clear()
+    nx, ny = _map(state, config, SPEC_791, SPEC_791["max_x"],
+                  SPEC_791["max_y"], SCREEN, stub_send_input, OFFSCREEN_FRAC)
+    assert (_px(nx, 3440), _px(ny, 1440)) == (1720, 720)
+    # With ry+rh = 1.25 the pen's box-bottom corner aims below the
+    # desktop's bottom edge -> pinned to 65535 (the far edge), never wrapped
+    # around to the top.
+    stub_send_input.clear()
+    nx, ny = _map(state, config, SPEC_791, 0, SPEC_791["max_y"], SCREEN,
+                  stub_send_input, [-0.5, 0.75, 1.0, 0.5])
+    assert (nx, ny) == (0, VIRT)
+
+
 def test_rect_lane_px_per_mm_equal_both_axes(state, config, stub_send_input):
     nx0, ny0 = _map(state, config, SPEC_791, 0, 0, SCREEN, stub_send_input, RECT_FRAC)
     stub_send_input.clear()
     nx1, ny1 = _map(state, config, SPEC_791, SPEC_791["max_x"],
                     SPEC_791["max_y"], SCREEN, stub_send_input, RECT_FRAC)
-    box_mm = touch_controller.rotated_pen_box_mm(SPEC_791, 0)
+    box_mm = mapping.rotated_pen_box_mm(SPEC_791, 0)
     scale_x = (_px(nx1, 3440) - _px(nx0, 3440)) / box_mm[0]
     scale_y = (_px(ny1, 1440) - _px(ny0, 1440)) / box_mm[1]
     assert scale_x == pytest.approx(scale_y, rel=2e-3)
@@ -92,12 +121,12 @@ def test_rect_lane_survives_90deg_rotation(state, config, stub_send_input):
     # output as the SET of the four rect corners fed the four rotated
     # device corners through the same upstream transform.
     config.orientation_degrees = 90
-    center = touch_controller.pen_rotation_center(SPEC_791)
+    center = mapping.pen_rotation_center(SPEC_791)
     corners = {(0, 0), (SPEC_791["max_x"], 0), (0, SPEC_791["max_y"]),
                (SPEC_791["max_x"], SPEC_791["max_y"])}
     mapped = set()
     for (dx, dy) in sorted(corners):
-        rx_, ry_ = touch_controller.apply_orientation(
+        rx_, ry_ = mapping.apply_orientation(
             (dx, dy), config, center)
         nx, ny = _map(state, config, SPEC_791, rx_, ry_, SCREEN,
                       stub_send_input, RECT_FRAC)
@@ -151,7 +180,7 @@ def test_metrics_present_and_metrics_absent_project_identically(state, config,
 def test_no_rect_control_is_the_isotropic_lane(state, config, stub_send_input):
     # Control: with pen_area_rect=None the U376 lane must be byte-identical
     # to its pinned isotropic output (used_w centered contain on 3440x1440).
-    box_mm = touch_controller.rotated_pen_box_mm(SPEC_791, 0)
+    box_mm = mapping.rotated_pen_box_mm(SPEC_791, 0)
     scale = min(3440 / box_mm[0], 1440 / box_mm[1])
     used_w = SPEC_791["max_x"] / 200.0 * scale
     off_x = (3440 - used_w) / 2.0 * VIRT / 3440
@@ -180,8 +209,8 @@ def test_frac_projection_is_the_px_form_at_unit_screen_size():
 def test_diag_names_the_pen_area_mode_with_rect_px_mm(state, config,
                                                        stub_send_input,
                                                        capsys, monkeypatch):
-    monkeypatch.setenv(touch_controller.PEN_MAP_DIAG_ENV, "1")
-    monkeypatch.setattr(touch_controller, "monitor_count", lambda: 2)
+    monkeypatch.setenv(mapping.PEN_MAP_DIAG_ENV, "1")
+    monkeypatch.setattr(mapping, "monitor_count", lambda: 2)
     state.pen_product_id = 791
     capsys.readouterr()
     _map(state, config, SPEC_791, 0, 0, SCREEN, stub_send_input, RECT_FRAC)
@@ -196,11 +225,11 @@ def test_live_rect_selection_exact_match_and_none(cfg_state_config, monkeypatch)
     key = display_key_for_records(RECORDS)
     cfg.set_pen_area_entry(IDENTITY, key, RECORDS, RECT_FRAC)
     state.pen_identity = IDENTITY
-    monkeypatch.setattr(touch_controller, "monitor_records", lambda: list(RECORDS))
+    monkeypatch.setattr(mapping, "monitor_records", lambda: list(RECORDS))
     assert select_live_pen_area_rect(cfg, state.pen_identity) == pytest.approx(RECT_FRAC)
-    monkeypatch.setattr(touch_controller, "monitor_records",
+    monkeypatch.setattr(mapping, "monitor_records",
                         lambda: ["\\\\.\\DISPLAY1|0|0|1920x1080"])
-    touch_controller.reset_pen_area_key_cache()
+    mapping.reset_pen_area_key_cache()
     assert select_live_pen_area_rect(cfg, state.pen_identity) is None
     assert select_live_pen_area_rect(cfg, None) is None
 
@@ -258,8 +287,8 @@ def test_cached_display_key_caches_none_until_ttl(monkeypatch):
         calls.append(1)
         return []
 
-    monkeypatch.setattr(touch_controller, "monitor_records", fake_records)
-    touch_controller.reset_pen_area_key_cache()
+    monkeypatch.setattr(mapping, "monitor_records", fake_records)
+    mapping.reset_pen_area_key_cache()
     assert cached_display_key(now=100.0) is None
     assert cached_display_key(now=101.0) is None
     assert len(calls) == 1
@@ -274,8 +303,8 @@ def test_cached_display_key_walks_once_per_ttl(monkeypatch):
         calls.append(1)
         return list(RECORDS)
 
-    monkeypatch.setattr(touch_controller, "monitor_records", fake_records)
-    touch_controller.reset_pen_area_key_cache()
+    monkeypatch.setattr(mapping, "monitor_records", fake_records)
+    mapping.reset_pen_area_key_cache()
     key = display_key_for_records(RECORDS)
     assert cached_display_key(now=100.0) == key
     assert cached_display_key(now=101.0) == key
